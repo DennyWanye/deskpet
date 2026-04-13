@@ -16,7 +16,6 @@ impl BackendProcess {
         }
     }
 
-    /// Kill the child process if it is running. Used during cleanup.
     pub fn kill_child(&self) {
         if let Ok(mut guard) = self.child.lock() {
             if let Some(mut child) = guard.take() {
@@ -26,18 +25,22 @@ impl BackendProcess {
     }
 }
 
+/// Spawn backend — runs in async context so it won't block the UI thread.
 #[command]
-pub fn start_backend(
+pub async fn start_backend(
     state: State<'_, BackendProcess>,
     python_path: String,
     backend_dir: String,
 ) -> Result<String, String> {
-    let mut child_guard = state.child.lock().map_err(|e| e.to_string())?;
-
-    if child_guard.is_some() {
-        return Err("Backend already running".into());
+    // Check if already running
+    {
+        let guard = state.child.lock().map_err(|e| e.to_string())?;
+        if guard.is_some() {
+            return Err("Backend already running".into());
+        }
     }
 
+    // Spawn process (this is quick, doesn't block)
     let mut child = Command::new(&python_path)
         .arg("main.py")
         .current_dir(&backend_dir)
@@ -47,24 +50,27 @@ pub fn start_backend(
         .map_err(|e| format!("Failed to spawn backend: {e}"))?;
 
     let stdout = child.stdout.take().ok_or("No stdout")?;
-    let reader = BufReader::new(stdout);
 
-    let mut secret = String::new();
-    for line in reader.lines() {
-        let line = line.map_err(|e| e.to_string())?;
-        if line.starts_with("SHARED_SECRET=") {
-            secret = line.trim_start_matches("SHARED_SECRET=").to_string();
-            break;
+    // Read the SHARED_SECRET line in a blocking task so we don't freeze the UI
+    let secret = tauri::async_runtime::spawn_blocking(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(line) if line.starts_with("SHARED_SECRET=") => {
+                    return Ok(line.trim_start_matches("SHARED_SECRET=").to_string());
+                }
+                Ok(_) => continue,
+                Err(e) => return Err(format!("Failed to read stdout: {e}")),
+            }
         }
-    }
+        Err("Backend exited without printing SHARED_SECRET".into())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))??;
 
-    if secret.is_empty() {
-        let _ = child.kill();
-        return Err("Failed to read shared secret from backend".into());
-    }
-
+    // Store child and secret
     *state.shared_secret.lock().map_err(|e| e.to_string())? = Some(secret.clone());
-    *child_guard = Some(child);
+    *state.child.lock().map_err(|e| e.to_string())? = Some(child);
 
     Ok(secret)
 }

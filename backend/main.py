@@ -114,7 +114,7 @@ async def audio_channel(ws: WebSocket):
 
 def main():
     logger.info("starting backend", host=config.backend.host, port=config.backend.port)
-    print(f"SHARED_SECRET={SHARED_SECRET}")
+    print(f"SHARED_SECRET={SHARED_SECRET}", flush=True)
     uvicorn.run(app, host=config.backend.host, port=config.backend.port, log_level=config.backend.log_level.lower())
 
 
