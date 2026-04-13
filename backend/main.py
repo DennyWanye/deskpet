@@ -45,7 +45,10 @@ async def health():
 async def control_channel(ws: WebSocket):
     await ws.accept()
     if not _validate_secret(ws):
-        await ws.close(code=4001, reason="invalid secret")
+        try:
+            await ws.close(code=4001, reason="invalid secret")
+        except Exception:
+            pass
         return
 
     logger.info("control channel connected")
@@ -96,7 +99,10 @@ async def control_channel(ws: WebSocket):
 async def audio_channel(ws: WebSocket):
     await ws.accept()
     if not _validate_secret(ws):
-        await ws.close(code=4001, reason="invalid secret")
+        try:
+            await ws.close(code=4001, reason="invalid secret")
+        except Exception:
+            pass
         return
 
     logger.info("audio channel connected")
