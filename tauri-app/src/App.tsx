@@ -1,17 +1,36 @@
 import { useState, useCallback, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Live2DCanvas } from "./components/Live2DCanvas";
 import { useControlChannel } from "./hooks/useWebSocket";
 
 function App() {
   const [fps, setFps] = useState(0);
   const [chatText, setChatText] = useState("");
+  const [secret, setSecret] = useState("");
   const [messages, setMessages] = useState<
     { role: "user" | "assistant"; text: string }[]
   >([]);
 
-  // For dev: connect without secret (backend will need to handle this)
-  // In production: get secret from Tauri process manager
-  const { state, lastMessage, sendChat } = useControlChannel(8100, "");
+  useEffect(() => {
+    async function startBackend() {
+      try {
+        const s = await invoke<string>("get_shared_secret");
+        setSecret(s);
+      } catch {
+        try {
+          const backendDir = "G:/projects/deskpet/backend";
+          const pythonPath = "G:/projects/deskpet/backend/.venv/Scripts/python.exe";
+          const s = await invoke<string>("start_backend", { pythonPath, backendDir });
+          setSecret(s);
+        } catch (err) {
+          console.error("Failed to start backend:", err);
+        }
+      }
+    }
+    startBackend();
+  }, []);
+
+  const { state, lastMessage, sendChat } = useControlChannel(8100, secret);
 
   useEffect(() => {
     if (lastMessage?.type === "chat_response") {
