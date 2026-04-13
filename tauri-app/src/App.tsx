@@ -1,43 +1,32 @@
-import { useState } from 'react'
-import './App.css'
-
 function App() {
-  const [greetMsg, setGreetMsg] = useState('')
-  const [name, setName] = useState('')
-
-  async function greet() {
-    // Will invoke the Tauri command when running in Tauri
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      setGreetMsg(await invoke('greet', { name }))
-    } catch {
-      setGreetMsg(`Hello, ${name}! (running in browser)`)
-    }
-  }
-
   return (
-    <main className="container">
-      <h1>DeskPet</h1>
-      <p>Desktop pet application powered by Tauri 2 + React</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault()
-          greet()
+    <div
+      style={{
+        width: "100vw",
+        height: "100vh",
+        backgroundColor: "transparent",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        padding: "20px",
+      }}
+    >
+      <div
+        style={{
+          backgroundColor: "rgba(255, 255, 255, 0.9)",
+          borderRadius: "12px",
+          padding: "12px 16px",
+          maxWidth: "300px",
+          fontSize: "14px",
+          color: "#333",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
         }}
       >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-
-      <p>{greetMsg}</p>
-    </main>
-  )
+        Hello, I'm your desktop pet!
+      </div>
+    </div>
+  );
 }
 
-export default App
+export default App;
