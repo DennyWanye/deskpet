@@ -94,26 +94,52 @@ export function Live2DCanvas({ modelPath, onFpsUpdate }: Live2DCanvasProps) {
         setDisplayMode("live2d");
         console.warn("[Live2D] render loop starting");
 
-        // Render loop
+        // Render loop — cap at ~30fps for performance
+        // toBlob + createObjectURL is faster than toDataURL (no base64 encoding)
+        const TARGET_FPS = 30;
+        const FRAME_INTERVAL = 1000 / TARGET_FPS;
         let frameCount = 0;
         let lastFpsTime = performance.now();
+        let lastFrameTime = 0;
+        let pendingBlob = false;
+        let currentBlobUrl: string | null = null;
 
-        function renderLoop() {
+        function renderLoop(timestamp: number) {
           if (destroyed) return;
 
-          frameCount++;
-          const now = performance.now();
-          if (now - lastFpsTime >= 1000) {
-            onFpsUpdate?.(Math.round((frameCount * 1000) / (now - lastFpsTime)));
-            frameCount = 0;
-            lastFpsTime = now;
-          }
+          // Throttle frame extraction to TARGET_FPS
+          const delta = timestamp - lastFrameTime;
+          if (delta >= FRAME_INTERVAL && !pendingBlob) {
+            lastFrameTime = timestamp - (delta % FRAME_INTERVAL);
+            frameCount++;
 
-          // Extract frame from PixiJS canvas → img
-          if (imgRef.current && pixiApp?.view) {
-            try {
-              imgRef.current.src = (pixiApp.view as HTMLCanvasElement).toDataURL("image/png");
-            } catch { /* ignore */ }
+            const now = performance.now();
+            if (now - lastFpsTime >= 1000) {
+              onFpsUpdate?.(Math.round((frameCount * 1000) / (now - lastFpsTime)));
+              frameCount = 0;
+              lastFpsTime = now;
+            }
+
+            // Extract frame via toBlob (async, faster than toDataURL)
+            if (imgRef.current && pixiApp?.view) {
+              pendingBlob = true;
+              try {
+                (pixiApp.view as HTMLCanvasElement).toBlob(
+                  (blob: Blob | null) => {
+                    pendingBlob = false;
+                    if (destroyed || !blob || !imgRef.current) return;
+                    // Revoke previous blob URL to prevent memory leak
+                    if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+                    currentBlobUrl = URL.createObjectURL(blob);
+                    imgRef.current.src = currentBlobUrl;
+                  },
+                  "image/webp",
+                  0.8,
+                );
+              } catch {
+                pendingBlob = false;
+              }
+            }
           }
 
           rafId = requestAnimationFrame(renderLoop);
@@ -232,9 +258,20 @@ export function Live2DCanvas({ modelPath, onFpsUpdate }: Live2DCanvasProps) {
         ctx.beginPath(); ctx.moveTo(30, 16 + bo); ctx.lineTo(65, 18 + bo); ctx.stroke();
         ctx.restore();
 
-        if (imgRef.current) imgRef.current.src = canvas.toDataURL("image/png");
+        // Use toBlob + createObjectURL (faster than toDataURL)
+        canvas.toBlob(
+          (blob) => {
+            if (!blob || !imgRef.current || destroyed) return;
+            if (c2dBlobUrl) URL.revokeObjectURL(c2dBlobUrl);
+            c2dBlobUrl = URL.createObjectURL(blob);
+            imgRef.current.src = c2dBlobUrl;
+          },
+          "image/webp",
+          0.8,
+        );
         rafId = requestAnimationFrame(draw);
       }
+      let c2dBlobUrl: string | null = null;
       rafId = requestAnimationFrame(draw);
     }
 
