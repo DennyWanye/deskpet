@@ -8,6 +8,9 @@ export function useControlChannel(port: number = 8100, secret: string = "") {
   const [lastMessage, setLastMessage] = useState<IncomingMessage | null>(null);
 
   useEffect(() => {
+    // Don't connect until we have a valid secret
+    if (!secret) return;
+
     const channel = new ControlChannel(port, secret);
     channelRef.current = channel;
 
