@@ -1,12 +1,23 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 // import { invoke } from "@tauri-apps/api/core";
 import { Live2DCanvas } from "./components/Live2DCanvas";
 import { useControlChannel } from "./hooks/useWebSocket";
 
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '$1')   // **bold**
+    .replace(/\*(.*?)\*/g, '$1')        // *italic*
+    .replace(/#{1,6}\s/g, '')           // ## headers
+    .replace(/`([^`]+)`/g, '$1')        // `code`
+    .replace(/---+/g, '')               // ---
+    .replace(/\n{3,}/g, '\n\n')         // excessive newlines
+    .trim();
+}
+
 function App() {
   const [fps, setFps] = useState(0);
   const [chatText, setChatText] = useState("");
-  const [secret, setSecret] = useState("");
+  const [secret, _setSecret] = useState("");
   const [messages, setMessages] = useState<
     { role: "user" | "assistant"; text: string }[]
   >([]);
@@ -61,7 +72,11 @@ function App() {
     (newFps: number) => setFps(newFps),
     [],
   );
-  const lastMsg = messages[messages.length - 1];
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   return (
     <div
@@ -80,38 +95,57 @@ function App() {
         onFpsUpdate={handleFpsUpdate}
       />
 
-      {lastMsg && (
+      {messages.length > 0 && (
         <div
           style={{
             position: "absolute",
-            bottom: "80px",
-            left: "50%",
-            transform: "translateX(-50%)",
-            backgroundColor:
-              lastMsg.role === "user"
-                ? "rgba(59, 130, 246, 0.9)"
-                : "rgba(255, 255, 255, 0.9)",
-            color: lastMsg.role === "user" ? "white" : "#333",
-            borderRadius: "12px",
-            padding: "10px 14px",
-            maxWidth: "300px",
-            fontSize: "13px",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+            bottom: "55px",
+            left: "5px",
+            right: "5px",
+            maxHeight: "200px",
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: "6px",
             zIndex: 10,
+            padding: "4px",
           }}
         >
-          {lastMsg.text}
+          {messages.slice(-5).map((msg, i) => (
+            <div
+              key={i}
+              style={{
+                alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
+                backgroundColor:
+                  msg.role === "user"
+                    ? "rgba(59, 130, 246, 0.9)"
+                    : "rgba(30, 30, 50, 0.85)",
+                color: "white",
+                borderRadius: "10px",
+                padding: "6px 10px",
+                maxWidth: "260px",
+                fontSize: "12px",
+                lineHeight: "1.4",
+                maxHeight: "80px",
+                overflowY: "auto",
+                wordBreak: "break-word",
+              }}
+            >
+              {stripMarkdown(msg.text)}
+            </div>
+          ))}
+          <div ref={messagesEndRef} />
         </div>
       )}
 
       <div
         style={{
           position: "absolute",
-          bottom: "10px",
-          left: "10px",
-          right: "10px",
+          bottom: "6px",
+          left: "6px",
+          right: "6px",
           display: "flex",
-          gap: "8px",
+          gap: "4px",
           zIndex: 20,
         }}
       >
@@ -126,10 +160,10 @@ function App() {
           disabled={state !== "connected"}
           style={{
             flex: 1,
-            padding: "8px 12px",
-            borderRadius: "20px",
+            padding: "5px 10px",
+            borderRadius: "16px",
             border: "1px solid #ddd",
-            fontSize: "13px",
+            fontSize: "12px",
             backgroundColor: "rgba(255,255,255,0.95)",
             outline: "none",
           }}
@@ -138,13 +172,13 @@ function App() {
           onClick={handleSend}
           disabled={state !== "connected" || !chatText.trim()}
           style={{
-            padding: "8px 16px",
-            borderRadius: "20px",
+            padding: "5px 12px",
+            borderRadius: "16px",
             border: "none",
             backgroundColor:
               state === "connected" ? "#3b82f6" : "#ccc",
             color: "white",
-            fontSize: "13px",
+            fontSize: "12px",
             cursor: state === "connected" ? "pointer" : "default",
           }}
         >
