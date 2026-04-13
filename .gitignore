@@ -1,0 +1,13 @@
+node_modules/
+target/
+dist/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+.DS_Store
+Thumbs.db
+*.log
+crash_reports/
+logs/
