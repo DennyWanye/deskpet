@@ -2,375 +2,282 @@ import { useEffect, useRef, useState } from "react";
 
 interface Live2DCanvasProps {
   modelPath: string;
-  width?: number;
-  height?: number;
   onFpsUpdate?: (fps: number) => void;
 }
 
 /**
- * Live2DCanvas: attempts PixiJS v7 + pixi-live2d-display for Live2D rendering.
- * Falls back to Canvas 2D animated placeholder character if WebGL/PixiJS fails.
+ * Live2D character rendered via PixiJS WebGL → <img> tag.
+ * Falls back to Canvas2D animated cat if Live2D fails.
+ *
+ * WebView2 transparent windows don't composite <canvas>/<WebGL>.
+ * We render offscreen and display each frame via <img> (HTML = composites OK).
  */
-export function Live2DCanvas({
-  modelPath,
-  width = 400,
-  height = 500,
-  onFpsUpdate,
-}: Live2DCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rafRef = useRef<number>(0);
-  const [renderMode, setRenderMode] = useState<
-    "loading" | "pixi" | "canvas2d"
-  >("loading");
-  const [error, setError] = useState<string | null>(null);
+export function Live2DCanvas({ modelPath, onFpsUpdate }: Live2DCanvasProps) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
+  // Use ref for mode to avoid re-render killing the render loop
+  const modeRef = useRef<"loading" | "live2d" | "canvas2d">("loading");
+  const [displayMode, setDisplayMode] = useState<string>("loading");
+  const cleanupRef = useRef<(() => void) | null>(null);
 
-  // PixiJS v7 renderer
+  // Track viewport
   useEffect(() => {
-    if (renderMode !== "loading") return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    console.warn("[Pet] viewport:", window.innerWidth, "x", window.innerHeight, "dpr:", window.devicePixelRatio);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Main init — runs once
+  useEffect(() => {
+    if (modeRef.current !== "loading") return;
 
     let destroyed = false;
     let pixiApp: any = null;
+    let rafId = 0;
 
-    async function initPixi() {
+    async function init() {
       try {
-        // PixiJS v7 needs to be on window for pixi-live2d-display
+        console.warn("[Live2D] starting PixiJS...");
         const PIXI = await import("pixi.js");
         (window as any).PIXI = PIXI;
 
+        if (destroyed) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        const renderW = Math.round(size.w * dpr);
+        const renderH = Math.round(size.h * dpr);
+
         pixiApp = new PIXI.Application({
-          view: canvas!,
-          width,
-          height,
+          width: renderW,
+          height: renderH,
           backgroundAlpha: 0,
           antialias: true,
-          resolution: window.devicePixelRatio || 1,
-          autoDensity: true,
+          preserveDrawingBuffer: true,
+          resolution: 1,
         });
 
-        if (destroyed) {
-          pixiApp.destroy(true);
-          return;
-        }
+        if (destroyed) { pixiApp.destroy(true); return; }
 
-        // Try loading the Live2D model
-        let modelLoaded = false;
-        try {
-          const { Live2DModel } = await import("pixi-live2d-display");
-          if (!destroyed) {
-            const model = await Live2DModel.from(modelPath);
-            if (destroyed) return;
+        // Append canvas to DOM (hidden) — WebGL needs DOM presence to render
+        const pixiCanvas = pixiApp.view as HTMLCanvasElement;
+        pixiCanvas.style.cssText = "position:fixed;top:-9999px;left:-9999px;pointer-events:none;";
+        document.body.appendChild(pixiCanvas);
 
-            // Scale model to fit canvas
-            const scaleX = (width * 0.8) / model.width;
-            const scaleY = (height * 0.8) / model.height;
-            const scale = Math.min(scaleX, scaleY);
-            model.scale.set(scale);
-            model.x = (width - model.width * scale) / 2;
-            model.y = (height - model.height * scale) / 2;
+        console.warn("[Live2D] PixiJS created, loading cubism4...");
+        const { Live2DModel } = await import("pixi-live2d-display/cubism4");
+        if (destroyed) return;
 
-            pixiApp.stage.addChild(model);
-            modelLoaded = true;
+        console.warn("[Live2D] loading model:", modelPath);
+        const model = await Promise.race([
+          Live2DModel.from(modelPath),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout 15s")), 15000)),
+        ]) as any;
+
+        if (destroyed) return;
+        console.warn("[Live2D] model loaded:", model.width, "x", model.height);
+
+        model.autoInteract = false;
+
+        // Scale model to fit
+        const scaleX = (renderW * 0.85) / model.width;
+        const scaleY = (renderH * 0.7) / model.height;
+        const scale = Math.min(scaleX, scaleY);
+        model.scale.set(scale);
+        model.x = (renderW - model.width * scale) / 2;
+        model.y = (renderH - model.height * scale) * 0.25;
+
+        pixiApp.stage.addChild(model);
+
+        modeRef.current = "live2d";
+        setDisplayMode("live2d");
+        console.warn("[Live2D] render loop starting");
+
+        // Render loop
+        let frameCount = 0;
+        let lastFpsTime = performance.now();
+
+        function renderLoop() {
+          if (destroyed) return;
+
+          frameCount++;
+          const now = performance.now();
+          if (now - lastFpsTime >= 1000) {
+            onFpsUpdate?.(Math.round((frameCount * 1000) / (now - lastFpsTime)));
+            frameCount = 0;
+            lastFpsTime = now;
           }
-        } catch (modelErr) {
-          console.warn(
-            "Live2D model load failed, using PixiJS placeholder:",
-            modelErr,
-          );
-        }
 
-        // If no Live2D model, draw a placeholder with PIXI.Graphics
-        if (!modelLoaded && !destroyed) {
-          const g = new PIXI.Graphics();
-          // Simple purple circle placeholder
-          g.beginFill(0x6366f1, 0.85);
-          g.drawCircle(width / 2, height / 2 - 30, 65);
-          g.endFill();
-          // Body
-          g.beginFill(0x6366f1, 0.85);
-          g.drawRoundedRect(width / 2 - 55, height / 2 + 20, 110, 80, 20);
-          g.endFill();
-          // Eyes
-          g.beginFill(0xffffff);
-          g.drawCircle(width / 2 - 22, height / 2 - 38, 14);
-          g.drawCircle(width / 2 + 22, height / 2 - 38, 14);
-          g.endFill();
-          g.beginFill(0x1e1b4b);
-          g.drawCircle(width / 2 - 22, height / 2 - 38, 7);
-          g.drawCircle(width / 2 + 22, height / 2 - 38, 7);
-          g.endFill();
-          pixiApp.stage.addChild(g);
-        }
+          // Extract frame from PixiJS canvas → img
+          if (imgRef.current && pixiApp?.view) {
+            try {
+              imgRef.current.src = (pixiApp.view as HTMLCanvasElement).toDataURL("image/png");
+            } catch { /* ignore */ }
+          }
 
-        // FPS counter via ticker
-        if (onFpsUpdate && !destroyed) {
-          pixiApp.ticker.add(() => {
-            onFpsUpdate(Math.round(pixiApp.ticker.FPS));
-          });
+          rafId = requestAnimationFrame(renderLoop);
         }
+        rafId = requestAnimationFrame(renderLoop);
 
-        if (!destroyed) {
-          setRenderMode("pixi");
-        }
       } catch (err) {
-        console.error("PixiJS v7 failed, falling back to Canvas2D:", err);
+        console.warn("[Live2D] failed:", err);
+        try {
+          const pixiCanvas = pixiApp?.view as HTMLCanvasElement;
+          if (pixiCanvas?.parentNode) pixiCanvas.parentNode.removeChild(pixiCanvas);
+          pixiApp?.destroy(true);
+        } catch { /* ignore */ }
+        pixiApp = null;
+
         if (!destroyed) {
-          setRenderMode("canvas2d");
+          modeRef.current = "canvas2d";
+          setDisplayMode("canvas2d");
+          startCanvas2D();
         }
       }
     }
 
-    initPixi();
+    // Canvas2D fallback
+    function startCanvas2D() {
+      console.warn("[Canvas2D] starting fallback");
+      const width = size.w;
+      const height = size.h;
+      const canvas = document.createElement("canvas");
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
 
-    return () => {
+      let frameCount = 0;
+      let lastFpsTime = performance.now();
+      let eyeBlinkTimer = 0;
+      let isBlinking = false;
+      const cs = Math.min(width / 300, height / 450, 1);
+
+      function draw(ts: number) {
+        if (destroyed) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+
+        frameCount++;
+        const now = performance.now();
+        if (now - lastFpsTime >= 1000) {
+          onFpsUpdate?.(Math.round((frameCount * 1000) / (now - lastFpsTime)));
+          frameCount = 0;
+          lastFpsTime = now;
+        }
+
+        ctx.save();
+        ctx.translate(width / 2, height * 0.38);
+        ctx.scale(cs, cs);
+        const by = Math.sin(ts / 1500) * 3, bo = Math.sin(ts / 800) * 2;
+
+        // Shadow
+        ctx.fillStyle = "rgba(0,0,0,0.15)";
+        ctx.beginPath(); ctx.ellipse(0, 140 + by, 55, 10, 0, 0, Math.PI * 2); ctx.fill();
+        // Tail
+        const tw = Math.sin(ts / 300) * 15;
+        ctx.strokeStyle = "rgba(99,102,241,0.8)"; ctx.lineWidth = 8; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(45, 85 + by); ctx.quadraticCurveTo(75 + tw, 55 + by, 70 + tw * 1.5, 25 + by); ctx.stroke();
+        // Body
+        ctx.fillStyle = "rgba(99,102,241,0.9)"; roundRect(ctx, -55, 50 + by, 110, 80, 22);
+        ctx.fillStyle = "rgba(129,140,248,0.3)"; roundRect(ctx, -40, 55 + by, 80, 25, 12);
+        // Paws
+        ctx.fillStyle = "rgba(129,140,248,0.9)";
+        ctx.beginPath(); ctx.ellipse(-35, 130 + by, 18, 10, -0.1, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(35, 130 + by, 18, 10, 0.1, 0, Math.PI * 2); ctx.fill();
+        // Head
+        ctx.fillStyle = "rgba(99,102,241,0.95)";
+        ctx.beginPath(); ctx.arc(0, bo, 65, 0, Math.PI * 2); ctx.fill();
+        // Ears
+        ctx.fillStyle = "rgba(99,102,241,0.95)";
+        ctx.beginPath(); ctx.moveTo(-55, -20 + bo); ctx.lineTo(-70, -70 + bo); ctx.lineTo(-25, -45 + bo); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(55, -20 + bo); ctx.lineTo(70, -70 + bo); ctx.lineTo(25, -45 + bo); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = "rgba(196,181,253,0.7)";
+        ctx.beginPath(); ctx.moveTo(-52, -25 + bo); ctx.lineTo(-63, -60 + bo); ctx.lineTo(-32, -42 + bo); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(52, -25 + bo); ctx.lineTo(63, -60 + bo); ctx.lineTo(32, -42 + bo); ctx.closePath(); ctx.fill();
+        // Eyes
+        eyeBlinkTimer += 16;
+        if (eyeBlinkTimer > 3000 && !isBlinking) { isBlinking = true; eyeBlinkTimer = 0; }
+        if (isBlinking && eyeBlinkTimer > 150) { isBlinking = false; eyeBlinkTimer = 0; }
+        const ey = -8 + bo, eo = isBlinking ? 0.1 : 1;
+        ctx.fillStyle = "#fff";
+        ctx.beginPath(); ctx.ellipse(-24, ey, 16, 18 * eo, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(24, ey, 16, 18 * eo, 0, 0, Math.PI * 2); ctx.fill();
+        if (!isBlinking) {
+          const px = Math.sin(ts / 2000) * 4, py = Math.cos(ts / 3000) * 2;
+          ctx.fillStyle = "#1e1b4b";
+          ctx.beginPath(); ctx.arc(-24 + px, ey + py, 8, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(24 + px, ey + py, 8, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "rgba(255,255,255,0.9)";
+          ctx.beginPath(); ctx.arc(-20 + px, ey - 4 + py, 4, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(28 + px, ey - 4 + py, 3, 0, Math.PI * 2); ctx.fill();
+        }
+        // Blush
+        ctx.fillStyle = "rgba(251,191,207,0.45)";
+        ctx.beginPath(); ctx.ellipse(-42, 12 + bo, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(42, 12 + bo, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
+        // Nose + Mouth
+        ctx.fillStyle = "rgba(196,181,253,0.8)";
+        ctx.beginPath(); ctx.moveTo(0, 8 + bo); ctx.lineTo(-5, 14 + bo); ctx.lineTo(5, 14 + bo); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = "#4338ca"; ctx.lineWidth = 2; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.arc(-8, 16 + bo, 8, -0.3, Math.PI * 0.7); ctx.stroke();
+        ctx.beginPath(); ctx.arc(8, 16 + bo, 8, Math.PI * 0.3, Math.PI + 0.3); ctx.stroke();
+        // Whiskers
+        ctx.strokeStyle = "rgba(200,200,220,0.5)"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(-30, 10 + bo); ctx.lineTo(-65, 5 + bo); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(-30, 16 + bo); ctx.lineTo(-65, 18 + bo); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(30, 10 + bo); ctx.lineTo(65, 5 + bo); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(30, 16 + bo); ctx.lineTo(65, 18 + bo); ctx.stroke();
+        ctx.restore();
+
+        if (imgRef.current) imgRef.current.src = canvas.toDataURL("image/png");
+        rafId = requestAnimationFrame(draw);
+      }
+      rafId = requestAnimationFrame(draw);
+    }
+
+    init();
+
+    cleanupRef.current = () => {
       destroyed = true;
+      cancelAnimationFrame(rafId);
       try {
+        const pixiCanvas = pixiApp?.view as HTMLCanvasElement;
+        if (pixiCanvas?.parentNode) pixiCanvas.parentNode.removeChild(pixiCanvas);
         pixiApp?.destroy(true);
-      } catch {
-        // ignore cleanup errors
-      }
+      } catch { /* ignore */ }
     };
-  }, [renderMode, modelPath, width, height, onFpsUpdate]);
-
-  // Canvas 2D fallback renderer (the purple cat character)
-  useEffect(() => {
-    if (renderMode !== "canvas2d") return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    let destroyed = false;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      setError("Canvas 2D context not available");
-      return;
-    }
-
-    // Scale for HiDPI
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
-    ctx.scale(dpr, dpr);
-
-    // Animation state
-    let frameCount = 0;
-    let lastFpsTime = performance.now();
-    let eyeBlinkTimer = 0;
-    let isBlinking = false;
-
-    function draw(timestamp: number) {
-      if (destroyed) return;
-
-      ctx!.clearRect(0, 0, width, height);
-
-      frameCount++;
-      const elapsed = timestamp - lastFpsTime;
-      if (elapsed >= 1000) {
-        onFpsUpdate?.(Math.round((frameCount * 1000) / elapsed));
-        frameCount = 0;
-        lastFpsTime = timestamp;
-      }
-
-      // Idle animation: gentle breathing + bounce
-      const breathOffset = Math.sin(timestamp / 1500) * 3;
-      const bounceOffset = Math.sin(timestamp / 800) * 2;
-
-      const cx = width / 2;
-      const cy = height / 2 - 30 + breathOffset;
-
-      // --- Draw character ---
-
-      // Body (rounded rectangle)
-      ctx!.fillStyle = "rgba(99, 102, 241, 0.85)";
-      roundRect(ctx!, cx - 55, cy + 50, 110, 80, 20);
-
-      // Head (circle)
-      ctx!.fillStyle = "rgba(99, 102, 241, 0.9)";
-      ctx!.beginPath();
-      ctx!.arc(cx, cy + bounceOffset, 65, 0, Math.PI * 2);
-      ctx!.fill();
-
-      // Ears
-      ctx!.fillStyle = "rgba(129, 140, 248, 0.9)";
-      ctx!.beginPath();
-      ctx!.ellipse(
-        cx - 50,
-        cy - 50 + bounceOffset,
-        18,
-        25,
-        -0.3,
-        0,
-        Math.PI * 2,
-      );
-      ctx!.fill();
-      ctx!.beginPath();
-      ctx!.ellipse(
-        cx + 50,
-        cy - 50 + bounceOffset,
-        18,
-        25,
-        0.3,
-        0,
-        Math.PI * 2,
-      );
-      ctx!.fill();
-
-      // Inner ears
-      ctx!.fillStyle = "rgba(196, 181, 253, 0.7)";
-      ctx!.beginPath();
-      ctx!.ellipse(
-        cx - 50,
-        cy - 48 + bounceOffset,
-        10,
-        15,
-        -0.3,
-        0,
-        Math.PI * 2,
-      );
-      ctx!.fill();
-      ctx!.beginPath();
-      ctx!.ellipse(
-        cx + 50,
-        cy - 48 + bounceOffset,
-        10,
-        15,
-        0.3,
-        0,
-        Math.PI * 2,
-      );
-      ctx!.fill();
-
-      // Eyes
-      eyeBlinkTimer += 16;
-      if (eyeBlinkTimer > 3000 && !isBlinking) {
-        isBlinking = true;
-        eyeBlinkTimer = 0;
-      }
-      if (isBlinking && eyeBlinkTimer > 150) {
-        isBlinking = false;
-        eyeBlinkTimer = 0;
-      }
-
-      const eyeY = cy - 8 + bounceOffset;
-      const eyeOpenness = isBlinking ? 0.1 : 1;
-
-      // Eye whites
-      ctx!.fillStyle = "#ffffff";
-      ctx!.beginPath();
-      ctx!.ellipse(cx - 22, eyeY, 14, 16 * eyeOpenness, 0, 0, Math.PI * 2);
-      ctx!.fill();
-      ctx!.beginPath();
-      ctx!.ellipse(cx + 22, eyeY, 14, 16 * eyeOpenness, 0, 0, Math.PI * 2);
-      ctx!.fill();
-
-      if (!isBlinking) {
-        // Pupils (follow a gentle path)
-        const pupilX = Math.sin(timestamp / 2000) * 3;
-        const pupilY = Math.cos(timestamp / 3000) * 2;
-
-        ctx!.fillStyle = "#1e1b4b";
-        ctx!.beginPath();
-        ctx!.arc(cx - 22 + pupilX, eyeY + pupilY, 7, 0, Math.PI * 2);
-        ctx!.fill();
-        ctx!.beginPath();
-        ctx!.arc(cx + 22 + pupilX, eyeY + pupilY, 7, 0, Math.PI * 2);
-        ctx!.fill();
-
-        // Eye highlights
-        ctx!.fillStyle = "#ffffff";
-        ctx!.beginPath();
-        ctx!.arc(cx - 19 + pupilX, eyeY - 3 + pupilY, 3, 0, Math.PI * 2);
-        ctx!.fill();
-        ctx!.beginPath();
-        ctx!.arc(cx + 25 + pupilX, eyeY - 3 + pupilY, 3, 0, Math.PI * 2);
-        ctx!.fill();
-      }
-
-      // Blush
-      ctx!.fillStyle = "rgba(251, 191, 207, 0.4)";
-      ctx!.beginPath();
-      ctx!.ellipse(
-        cx - 38,
-        cy + 10 + bounceOffset,
-        12,
-        8,
-        0,
-        0,
-        Math.PI * 2,
-      );
-      ctx!.fill();
-      ctx!.beginPath();
-      ctx!.ellipse(
-        cx + 38,
-        cy + 10 + bounceOffset,
-        12,
-        8,
-        0,
-        0,
-        Math.PI * 2,
-      );
-      ctx!.fill();
-
-      // Mouth (small smile)
-      ctx!.strokeStyle = "#4338ca";
-      ctx!.lineWidth = 2;
-      ctx!.beginPath();
-      ctx!.arc(cx, cy + 18 + bounceOffset, 10, 0.15, Math.PI - 0.15);
-      ctx!.stroke();
-
-      // Tail (wagging)
-      const tailWag = Math.sin(timestamp / 300) * 15;
-      ctx!.strokeStyle = "rgba(99, 102, 241, 0.8)";
-      ctx!.lineWidth = 6;
-      ctx!.lineCap = "round";
-      ctx!.beginPath();
-      ctx!.moveTo(cx + 45, cy + 85);
-      ctx!.quadraticCurveTo(
-        cx + 70 + tailWag,
-        cy + 60,
-        cx + 65 + tailWag * 1.5,
-        cy + 35,
-      );
-      ctx!.stroke();
-
-      rafRef.current = requestAnimationFrame(draw);
-    }
-
-    rafRef.current = requestAnimationFrame(draw);
 
     return () => {
-      destroyed = true;
-      cancelAnimationFrame(rafRef.current);
+      cleanupRef.current?.();
     };
-  }, [renderMode, width, height, onFpsUpdate]);
-
-  if (error) {
-    return (
-      <div style={{ color: "red", padding: 20 }}>Canvas Error: {error}</div>
-    );
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run once only
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        width: `${width}px`,
-        height: `${height}px`,
-        position: "absolute",
-        top: 0,
-        left: 0,
-      }}
-    />
+    <>
+      <div ref={containerRef} style={{ display: "none" }} />
+      <img
+        ref={imgRef}
+        alt=""
+        style={{
+          width: `${size.w}px`,
+          height: `${size.h}px`,
+          position: "absolute",
+          top: 0,
+          left: 0,
+          pointerEvents: "none",
+        }}
+      />
+    </>
   );
 }
 
 function roundRect(
   ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
+  x: number, y: number, w: number, h: number, r: number,
 ) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);

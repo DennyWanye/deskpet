@@ -90,8 +90,6 @@ function App() {
     >
       <Live2DCanvas
         modelPath="/assets/live2d/hiyori/Hiyori.model3.json"
-        width={400}
-        height={500}
         onFpsUpdate={handleFpsUpdate}
       />
 
