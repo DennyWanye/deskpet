@@ -17,6 +17,15 @@ SHARED_SECRET = secrets.token_hex(16)
 
 service_context = ServiceContext()
 
+from providers.ollama_llm import OllamaLLM
+
+ollama_llm = OllamaLLM(
+    model=config.llm.model,
+    base_url=config.llm.base_url,
+    temperature=config.llm.temperature,
+)
+service_context.register("llm_engine", ollama_llm)
+
 app = FastAPI(title="Desktop Pet Backend", version="0.1.0")
 
 
@@ -54,11 +63,15 @@ async def control_channel(ws: WebSocket):
 
                 llm = service_context.llm_engine
                 if llm:
-                    response_text = ""
-                    async for token in llm.chat_stream(
-                        [{"role": "user", "content": text}]
-                    ):
-                        response_text += token
+                    try:
+                        response_text = ""
+                        async for token in llm.chat_stream(
+                            [{"role": "user", "content": text}]
+                        ):
+                            response_text += token
+                    except Exception as exc:
+                        logger.warning("llm_stream_failed", error=str(exc))
+                        response_text = f"[echo] {text}"
 
                 await ws.send_json({
                     "type": "chat_response",
