@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls ~/.claude/skill-repos/ClaudeSkills/skills/*/SKILL.md)",
+      "Bash(cp ~/.claude/skill-repos/superpowers/agents/*.md ~/.claude/agents/)",
+      "Bash(cp ~/.claude/skill-repos/superpowers/CLAUDE.md ~/.claude/skill-repos/superpowers-CLAUDE-rules.md)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(python \"C:\\\\Users\\\\24378\\\\AppData\\\\Roaming\\\\Claude\\\\local-agent-mode-sessions\\\\skills-plugin\\\\55d2127c-2cd7-47b9-b2f4-b76791313af9\\\\ffd8481a-bc19-4f01-91cf-76550835328b\\\\skills\\\\docx\\\\scripts\\\\office\\\\unpack.py\" \"G:\\\\projects\\\\deskpet\\\\plans\\\\gemma4_desktop_pet_phase1_plan_v4.docx\" C:/Users/24378/AppData/Local/Temp/plan_v4_unpacked/)",
+      "Bash(python -c ':*)",
+      "Bash(NODE_PATH=\"D:/nodejs/node_modules\" node create_v5.js)"
+    ]
+  }
+}

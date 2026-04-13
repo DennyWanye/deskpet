@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+// import { invoke } from "@tauri-apps/api/core";
 import { Live2DCanvas } from "./components/Live2DCanvas";
 import { useControlChannel } from "./hooks/useWebSocket";
 
@@ -11,24 +11,26 @@ function App() {
     { role: "user" | "assistant"; text: string }[]
   >([]);
 
-  useEffect(() => {
-    async function startBackend() {
-      try {
-        const s = await invoke<string>("get_shared_secret");
-        setSecret(s);
-      } catch {
-        try {
-          const backendDir = "G:/projects/deskpet/backend";
-          const pythonPath = "G:/projects/deskpet/backend/.venv/Scripts/python.exe";
-          const s = await invoke<string>("start_backend", { pythonPath, backendDir });
-          setSecret(s);
-        } catch (err) {
-          console.error("Failed to start backend:", err);
-        }
-      }
-    }
-    startBackend();
-  }, []);
+  // DEV: backend started manually, connect directly
+  // PROD: uncomment to auto-start backend via process manager
+  // useEffect(() => {
+  //   async function startBackend() {
+  //     try {
+  //       const s = await invoke<string>("get_shared_secret");
+  //       setSecret(s);
+  //     } catch {
+  //       try {
+  //         const backendDir = "G:/projects/deskpet/backend";
+  //         const pythonPath = "G:/projects/deskpet/backend/.venv/Scripts/python.exe";
+  //         const s = await invoke<string>("start_backend", { pythonPath, backendDir });
+  //         setSecret(s);
+  //       } catch (err) {
+  //         console.error("Failed to start backend:", err);
+  //       }
+  //     }
+  //   }
+  //   startBackend();
+  // }, []);
 
   const { state, lastMessage, sendChat } = useControlChannel(8100, secret);
 

@@ -29,7 +29,11 @@ service_context.register("llm_engine", ollama_llm)
 app = FastAPI(title="Desktop Pet Backend", version="0.1.0")
 
 
+DEV_MODE = True  # Set False for production
+
 def _validate_secret(ws: WebSocket) -> bool:
+    if DEV_MODE:
+        return True
     secret = ws.headers.get("x-shared-secret", "")
     if not secret:
         secret = ws.query_params.get("secret", "")
