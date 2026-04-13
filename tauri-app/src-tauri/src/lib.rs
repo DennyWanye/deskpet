@@ -17,6 +17,20 @@ pub fn run() {
             process_manager::is_backend_running,
             process_manager::get_shared_secret,
         ])
+        .setup(|app| {
+            let window = app.get_webview_window("main").expect("main window not found");
+
+            // On Windows, WebView2 does not honour the `transparent: true` config alone.
+            // Applying a clear-acrylic effect makes the webview
+            // background truly transparent so the desktop shows through.
+            #[cfg(target_os = "windows")]
+            {
+                use window_vibrancy::apply_acrylic;
+                let _ = apply_acrylic(&window, Some((0, 0, 0, 0)));
+            }
+
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 if let Some(state) = window.try_state::<BackendProcess>() {
