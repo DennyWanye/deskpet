@@ -8,11 +8,13 @@ import numpy as np
 import structlog
 from fastapi import WebSocket
 
+from pipeline.tag_parser import StreamingTagParser, TagEvent
+
 if TYPE_CHECKING:
+    from agent.providers.base import AgentProvider
     from providers.silero_vad import SileroVAD
     from providers.faster_whisper_asr import FasterWhisperASR
     from providers.edge_tts_provider import EdgeTTSProvider
-    from providers.ollama_llm import OllamaLLM
 
 logger = structlog.get_logger()
 
@@ -22,8 +24,9 @@ class VoicePipeline:
     Manages the voice processing flow for a single WebSocket session.
 
     Audio in → VAD detects speech segments → ASR transcribes →
-    LLM generates reply → TTS synthesizes → audio streamed back +
-    lip-sync params sent to control channel.
+    Agent generates reply (streaming, with emotion/action tag extraction) →
+    TTS synthesizes → audio streamed back + lip-sync / emotion /
+    action params sent to control channel.
 
     Lifecycle: one instance per audio WebSocket connection.
     """
@@ -32,15 +35,17 @@ class VoicePipeline:
         self,
         vad: SileroVAD,
         asr: FasterWhisperASR,
-        llm: OllamaLLM,
+        agent: "AgentProvider",
         tts: EdgeTTSProvider,
         control_ws: WebSocket | None = None,
+        session_id: str = "default",
     ):
         self.vad = vad
         self.asr = asr
-        self.llm = llm
+        self.agent = agent
         self.tts = tts
         self.control_ws = control_ws
+        self.session_id = session_id
         self._interrupted = False
         self._processing = False
         self._current_task: asyncio.Task | None = None
@@ -51,6 +56,19 @@ class VoicePipeline:
         task = self._current_task
         if task and not task.done():
             task.cancel()
+
+    async def _emit_tag_event(self, evt: TagEvent) -> None:
+        """Forward emotion/action tag to control channel for Live2D driving."""
+        if not self.control_ws:
+            return
+        msg_type = "emotion_change" if evt.kind == "emotion" else "action_trigger"
+        try:
+            await self.control_ws.send_json({
+                "type": msg_type,
+                "payload": {"value": evt.value},
+            })
+        except Exception:
+            pass  # control channel may have disconnected
 
     async def process_audio_chunk(self, pcm_bytes: bytes, audio_ws: WebSocket) -> None:
         """
@@ -136,14 +154,28 @@ class VoicePipeline:
                 "payload": {"text": text, "role": "user"},
             })
 
-            # Step 2: LLM (streaming)
+            # Step 2: Agent (streaming) — parse emotion/action tags inline,
+            # forward tag events to control channel, keep clean text for TTS.
             response_text = ""
             messages = [{"role": "user", "content": text}]
-            async for token in self.llm.chat_stream(messages):
+            parser = StreamingTagParser()
+            async for token in self.agent.chat_stream(
+                messages, session_id=self.session_id
+            ):
                 if self._interrupted:
-                    logger.info("llm_interrupted")
+                    logger.info("agent_interrupted")
                     break
-                response_text += token
+                for item in parser.feed(token):
+                    if isinstance(item, TagEvent):
+                        await self._emit_tag_event(item)
+                    else:
+                        response_text += item
+            # Flush trailing buffer (e.g. dangling '[' at EOS)
+            for item in parser.flush():
+                if isinstance(item, TagEvent):
+                    await self._emit_tag_event(item)
+                else:
+                    response_text += item
 
             if self._interrupted or not response_text.strip():
                 return

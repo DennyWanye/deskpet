@@ -190,12 +190,15 @@ async def audio_channel(ws: WebSocket):
     )
     await session_vad.load()
 
+    # V5 §2.3 + S1: voice pipeline routes through agent_engine (not llm directly)
+    # so that S2 memory / S3 tools flow uniformly through voice and text paths.
     pipeline = VoicePipeline(
         vad=session_vad,
         asr=service_context.asr_engine,
-        llm=service_context.llm_engine,
+        agent=service_context.agent_engine,
         tts=service_context.tts_engine,
         control_ws=control_ws,
+        session_id=session_id,
     )
 
     logger.info("audio channel connected", session_id=session_id)
