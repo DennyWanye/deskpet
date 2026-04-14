@@ -44,7 +44,9 @@ from memory.conversation import SqliteConversationMemory
 from memory.sensitive_filter import RedactingMemoryStore
 from tools.registry import ToolRegistry
 from tools.get_time import get_time_tool
-from observability.vram import recommend_asr_device
+from tools.clipboard import read_clipboard_tool
+from tools.reminder import list_reminders_tool
+from observability.vram import classify_tier, recommend_asr_device
 
 ollama_llm = OllamaLLM(
     model=config.llm.model,
@@ -65,7 +67,21 @@ service_context.register("memory_store", memory_store)
 # 工具调用的结果是 inline 注入 user-facing stream,不走 memory 持久化。
 tool_registry = ToolRegistry()
 tool_registry.register(get_time_tool)
+tool_registry.register(read_clipboard_tool)
+tool_registry.register(list_reminders_tool)
 service_context.register("tool_router", tool_registry)
+
+# S8 (R9): log the current hardware tier once so the dispatch decision is
+# visible in the startup banner. The tier itself doesn't force provider
+# swaps yet — that's Phase 2 work when we ship multiple LLM/TTS binaries.
+_tier = classify_tier()
+logger.info(
+    "hardware_tier",
+    tier=_tier.tier,
+    recommended_llm=_tier.llm_model,
+    recommended_tts=_tier.tts_model,
+    recommended_asr=_tier.asr_model,
+)
 
 base_agent = SimpleLLMAgent(ollama_llm, memory=memory_store)
 agent = ToolUsingAgent(base=base_agent, registry=tool_registry)
