@@ -78,29 +78,27 @@ def step_text_chat(page: Page) -> bool:
     page.locator('[data-testid="chat-input"]').fill("你好！请用一句话介绍自己。")
     shot(page, "chat_01_typed")
 
-    # Count bubbles before send
-    before = page.locator('[data-testid="chat-bubble-assistant"]').count()
+    # Record dialog-bar text before send; VN 底栏单条渲染，判断新回复 = 文本变了
+    bar = page.locator('[data-testid="dialog-bar-assistant"]')
+    before_text = bar.inner_text().strip() if bar.count() else ""
     page.locator('[data-testid="send-button"]').click()
-    print(f"[chat] sent; waiting for assistant bubble (had {before})...")
+    print(f"[chat] sent; waiting for dialog-bar to change (was: {before_text[:30]!r})")
 
-    # Poll up to 60s for a NEW assistant bubble with non-empty text.
-    # Large memory context (50+ turns) can slow the first token significantly.
+    # Poll up to 60s for a changed dialog-bar text (non-empty and different)
     deadline = time.time() + 60
     got_text = None
     while time.time() < deadline:
-        bubbles = page.locator('[data-testid="chat-bubble-assistant"]')
-        count = bubbles.count()
-        if count > before:
-            got_text = bubbles.nth(count - 1).inner_text().strip()
-            if got_text:
+        if bar.count():
+            cur = bar.inner_text().strip()
+            if cur and cur != before_text:
+                got_text = cur
                 break
         page.wait_for_timeout(500)
 
     shot(page, "chat_02_after_reply")
     if got_text:
-        # Truncate for display
         snippet = got_text[:80].replace("\n", " ")
-        print(f"[chat] PASS assistant reply: {snippet}...")
+        print(f"[chat] PASS assistant reply: {snippet}")
         return True
     print("[chat] FAIL no reply within 60s")
     return False
@@ -306,16 +304,20 @@ def step_esc_interrupt(page: Page) -> bool:
     page.locator('[data-testid="chat-input"]').fill(
         "请用中文写一篇800字的散文，主题是春天，细节尽可能丰富。"
     )
+    # 记录当前底栏文本作为 before 基线（VN 架构下新回复表现为底栏文字变化）
+    bar = page.locator('[data-testid="dialog-bar-assistant"]')
+    before_text = bar.inner_text().strip() if bar.count() else ""
     page.locator('[data-testid="send-button"]').click()
 
-    # Wait for first assistant token to appear, then press Esc fast
-    before = page.locator('[data-testid="chat-bubble-assistant"]').count()
+    # 等底栏文本变化，意味着 streaming 已经开始
     deadline = time.time() + 10
     streaming_started = False
     while time.time() < deadline:
-        if page.locator('[data-testid="chat-bubble-assistant"]').count() > before:
-            streaming_started = True
-            break
+        if bar.count():
+            cur = bar.inner_text().strip()
+            if cur and cur != before_text:
+                streaming_started = True
+                break
         page.wait_for_timeout(200)
 
     if not streaming_started:
@@ -329,18 +331,16 @@ def step_esc_interrupt(page: Page) -> bool:
     page.wait_for_timeout(1500)
     shot(page, "esc_02_after")
 
-    # Record len-of-last-assistant before vs after 3s — should not grow
-    def last_assistant_len() -> int:
-        b = page.locator('[data-testid="chat-bubble-assistant"]')
-        n = b.count()
-        return len(b.nth(n - 1).inner_text()) if n > 0 else 0
+    # 记录底栏文字长度在按 Esc 后 vs 3s 后——不应再增长
+    def bar_text_len() -> int:
+        return len(bar.inner_text()) if bar.count() else 0
 
-    t1 = last_assistant_len()
+    t1 = bar_text_len()
     page.wait_for_timeout(3000)
-    t2 = last_assistant_len()
+    t2 = bar_text_len()
     shot(page, "esc_03_stable")
     growth = t2 - t1
-    print(f"[esc] reply len after-esc={t1} after-3s={t2} growth={growth}")
+    print(f"[esc] dialog-bar len after-esc={t1} after-3s={t2} growth={growth}")
     ok = growth == 0
     print(f"[esc] {'PASS' if ok else 'FAIL'} stream halted by Esc")
     return ok
