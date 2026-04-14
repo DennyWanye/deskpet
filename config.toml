@@ -19,8 +19,14 @@ device = "cuda"
 compute_type = "float16"
 
 [tts]
-provider = "cosyvoice2"
-model_dir = "./assets/cosyvoice2"
+provider = "edge-tts"
+voice = "zh-CN-XiaoyiNeural"
+model_dir = "./assets/cosyvoice2"  # kept for future CosyVoice 2 upgrade
+
+[vad]
+threshold = 0.5
+min_speech_ms = 250
+min_silence_ms = 500
 
 [memory]
 db_path = "./data/memory.db"

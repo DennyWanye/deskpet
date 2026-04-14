@@ -5,7 +5,7 @@ from typing import Any
 
 _VALID_SERVICES = frozenset({
     "llm_engine", "asr_engine", "tts_engine",
-    "agent_engine", "memory_store", "tool_router",
+    "vad_engine", "agent_engine", "memory_store", "tool_router",
 })
 
 @dataclass
@@ -13,6 +13,7 @@ class ServiceContext:
     llm_engine: Any | None = None
     asr_engine: Any | None = None
     tts_engine: Any | None = None
+    vad_engine: Any | None = None
     agent_engine: Any | None = None
     memory_store: Any | None = None
     tool_router: Any | None = None

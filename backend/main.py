@@ -1,6 +1,16 @@
 from __future__ import annotations
 
+import sys
+# Force UTF-8 stdout on Windows (default GBK chokes on emoji in LLM output)
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except AttributeError:
+    pass
+
 import secrets
+from contextlib import asynccontextmanager
+
 import structlog
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,7 +27,11 @@ SHARED_SECRET = secrets.token_hex(16)
 
 service_context = ServiceContext()
 
+# --- Register providers ---
 from providers.ollama_llm import OllamaLLM
+from providers.silero_vad import SileroVAD
+from providers.faster_whisper_asr import FasterWhisperASR
+from providers.edge_tts_provider import EdgeTTSProvider
 
 ollama_llm = OllamaLLM(
     model=config.llm.model,
@@ -26,7 +40,46 @@ ollama_llm = OllamaLLM(
 )
 service_context.register("llm_engine", ollama_llm)
 
-app = FastAPI(title="Desktop Pet Backend", version="0.1.0")
+vad = SileroVAD(
+    threshold=config.vad.threshold,
+    min_speech_ms=config.vad.min_speech_ms,
+    min_silence_ms=config.vad.min_silence_ms,
+)
+service_context.register("vad_engine", vad)
+
+asr = FasterWhisperASR(
+    model=config.asr.model,
+    device=config.asr.device,
+    compute_type=config.asr.compute_type,
+    local_dir=str(Path(__file__).parent / "assets" / "faster-whisper-large-v3-turbo"),
+)
+service_context.register("asr_engine", asr)
+
+tts = EdgeTTSProvider(voice=config.tts.voice)
+service_context.register("tts_engine", tts)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Preload models on startup (best-effort — failures logged but don't block)."""
+    logger.info("preloading models...")
+    for name in ("vad_engine", "asr_engine", "tts_engine"):
+        engine = service_context.get(name)
+        if engine and hasattr(engine, "load"):
+            try:
+                await engine.load()
+                logger.info("loaded", engine=name)
+            except Exception as exc:
+                logger.warning("failed_to_load", engine=name, error=str(exc))
+    logger.info("startup complete")
+    yield
+    logger.info("shutting down")
+
+
+app = FastAPI(title="Desktop Pet Backend", version="0.2.0", lifespan=lifespan)
+
+# Track control channel connections for lip-sync forwarding
+_control_connections: dict[str, WebSocket] = {}
 
 
 DEV_MODE = True  # Set False for production
@@ -55,7 +108,9 @@ async def control_channel(ws: WebSocket):
             pass
         return
 
-    logger.info("control channel connected")
+    session_id = ws.query_params.get("session_id", "default")
+    _control_connections[session_id] = ws
+    logger.info("control channel connected", session_id=session_id)
     try:
         while True:
             raw = await ws.receive_json()
@@ -96,7 +151,8 @@ async def control_channel(ws: WebSocket):
                 })
 
     except WebSocketDisconnect:
-        logger.info("control channel disconnected")
+        _control_connections.pop(session_id, None)
+        logger.info("control channel disconnected", session_id=session_id)
 
 
 @app.websocket("/ws/audio")
@@ -109,17 +165,34 @@ async def audio_channel(ws: WebSocket):
             pass
         return
 
-    logger.info("audio channel connected")
+    session_id = ws.query_params.get("session_id", "default")
+    control_ws = _control_connections.get(session_id)
+
+    from pipeline.voice_pipeline import VoicePipeline
+
+    # Each audio connection gets its own VAD instance (stateful)
+    session_vad = SileroVAD(
+        threshold=config.vad.threshold,
+        min_speech_ms=config.vad.min_speech_ms,
+        min_silence_ms=config.vad.min_silence_ms,
+    )
+    await session_vad.load()
+
+    pipeline = VoicePipeline(
+        vad=session_vad,
+        asr=service_context.asr_engine,
+        llm=service_context.llm_engine,
+        tts=service_context.tts_engine,
+        control_ws=control_ws,
+    )
+
+    logger.info("audio channel connected", session_id=session_id)
     try:
         while True:
             data = await ws.receive_bytes()
-            logger.info("audio received", size=len(data))
-            await ws.send_json({
-                "type": "audio_ack",
-                "payload": {"received_bytes": len(data)},
-            })
+            await pipeline.process_audio_chunk(data, ws)
     except WebSocketDisconnect:
-        logger.info("audio channel disconnected")
+        logger.info("audio channel disconnected", session_id=session_id)
 
 
 def main():

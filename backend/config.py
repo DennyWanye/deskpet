@@ -26,8 +26,15 @@ class ASRConfig:
 
 @dataclass
 class TTSConfig:
-    provider: str = "cosyvoice2"
+    provider: str = "edge-tts"
+    voice: str = "zh-CN-XiaoyiNeural"
     model_dir: str = "./assets/cosyvoice2"
+
+@dataclass
+class VADConfig:
+    threshold: float = 0.5
+    min_speech_ms: int = 250
+    min_silence_ms: int = 500
 
 @dataclass
 class MemoryConfig:
@@ -40,6 +47,7 @@ class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
+    vad: VADConfig = field(default_factory=VADConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 def load_config(path: str | Path = "config.toml") -> AppConfig:
@@ -57,6 +65,8 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         config.asr = ASRConfig(**raw["asr"])
     if "tts" in raw:
         config.tts = TTSConfig(**raw["tts"])
+    if "vad" in raw:
+        config.vad = VADConfig(**raw["vad"])
     if "memory" in raw:
         config.memory = MemoryConfig(**raw["memory"])
     return config
