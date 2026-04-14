@@ -8,6 +8,7 @@ try:
 except AttributeError:
     pass
 
+import os
 import secrets
 from contextlib import asynccontextmanager
 
@@ -88,7 +89,9 @@ app = FastAPI(title="Desktop Pet Backend", version="0.2.0", lifespan=lifespan)
 _control_connections: dict[str, WebSocket] = {}
 
 
-DEV_MODE = True  # Set False for production
+# Opt-in dev mode: set DESKPET_DEV_MODE=1 to bypass shared-secret auth.
+# Defaults to strict (secret required) so prod deployments are safe.
+DEV_MODE = os.getenv("DESKPET_DEV_MODE", "0") == "1"
 
 def _validate_secret(ws: WebSocket) -> bool:
     if DEV_MODE:

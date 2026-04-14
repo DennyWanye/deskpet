@@ -30,11 +30,16 @@ deskpet/
 ```bash
 cd backend
 uv sync
+
+# 本地开发建议开启 dev 模式（跳过 WebSocket 共享密钥校验）
+export DESKPET_DEV_MODE=1   # Windows: set DESKPET_DEV_MODE=1
 uv run python main.py
 # 默认监听 127.0.0.1:8100
 ```
 
 依赖 Ollama 本地服务（默认 `http://localhost:11434`，模型 `gemma4:e4b`），可在 `config.toml` 中修改。
+
+> **生产部署：** 不要设 `DESKPET_DEV_MODE`。启动时会打印 `SHARED_SECRET=...`，客户端 WebSocket 连接需带上 `x-shared-secret` header 或 `?secret=` 查询参数。
 
 ### 前端
 ```bash

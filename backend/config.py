@@ -12,7 +12,7 @@ class BackendConfig:
 @dataclass
 class LLMConfig:
     provider: str = "ollama"
-    model: str = "qwen2.5:14b"
+    model: str = "gemma4:e4b"
     base_url: str = "http://localhost:11434"
     temperature: float = 0.7
     max_tokens: int = 2048
