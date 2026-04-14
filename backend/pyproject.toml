@@ -23,4 +23,4 @@ dev = [
 
 [tool.setuptools]
 py-modules = ["config", "main"]
-packages = ["providers", "memory", "tests", "agent", "pipeline", "tools"]
+packages = ["providers", "memory", "tests", "agent", "pipeline", "tools", "observability"]
