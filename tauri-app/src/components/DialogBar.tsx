@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 
 type Props = {
-  /** 最新一条助手消息文本；空则底栏渲染占位 */
+  /** 最新一条助手消息文本；空则底栏留白（不显示占位文字） */
   latestAssistant: string | null;
   /** 点击展开历史 */
   onOpenHistory: () => void;
@@ -13,7 +13,7 @@ type Props = {
  * 设计原则：
  * - 固定高度 60px，不随内容弹跳（避免挡 Live2D）
  * - 单条渲染 —— 旧消息直接被新消息替换，无动画（TTS 串流期间闪烁会晕）
- * - 文本超出时内部 scroll，外框高度不变
+ * - 文本超出时在内部 textStyle 区域 scroll，外框高度不变
  */
 export function DialogBar({ latestAssistant, onOpenHistory }: Props) {
   return (
@@ -32,6 +32,7 @@ export function DialogBar({ latestAssistant, onOpenHistory }: Props) {
         onClick={onOpenHistory}
         style={historyBtnStyle}
         title="查看完整对话历史"
+        aria-label="查看完整对话历史"
       >
         💬
       </button>
