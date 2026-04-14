@@ -34,6 +34,7 @@ from providers.silero_vad import SileroVAD
 from providers.faster_whisper_asr import FasterWhisperASR
 from providers.edge_tts_provider import EdgeTTSProvider
 from agent.providers.simple_llm import SimpleLLMAgent
+from memory.conversation import SqliteConversationMemory
 
 ollama_llm = OllamaLLM(
     model=config.llm.model,
@@ -42,9 +43,14 @@ ollama_llm = OllamaLLM(
 )
 service_context.register("llm_engine", ollama_llm)
 
-# V5 §2.3: agent_engine 与 llm_engine 分层。当前 SimpleLLMAgent 纯代理;
-# S2 接记忆、S3 接工具路由都在 Agent 层扩展, 不动 WebSocket 层。
-agent = SimpleLLMAgent(ollama_llm)
+# S2: memory store — short-term conversation history (SQLite).
+# Path from config.toml; falls back to ./data/memory.db if unset.
+memory_store = SqliteConversationMemory(db_path=config.memory.db_path)
+service_context.register("memory_store", memory_store)
+
+# V5 §2.3: agent_engine 与 llm_engine 分层。SimpleLLMAgent 代理 LLM +
+# 可选注入 memory_store(S2); S3 工具路由是独立 Agent 类, 不动此处。
+agent = SimpleLLMAgent(ollama_llm, memory=memory_store)
 service_context.register("agent_engine", agent)
 
 vad = SileroVAD(
