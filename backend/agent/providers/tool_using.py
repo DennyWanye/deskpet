@@ -20,6 +20,7 @@ import re
 from typing import AsyncIterator
 
 from agent.providers.base import AgentProvider
+from observability.metrics import stage_timer
 from tools.registry import ToolRegistry
 
 _TOOL_TAG = re.compile(r"<tool>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*</tool>")
@@ -77,7 +78,8 @@ class ToolUsingAgent:
             return
 
         try:
-            result = await tool.invoke()
+            async with stage_timer("tool_invoke", tool_name=name, session_id=session_id):
+                result = await tool.invoke()
         except Exception as exc:
             yield f"\n[tool error: {name}: {exc}]\n"
             return

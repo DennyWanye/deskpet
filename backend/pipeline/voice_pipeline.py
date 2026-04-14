@@ -8,6 +8,7 @@ import numpy as np
 import structlog
 from fastapi import WebSocket
 
+from observability.metrics import stage_timer
 from pipeline.tag_parser import StreamingTagParser, TagEvent
 
 if TYPE_CHECKING:
@@ -144,7 +145,8 @@ class VoicePipeline:
 
         try:
             # Step 1: ASR
-            text = await self.asr.transcribe(audio_bytes)
+            async with stage_timer("asr", session_id=self.session_id):
+                text = await self.asr.transcribe(audio_bytes)
             if not text.strip():
                 return
 
@@ -159,23 +161,24 @@ class VoicePipeline:
             response_text = ""
             messages = [{"role": "user", "content": text}]
             parser = StreamingTagParser()
-            async for token in self.agent.chat_stream(
-                messages, session_id=self.session_id
-            ):
-                if self._interrupted:
-                    logger.info("agent_interrupted")
-                    break
-                for item in parser.feed(token):
+            async with stage_timer("agent", session_id=self.session_id):
+                async for token in self.agent.chat_stream(
+                    messages, session_id=self.session_id
+                ):
+                    if self._interrupted:
+                        logger.info("agent_interrupted")
+                        break
+                    for item in parser.feed(token):
+                        if isinstance(item, TagEvent):
+                            await self._emit_tag_event(item)
+                        else:
+                            response_text += item
+                # Flush trailing buffer (e.g. dangling '[' at EOS)
+                for item in parser.flush():
                     if isinstance(item, TagEvent):
                         await self._emit_tag_event(item)
                     else:
                         response_text += item
-            # Flush trailing buffer (e.g. dangling '[' at EOS)
-            for item in parser.flush():
-                if isinstance(item, TagEvent):
-                    await self._emit_tag_event(item)
-                else:
-                    response_text += item
 
             if self._interrupted or not response_text.strip():
                 return
@@ -188,25 +191,26 @@ class VoicePipeline:
 
             # Step 3: TTS (streaming synthesis + streaming send)
             chunk_index = 0
-            async for audio_chunk in self.tts.synthesize_stream(response_text):
-                if self._interrupted:
-                    logger.info("tts_interrupted")
-                    break
-                # Send audio data (binary frame)
-                await audio_ws.send_bytes(audio_chunk)
-                # Send lip-sync params to control channel
-                if self.control_ws:
-                    try:
-                        await self.control_ws.send_json({
-                            "type": "lip_sync",
-                            "payload": {
-                                "chunk_index": chunk_index,
-                                "amplitude": _estimate_amplitude_from_size(len(audio_chunk)),
-                            },
-                        })
-                    except Exception:
-                        pass  # control channel may have disconnected
-                chunk_index += 1
+            async with stage_timer("tts", session_id=self.session_id, chars=len(response_text)):
+                async for audio_chunk in self.tts.synthesize_stream(response_text):
+                    if self._interrupted:
+                        logger.info("tts_interrupted")
+                        break
+                    # Send audio data (binary frame)
+                    await audio_ws.send_bytes(audio_chunk)
+                    # Send lip-sync params to control channel
+                    if self.control_ws:
+                        try:
+                            await self.control_ws.send_json({
+                                "type": "lip_sync",
+                                "payload": {
+                                    "chunk_index": chunk_index,
+                                    "amplitude": _estimate_amplitude_from_size(len(audio_chunk)),
+                                },
+                            })
+                        except Exception:
+                            pass  # control channel may have disconnected
+                    chunk_index += 1
 
             # TTS end marker
             await audio_ws.send_json({
