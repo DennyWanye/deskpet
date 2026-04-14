@@ -83,3 +83,19 @@ plugin shows the built-in OS prompt.
 `disable()` / `isEnabled()` from the frontend. A settings toggle wired
 to these functions is a Phase 2 item — nothing runs on login today
 unless the frontend opts in.
+
+## Branding assets
+
+The current app icon is a **temporary placeholder** (a claymorphic
+purple cloud mascot) committed in V6 Phase 2 Sprint P2-0 Slice 1. It
+is stored in SVG form at
+`tauri-app/src-tauri/icons-src/deskpet-cloud.svg`; all derived assets
+(`icon.ico`, `icon.png`, the per-platform subdirectories, and
+`public/favicon.svg`) are produced by `scripts/rebuild-icons.ps1`.
+
+To replace the placeholder with a designer-produced icon, see
+`tauri-app/src-tauri/icons-src/README.md`.
+
+Before the first public release, the placeholder **should** be replaced
+with a real brand asset; it is intentionally cute and visually distinct
+from the previous red-square bug, but it is not a committed brand mark.
