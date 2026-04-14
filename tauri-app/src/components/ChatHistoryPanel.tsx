@@ -24,6 +24,9 @@ export function ChatHistoryPanel({ open, messages, onClose }: Props) {
     <div
       style={overlayStyle}
       data-testid="chat-history-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-label="本次对话历史"
     >
       <div style={headerStyle}>
         <strong style={{ fontSize: "14px" }}>本次对话 · {messages.length} 条</strong>
@@ -32,6 +35,7 @@ export function ChatHistoryPanel({ open, messages, onClose }: Props) {
           onClick={onClose}
           style={closeBtnStyle}
           title="Close"
+          aria-label="关闭对话历史"
         >
           ✕
         </button>
