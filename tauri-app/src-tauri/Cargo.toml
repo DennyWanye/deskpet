@@ -15,6 +15,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# W5 (R17): self-update. pubkey configured in tauri.conf.json.
+tauri-plugin-updater = "2"
+# W5 (R17): run on login — let the user opt-in via system tray later.
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 window-vibrancy = "0.6"

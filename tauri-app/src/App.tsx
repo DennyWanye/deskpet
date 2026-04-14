@@ -4,6 +4,7 @@ import { useControlChannel } from "./hooks/useWebSocket";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
+import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import type { AudioMessage, LipSyncMessage } from "./types/messages";
 
 function stripMarkdown(text: string): string {
@@ -18,6 +19,10 @@ function stripMarkdown(text: string): string {
 }
 
 function App() {
+  // W5 (R17): silent self-update on startup. No-op under dev-browser or
+  // when the updater endpoint isn't reachable.
+  useUpdateChecker();
+
   const [fps, setFps] = useState(0);
   const [chatText, setChatText] = useState("");
   // Shared secret — fetched from Tauri backend command after it has read the

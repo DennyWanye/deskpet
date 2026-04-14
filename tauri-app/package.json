@@ -13,6 +13,8 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@tauri-apps/plugin-autostart": "^2.5.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "live2dcubismcore": "^1.0.2",
     "pixi-live2d-display": "^0.4.0",
     "pixi.js": "^7.4.3",

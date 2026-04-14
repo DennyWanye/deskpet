@@ -15,6 +15,16 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // W5 (R17): self-update — endpoints + pubkey live in tauri.conf.json.
+        // On first launch the plugin fetches latest.json; if it advertises a
+        // newer version the built-in dialog prompts the user.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // W5 (R17): opt-in login autostart. Pass an empty args slice so we
+        // don't inject anything surprising into the user's shell.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![]),
+        ))
         .manage(BackendProcess::new())
         .invoke_handler(tauri::generate_handler![
             click_through::set_click_through,
