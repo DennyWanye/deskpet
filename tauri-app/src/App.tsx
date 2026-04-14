@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
+import { MemoryPanel } from "./components/MemoryPanel";
 import { useControlChannel } from "./hooks/useWebSocket";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
@@ -84,7 +85,11 @@ function App() {
   const liveRef = useRef<Live2DHandle>(null);
 
   // Control channel (text chat + interrupt + emotion/action events)
-  const { state, lastMessage, sendChat, sendInterrupt } = useControlChannel(8100, secret);
+  const { state, lastMessage, sendChat, sendInterrupt, getChannel: getControlChannel } =
+    useControlChannel(8100, secret);
+
+  // S14 — memory management panel toggle.
+  const [memoryOpen, setMemoryOpen] = useState(false);
 
   // Audio channel (voice pipeline)
   const {
@@ -409,6 +414,22 @@ function App() {
           zIndex: 20,
         }}
       >
+        {/* Memory management panel toggle (S14) */}
+        <button
+          onClick={() => setMemoryOpen(true)}
+          title="记忆管理"
+          style={{
+            fontSize: "10px",
+            background: "rgba(0,0,0,0.5)",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            padding: "2px 6px",
+            cursor: "pointer",
+          }}
+        >
+          🗂
+        </button>
         {/* Autostart toggle — only render when the plugin is reachable. */}
         {autostart.ready && (
           <button
@@ -493,6 +514,14 @@ function App() {
           {state}
         </span>
       </div>
+
+      {/* S14 memory management overlay */}
+      <MemoryPanel
+        open={memoryOpen}
+        onClose={() => setMemoryOpen(false)}
+        sessionId="default"
+        getChannel={getControlChannel}
+      />
 
       {/* Pulse animation for recording button */}
       <style>{`

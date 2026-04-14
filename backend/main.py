@@ -170,6 +170,118 @@ async def health():
     return {"status": "ok", "secret_hint": SHARED_SECRET[:4] + "..."}
 
 
+# --- S14 memory management dispatch -----------------------------------------
+# Handled on the control WS (same auth gate as chat/interrupt) so we don't
+# expose a second unauthenticated HTTP surface. The four verbs are the minimum
+# needed for the "delete-my-data" affordance V5 §6 requires.
+
+async def _handle_memory_message(
+    ws: "WebSocket", session_id: str, msg_type: str, payload: dict
+) -> None:
+    store = service_context.get("memory_store")
+    if store is None:
+        await ws.send_json({
+            "type": "error",
+            "payload": {"message": "memory store not registered"},
+        })
+        return
+
+    try:
+        if msg_type == "memory_list":
+            # Scope defaults to the current session; ``scope: "all"`` returns
+            # every session's turns (export-style). The UI asks per-session.
+            scope = payload.get("scope") or "session"
+            target_session = None if scope == "all" else payload.get(
+                "session_id", session_id
+            )
+            limit = payload.get("limit")
+            turns = await store.list_turns(target_session, limit)
+            await ws.send_json({
+                "type": "memory_list_response",
+                "payload": {
+                    "scope": scope,
+                    "session_id": target_session,
+                    "turns": [
+                        {
+                            "id": t.id,
+                            "session_id": t.session_id,
+                            "role": t.role,
+                            "content": t.content,
+                            "created_at": t.created_at,
+                        }
+                        for t in turns
+                    ],
+                },
+            })
+
+        elif msg_type == "memory_delete":
+            turn_id = payload.get("id")
+            if not isinstance(turn_id, int):
+                await ws.send_json({
+                    "type": "error",
+                    "payload": {"message": "memory_delete requires integer id"},
+                })
+                return
+            deleted = await store.delete_turn(turn_id)
+            await ws.send_json({
+                "type": "memory_delete_ack",
+                "payload": {"id": turn_id, "deleted": deleted},
+            })
+
+        elif msg_type == "memory_clear":
+            scope = payload.get("scope") or "session"
+            if scope == "all":
+                removed = await store.clear_all()
+                await ws.send_json({
+                    "type": "memory_clear_ack",
+                    "payload": {"scope": "all", "removed": removed},
+                })
+            else:
+                target_session = payload.get("session_id", session_id)
+                await store.clear(target_session)
+                await ws.send_json({
+                    "type": "memory_clear_ack",
+                    "payload": {"scope": "session", "session_id": target_session},
+                })
+
+        elif msg_type == "memory_export":
+            # Dump everything — user asked for their data, they get all of it.
+            turns = await store.list_turns(None, None)
+            sessions = await store.list_sessions()
+            await ws.send_json({
+                "type": "memory_export_response",
+                "payload": {
+                    "exported_at": __import__("time").time(),
+                    "sessions": [
+                        {
+                            "session_id": s.session_id,
+                            "turn_count": s.turn_count,
+                            "last_message_at": s.last_message_at,
+                        }
+                        for s in sessions
+                    ],
+                    "turns": [
+                        {
+                            "id": t.id,
+                            "session_id": t.session_id,
+                            "role": t.role,
+                            "content": t.content,
+                            "created_at": t.created_at,
+                        }
+                        for t in turns
+                    ],
+                },
+            })
+    except AttributeError as exc:
+        # Inner store without list_turns/delete_turn/list_sessions/clear_all —
+        # surface a clean error instead of a 500 on the wire.
+        logger.warning("memory_admin_unsupported", error=str(exc), type=msg_type)
+        await ws.send_json({
+            "type": "error",
+            "payload": {"message": f"{msg_type} not supported by active memory store"},
+        })
+
+
 @app.websocket("/ws/control")
 async def control_channel(ws: WebSocket):
     await ws.accept()
@@ -225,6 +337,12 @@ async def control_channel(ws: WebSocket):
                 else:
                     logger.info("interrupt received but no active pipeline", session_id=session_id)
                 await ws.send_json({"type": "interrupt_ack"})
+
+            elif msg_type in ("memory_list", "memory_delete", "memory_clear", "memory_export"):
+                # S14 (V5 §6 threat 5): user-facing controls over persisted
+                # conversation history. All four go through the same memory
+                # store the agent reads from, so redaction-on-write still holds.
+                await _handle_memory_message(ws, session_id, msg_type, raw.get("payload", {}) or {})
 
             else:
                 await ws.send_json({

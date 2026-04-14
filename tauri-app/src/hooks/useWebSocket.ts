@@ -32,5 +32,10 @@ export function useControlChannel(port: number = 8100, secret: string = "") {
     channelRef.current?.sendInterrupt();
   }, []);
 
-  return { state, lastMessage, sendChat, sendInterrupt };
+  // Expose the underlying channel so feature panels (memory management, etc.)
+  // can attach their own listeners / send custom messages without reaching
+  // into the control-channel transport directly.
+  const getChannel = useCallback(() => channelRef.current, []);
+
+  return { state, lastMessage, sendChat, sendInterrupt, getChannel };
 }

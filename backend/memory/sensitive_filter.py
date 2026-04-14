@@ -90,3 +90,20 @@ class RedactingMemoryStore:
 
     async def clear(self, session_id: str) -> None:
         await self._inner.clear(session_id)
+
+    # ---- S14 management passthrough (if the inner store provides them) ----
+    # Inner content was already redacted on write, so reads don't need any
+    # further processing. These pass through unconditionally so the UI works
+    # regardless of which decorator layer the service holds.
+
+    async def list_turns(self, session_id=None, limit=None):
+        return await self._inner.list_turns(session_id, limit)
+
+    async def delete_turn(self, turn_id: int) -> bool:
+        return await self._inner.delete_turn(turn_id)
+
+    async def list_sessions(self):
+        return await self._inner.list_sessions()
+
+    async def clear_all(self) -> int:
+        return await self._inner.clear_all()

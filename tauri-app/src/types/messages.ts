@@ -53,12 +53,60 @@ export interface ActionTriggerMessage {
   payload: { value: string };
 }
 
+// --- S14 memory management (control channel) ---
+
+export interface StoredTurn {
+  id: number;
+  session_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: number;
+}
+
+export interface SessionSummary {
+  session_id: string;
+  turn_count: number;
+  last_message_at: number;
+}
+
+export interface MemoryListResponse {
+  type: "memory_list_response";
+  payload: {
+    scope: "session" | "all";
+    session_id: string | null;
+    turns: StoredTurn[];
+  };
+}
+
+export interface MemoryDeleteAck {
+  type: "memory_delete_ack";
+  payload: { id: number; deleted: boolean };
+}
+
+export interface MemoryClearAck {
+  type: "memory_clear_ack";
+  payload: { scope: "session" | "all"; session_id?: string; removed?: number };
+}
+
+export interface MemoryExportResponse {
+  type: "memory_export_response";
+  payload: {
+    exported_at: number;
+    sessions: SessionSummary[];
+    turns: StoredTurn[];
+  };
+}
+
 export type IncomingMessage =
   | ChatResponse
   | PongMessage
   | ErrorMessage
   | LipSyncMessage
   | EmotionChangeMessage
-  | ActionTriggerMessage;
+  | ActionTriggerMessage
+  | MemoryListResponse
+  | MemoryDeleteAck
+  | MemoryClearAck
+  | MemoryExportResponse;
 
 export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | ErrorMessage;

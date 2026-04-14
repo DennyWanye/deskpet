@@ -19,7 +19,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from memory.base import ConversationTurn
+from memory.base import ConversationTurn, SessionSummary, StoredTurn
 from memory.migrator import run_migrations
 
 
@@ -72,3 +72,78 @@ class SqliteConversationMemory:
                 (session_id,),
             )
             await db.commit()
+
+    # ---------------- S14 management API ----------------
+    # Not on the MemoryStore Protocol — these are admin-UI affordances.
+
+    async def list_turns(
+        self, session_id: str | None = None, limit: int | None = None
+    ) -> list[StoredTurn]:
+        """Return stored turns with their row ids.
+
+        - ``session_id=None`` → across all sessions (for export).
+        - ``limit=None`` → no upper bound; caller paginates UI-side.
+        Rows are oldest → newest so the UI scrolls naturally.
+        """
+        await self._ensure_schema()
+        where = "" if session_id is None else "WHERE session_id = ?"
+        params: tuple = () if session_id is None else (session_id,)
+        sql = (
+            f"SELECT id, session_id, role, content, created_at "
+            f"FROM conversation {where} ORDER BY created_at ASC, id ASC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = params + (int(limit),)
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(sql, params)
+            rows = await cursor.fetchall()
+            await cursor.close()
+        return [
+            StoredTurn(
+                id=row[0],
+                session_id=row[1],
+                role=row[2],
+                content=row[3],
+                created_at=row[4],
+            )
+            for row in rows
+        ]
+
+    async def delete_turn(self, turn_id: int) -> bool:
+        """Remove a single turn by primary-key id. Returns ``True`` iff a row was deleted."""
+        await self._ensure_schema()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM conversation WHERE id = ?", (int(turn_id),)
+            )
+            deleted = cursor.rowcount or 0
+            await cursor.close()
+            await db.commit()
+        return deleted > 0
+
+    async def list_sessions(self) -> list[SessionSummary]:
+        """Summary row per session — count + latest timestamp."""
+        await self._ensure_schema()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT session_id, COUNT(*), MAX(created_at) "
+                "FROM conversation GROUP BY session_id "
+                "ORDER BY MAX(created_at) DESC"
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+        return [
+            SessionSummary(session_id=r[0], turn_count=r[1], last_message_at=r[2] or 0.0)
+            for r in rows
+        ]
+
+    async def clear_all(self) -> int:
+        """Wipe every conversation turn. Returns number of rows removed."""
+        await self._ensure_schema()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute("DELETE FROM conversation")
+            removed = cursor.rowcount or 0
+            await cursor.close()
+            await db.commit()
+        return removed
