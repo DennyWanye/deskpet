@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 mod click_through;
+mod crash_reports;
 mod process_manager;
 mod webview_permissions;
 
@@ -8,6 +9,10 @@ use process_manager::BackendProcess;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Hook Rust panics before doing anything else so even early-init
+    // failures leave a trace in crash_reports/.
+    crash_reports::install_panic_hook();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(BackendProcess::new())

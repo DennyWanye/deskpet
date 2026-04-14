@@ -7,6 +7,10 @@ so callers can prepend them directly to the messages list.
 Thread/task safety: each call opens a fresh connection — fine for the
 single-process FastAPI app. If throughput becomes a concern, swap to a
 connection pool; the Protocol contract won't change.
+
+Schema is owned by ``memory.migrations/`` and applied lazily via
+``memory.migrator.run_migrations`` on first use. This replaces the old
+``_SCHEMA`` string constant so all DDL lives in one versioned place.
 """
 from __future__ import annotations
 
@@ -16,18 +20,7 @@ from pathlib import Path
 import aiosqlite
 
 from memory.base import ConversationTurn
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS conversation (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT    NOT NULL,
-    role       TEXT    NOT NULL,
-    content    TEXT    NOT NULL,
-    created_at REAL    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_session_time
-    ON conversation(session_id, created_at);
-"""
+from memory.migrator import run_migrations
 
 
 class SqliteConversationMemory:
@@ -41,9 +34,7 @@ class SqliteConversationMemory:
     async def _ensure_schema(self) -> None:
         if self._initialized:
             return
-        async with aiosqlite.connect(self._db_path) as db:
-            await db.executescript(_SCHEMA)
-            await db.commit()
+        await run_migrations(self._db_path)
         self._initialized = True
 
     async def get_recent(

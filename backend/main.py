@@ -19,6 +19,11 @@ from pathlib import Path
 
 from config import load_config
 from context import ServiceContext
+from observability.crash_reports import install_crash_reporter
+
+# Install the uncaught-exception hook as early as possible so import-time
+# failures later in this file still land in crash_reports/.
+install_crash_reporter()
 
 logger = structlog.get_logger()
 
