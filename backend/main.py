@@ -111,6 +111,9 @@ app = FastAPI(title="Desktop Pet Backend", version="0.2.0", lifespan=lifespan)
 
 # Track control channel connections for lip-sync forwarding
 _control_connections: dict[str, WebSocket] = {}
+# Track active voice pipelines by session so that a control-channel `interrupt`
+# message can reach the audio-channel pipeline (they are separate WebSockets).
+_pipelines: dict[str, "VoicePipeline"] = {}  # noqa: F821 — forward ref, set at runtime
 
 
 # Opt-in dev mode: set DESKPET_DEV_MODE=1 to bypass shared-secret auth.
@@ -177,7 +180,14 @@ async def control_channel(ws: WebSocket):
                 })
 
             elif msg_type == "interrupt":
-                logger.info("interrupt received")
+                # Forward barge-in to the audio pipeline (separate WS). Cancels
+                # in-flight ASR/LLM/TTS so user's new utterance gets priority.
+                pipeline = _pipelines.get(session_id)
+                if pipeline is not None:
+                    pipeline.interrupt()
+                    logger.info("interrupt dispatched", session_id=session_id)
+                else:
+                    logger.info("interrupt received but no active pipeline", session_id=session_id)
                 await ws.send_json({"type": "interrupt_ack"})
 
             else:
@@ -224,6 +234,8 @@ async def audio_channel(ws: WebSocket):
         control_ws=control_ws,
         session_id=session_id,
     )
+    # Register so control-channel `interrupt` messages can reach us.
+    _pipelines[session_id] = pipeline
 
     logger.info("audio channel connected", session_id=session_id)
     try:
@@ -232,6 +244,8 @@ async def audio_channel(ws: WebSocket):
             await pipeline.process_audio_chunk(data, ws)
     except WebSocketDisconnect:
         logger.info("audio channel disconnected", session_id=session_id)
+    finally:
+        _pipelines.pop(session_id, None)
 
 
 def main():

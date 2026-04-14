@@ -1,9 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
 interface Live2DCanvasProps {
   modelPath: string;
   onFpsUpdate?: (fps: number) => void;
   mouthOpenY?: number; // 0.0 ~ 1.0, drives ParamMouthOpenY for lip sync
+}
+
+/**
+ * Imperative handle for driving Live2D state from parent components.
+ * Exposed via forwardRef so `App` can push emotion/action events that arrive
+ * over the WebSocket control channel directly into the model without
+ * re-rendering the heavy render loop.
+ */
+export interface Live2DHandle {
+  /** Apply a named expression (e.g. "happy"). Silently no-ops if unknown/unloaded. */
+  setExpression: (name: string) => void;
+  /** Trigger a motion group by name (e.g. "wave"). Silently no-ops if unknown/unloaded. */
+  playMotion: (group: string) => void;
 }
 
 /**
@@ -13,7 +26,10 @@ interface Live2DCanvasProps {
  * WebView2 transparent windows don't composite <canvas>/<WebGL>.
  * We render offscreen and display each frame via <img> (HTML = composites OK).
  */
-export function Live2DCanvas({ modelPath, onFpsUpdate, mouthOpenY = 0 }: Live2DCanvasProps) {
+export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function Live2DCanvas(
+  { modelPath, onFpsUpdate, mouthOpenY = 0 },
+  ref,
+) {
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
@@ -23,6 +39,38 @@ export function Live2DCanvas({ modelPath, onFpsUpdate, mouthOpenY = 0 }: Live2DC
   const cleanupRef = useRef<(() => void) | null>(null);
   const mouthRef = useRef(mouthOpenY);
   mouthRef.current = mouthOpenY;
+  // Live2D model instance (set once init() succeeds). Kept on a ref so that
+  // imperative methods can reach it without blowing up the render loop via
+  // re-renders.
+  const modelRef = useRef<any>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setExpression(name: string) {
+        const model = modelRef.current;
+        if (!model) return;
+        try {
+          // pixi-live2d-display API: expression(id?: string | number | undefined)
+          model.expression?.(name);
+        } catch (err) {
+          console.warn("[Live2D] setExpression failed:", name, err);
+        }
+      },
+      playMotion(group: string) {
+        const model = modelRef.current;
+        if (!model) return;
+        try {
+          // pixi-live2d-display API: motion(group, index?, priority?)
+          // priority=2 (FORCE) overrides any idle motion — immediate playback.
+          model.motion?.(group, undefined, 2);
+        } catch (err) {
+          console.warn("[Live2D] playMotion failed:", group, err);
+        }
+      },
+    }),
+    [],
+  );
 
   // Track viewport
   useEffect(() => {
@@ -112,6 +160,7 @@ export function Live2DCanvas({ modelPath, onFpsUpdate, mouthOpenY = 0 }: Live2DC
         model.y = (renderH - model.height * scale) * 0.25;
 
         pixiApp.stage.addChild(model);
+        modelRef.current = model;
 
         modeRef.current = "live2d";
         setDisplayMode("live2d");
@@ -321,6 +370,7 @@ export function Live2DCanvas({ modelPath, onFpsUpdate, mouthOpenY = 0 }: Live2DC
     cleanupRef.current = () => {
       destroyed = true;
       cancelAnimationFrame(rafId);
+      modelRef.current = null;
       try {
         const pixiCanvas = pixiApp?.view as HTMLCanvasElement;
         if (pixiCanvas?.parentNode) pixiCanvas.parentNode.removeChild(pixiCanvas);
@@ -351,7 +401,7 @@ export function Live2DCanvas({ modelPath, onFpsUpdate, mouthOpenY = 0 }: Live2DC
       />
     </>
   );
-}
+});
 
 function roundRect(
   ctx: CanvasRenderingContext2D,

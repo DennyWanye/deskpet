@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Live2DCanvas } from "./components/Live2DCanvas";
+import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
 import { useControlChannel } from "./hooks/useWebSocket";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
@@ -29,8 +29,12 @@ function App() {
     "idle" | "listening" | "speaking" | "thinking"
   >("idle");
 
-  // Control channel (text chat)
-  const { state, lastMessage, sendChat } = useControlChannel(8100, secret);
+  // Ref to the Live2D canvas — exposes setExpression/playMotion so control
+  // channel events can drive the character directly without re-rendering.
+  const liveRef = useRef<Live2DHandle>(null);
+
+  // Control channel (text chat + interrupt + emotion/action events)
+  const { state, lastMessage, sendChat, sendInterrupt } = useControlChannel(8100, secret);
 
   // Audio channel (voice pipeline)
   const {
@@ -55,13 +59,24 @@ function App() {
     primeContext,
   } = useAudioPlayer(getChannel());
 
-  // Handle control channel messages (text chat)
+  // Handle control channel messages (text chat + emotion/action drive)
   useEffect(() => {
-    if (lastMessage?.type === "chat_response") {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: lastMessage.payload.text },
-      ]);
+    if (!lastMessage) return;
+    switch (lastMessage.type) {
+      case "chat_response":
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: lastMessage.payload.text },
+        ]);
+        break;
+      case "emotion_change":
+        // Push named expression to Live2D. Unknown names silently no-op.
+        liveRef.current?.setExpression(lastMessage.payload.value);
+        break;
+      case "action_trigger":
+        // Trigger named motion group. Unknown names silently no-op.
+        liveRef.current?.playMotion(lastMessage.payload.value);
+        break;
     }
   }, [lastMessage]);
 
@@ -131,6 +146,26 @@ function App() {
     }
   };
 
+  // Barge-in: stop local playback + notify backend to cancel in-flight LLM/TTS.
+  // Bound to a button (shown while TTS is playing) and to the Escape key.
+  const handleInterrupt = useCallback(() => {
+    stopPlayback();
+    setMouthOpenY(0);
+    resetPlaybackBuffer();
+    sendInterrupt();
+    setVadStatus("idle");
+  }, [stopPlayback, resetPlaybackBuffer, sendInterrupt]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isPlaying) {
+        handleInterrupt();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isPlaying, handleInterrupt]);
+
   const toggleRecording = async () => {
     if (isRecording) {
       stopRecording();
@@ -167,6 +202,7 @@ function App() {
       }}
     >
       <Live2DCanvas
+        ref={liveRef}
         modelPath="/assets/live2d/hiyori/Hiyori.model3.json"
         onFpsUpdate={handleFpsUpdate}
         mouthOpenY={mouthOpenY}
@@ -252,6 +288,29 @@ function App() {
         >
           {isRecording ? "⏹" : "🎤"}
         </button>
+
+        {/* Interrupt button — appears only while TTS is playing */}
+        {isPlaying && (
+          <button
+            onClick={handleInterrupt}
+            style={{
+              width: "32px",
+              height: "32px",
+              borderRadius: "50%",
+              border: "none",
+              backgroundColor: "#dc2626",
+              color: "white",
+              fontSize: "14px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="Interrupt (Esc)"
+          >
+            ✋
+          </button>
+        )}
 
         <input
           type="text"
