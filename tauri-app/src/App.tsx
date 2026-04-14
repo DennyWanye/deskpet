@@ -5,6 +5,8 @@ import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
+import { useAutostart } from "./hooks/useAutostart";
+import { useBackendLifecycle } from "./hooks/useBackendLifecycle";
 import type { AudioMessage, LipSyncMessage } from "./types/messages";
 
 function stripMarkdown(text: string): string {
@@ -30,35 +32,45 @@ function App() {
   // polling; once populated, the WebSocket hooks reconnect with proper auth.
   const [secret, setSecret] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
-    async function pollSecret() {
-      // Resolve Tauri invoke lazily so dev-browser (vite server without Tauri
-      // shell) still renders without crashing.
+  // Poll the Rust side for the shared secret. Extracted so the
+  // backend-restarted supervisor event can replay it without duplicating
+  // the import + retry loop.
+  const refreshSecret = useCallback(async () => {
+    const core = await import("@tauri-apps/api/core").catch(() => null);
+    if (!core) return;
+    for (let i = 0; i < 60; i++) {
       try {
-        const core = await import("@tauri-apps/api/core").catch(() => null);
-        if (!core) return;
-        for (let i = 0; i < 60 && !cancelled; i++) {
-          try {
-            const s = await core.invoke<string>("get_shared_secret");
-            if (s) {
-              if (!cancelled) setSecret(s);
-              return;
-            }
-          } catch {
-            // backend not yet up; retry
-          }
-          await new Promise((r) => setTimeout(r, 500));
+        const s = await core.invoke<string>("get_shared_secret");
+        if (s) {
+          setSecret(s);
+          return;
         }
       } catch {
-        /* not running under Tauri */
+        // backend not yet up; retry
       }
+      await new Promise((r) => setTimeout(r, 500));
     }
-    pollSecret();
-    return () => {
-      cancelled = true;
-    };
   }, []);
+
+  useEffect(() => {
+    void refreshSecret();
+  }, [refreshSecret]);
+
+  // S12: react to supervisor events — on crash, clear the secret so any
+  // active WebSockets see a reconnect cue; on restarted, poll for the
+  // new secret and let the WS hooks re-handshake.
+  useBackendLifecycle((kind) => {
+    if (kind === "crashed") {
+      setSecret("");
+    } else if (kind === "restarted") {
+      void refreshSecret();
+    } else if (kind === "dead") {
+      console.warn("[backend] supervisor gave up — manual restart required");
+    }
+  });
+
+  // Autostart toggle (enable run-on-login via plugin-autostart).
+  const autostart = useAutostart();
   const [messages, setMessages] = useState<
     { role: "user" | "assistant"; text: string }[]
   >([]);
@@ -397,6 +409,28 @@ function App() {
           zIndex: 20,
         }}
       >
+        {/* Autostart toggle — only render when the plugin is reachable. */}
+        {autostart.ready && (
+          <button
+            onClick={autostart.toggle}
+            title={
+              autostart.enabled
+                ? "Click to disable run-on-login"
+                : "Click to enable run-on-login"
+            }
+            style={{
+              fontSize: "10px",
+              background: autostart.enabled ? "#10b981" : "rgba(0,0,0,0.5)",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              padding: "2px 6px",
+              cursor: "pointer",
+            }}
+          >
+            {autostart.enabled ? "⏻ auto" : "⏻"}
+          </button>
+        )}
         {vadStatus === "thinking" && !isPlaying && (
           <span
             style={{
