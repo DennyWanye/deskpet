@@ -39,6 +39,26 @@ export interface TTSEndMessage {
   payload: Record<string, never>;
 }
 
-export type IncomingMessage = ChatResponse | PongMessage | ErrorMessage;
+// --- Emotion / action events (S1) ---
+// Emitted by backend pipeline when LLM output contains
+// [emotion:xxx] or [action:xxx] tags. Frontend drives Live2D accordingly.
+
+export interface EmotionChangeMessage {
+  type: "emotion_change";
+  payload: { value: string };
+}
+
+export interface ActionTriggerMessage {
+  type: "action_trigger";
+  payload: { value: string };
+}
+
+export type IncomingMessage =
+  | ChatResponse
+  | PongMessage
+  | ErrorMessage
+  | LipSyncMessage
+  | EmotionChangeMessage
+  | ActionTriggerMessage;
 
 export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | ErrorMessage;
