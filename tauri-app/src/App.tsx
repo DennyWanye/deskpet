@@ -1,16 +1,19 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-// import { invoke } from "@tauri-apps/api/core";
 import { Live2DCanvas } from "./components/Live2DCanvas";
 import { useControlChannel } from "./hooks/useWebSocket";
+import { useAudioChannel } from "./hooks/useAudioChannel";
+import { useAudioRecorder } from "./hooks/useAudioRecorder";
+import { useAudioPlayer } from "./hooks/useAudioPlayer";
+import type { AudioMessage, LipSyncMessage } from "./types/messages";
 
 function stripMarkdown(text: string): string {
   return text
-    .replace(/\*\*(.*?)\*\*/g, '$1')   // **bold**
-    .replace(/\*(.*?)\*/g, '$1')        // *italic*
-    .replace(/#{1,6}\s/g, '')           // ## headers
-    .replace(/`([^`]+)`/g, '$1')        // `code`
-    .replace(/---+/g, '')               // ---
-    .replace(/\n{3,}/g, '\n\n')         // excessive newlines
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/#{1,6}\s/g, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/---+/g, "")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -21,30 +24,38 @@ function App() {
   const [messages, setMessages] = useState<
     { role: "user" | "assistant"; text: string }[]
   >([]);
+  const [mouthOpenY, setMouthOpenY] = useState(0);
+  const [vadStatus, setVadStatus] = useState<
+    "idle" | "listening" | "speaking" | "thinking"
+  >("idle");
 
-  // DEV: backend started manually, connect directly
-  // PROD: uncomment to auto-start backend via process manager
-  // useEffect(() => {
-  //   async function startBackend() {
-  //     try {
-  //       const s = await invoke<string>("get_shared_secret");
-  //       setSecret(s);
-  //     } catch {
-  //       try {
-  //         const backendDir = "G:/projects/deskpet/backend";
-  //         const pythonPath = "G:/projects/deskpet/backend/.venv/Scripts/python.exe";
-  //         const s = await invoke<string>("start_backend", { pythonPath, backendDir });
-  //         setSecret(s);
-  //       } catch (err) {
-  //         console.error("Failed to start backend:", err);
-  //       }
-  //     }
-  //   }
-  //   startBackend();
-  // }, []);
-
+  // Control channel (text chat)
   const { state, lastMessage, sendChat } = useControlChannel(8100, secret);
 
+  // Audio channel (voice pipeline)
+  const {
+    state: audioState,
+    lastMessage: audioMessage,
+    sendAudio,
+    getChannel,
+  } = useAudioChannel(8100, secret);
+
+  // Audio recorder (microphone → PCM16 → backend)
+  const { isRecording, startRecording, stopRecording } =
+    useAudioRecorder(sendAudio);
+
+  // Audio player (backend MP3 → speaker)
+  // We buffer MP3 chunks and decode on tts_end — partial MP3 chunks can't be
+  // decoded independently (only the first carries the stream header).
+  const {
+    isPlaying,
+    stop: stopPlayback,
+    flushAndPlay,
+    reset: resetPlaybackBuffer,
+    primeContext,
+  } = useAudioPlayer(getChannel());
+
+  // Handle control channel messages (text chat)
   useEffect(() => {
     if (lastMessage?.type === "chat_response") {
       setMessages((prev) => [
@@ -53,6 +64,58 @@ function App() {
       ]);
     }
   }, [lastMessage]);
+
+  // Handle audio channel JSON messages
+  useEffect(() => {
+    if (!audioMessage) return;
+
+    switch (audioMessage.type) {
+      case "vad_event":
+        if (audioMessage.payload.status === "speech_start") {
+          setVadStatus("speaking");
+          // Barge-in: stop current playback and drop any buffered TTS.
+          if (isPlaying) {
+            stopPlayback();
+            setMouthOpenY(0);
+          }
+          resetPlaybackBuffer();
+        } else {
+          setVadStatus("thinking");
+        }
+        break;
+
+      case "transcript":
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: audioMessage.payload.role,
+            text: audioMessage.payload.text,
+          },
+        ]);
+        break;
+
+      case "tts_end":
+        // Full MP3 has arrived — decode and play the merged blob.
+        void flushAndPlay();
+        setMouthOpenY(0);
+        setVadStatus("listening");
+        break;
+    }
+  }, [audioMessage, isPlaying, stopPlayback, flushAndPlay, resetPlaybackBuffer]);
+
+  // Handle lip-sync from control channel
+  useEffect(() => {
+    const channel = getChannel();
+    if (!channel) return;
+
+    const unsub = channel.onJson((msg: AudioMessage) => {
+      if (msg.type === "lip_sync" as string) {
+        const lipMsg = msg as unknown as LipSyncMessage;
+        setMouthOpenY(lipMsg.payload.amplitude);
+      }
+    });
+    return unsub;
+  }, [getChannel]);
 
   const handleSend = () => {
     if (!chatText.trim()) return;
@@ -68,12 +131,27 @@ function App() {
     }
   };
 
+  const toggleRecording = async () => {
+    if (isRecording) {
+      stopRecording();
+      setVadStatus("idle");
+    } else {
+      // Warm up the AudioContext inside the user-gesture handler so Chrome's
+      // autoplay policy allows later `source.start()` to actually emit audio.
+      // Creating/resuming the context from a WebSocket onmessage callback
+      // instead leaves it "suspended" and playback is silent.
+      await primeContext();
+      startRecording();
+      setVadStatus("listening");
+    }
+  };
+
   const handleFpsUpdate = useCallback(
     (newFps: number) => setFps(newFps),
     [],
   );
-  const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -91,6 +169,7 @@ function App() {
       <Live2DCanvas
         modelPath="/assets/live2d/hiyori/Hiyori.model3.json"
         onFpsUpdate={handleFpsUpdate}
+        mouthOpenY={mouthOpenY}
       />
 
       {messages.length > 0 && (
@@ -147,6 +226,33 @@ function App() {
           zIndex: 20,
         }}
       >
+        {/* Mic button */}
+        <button
+          onClick={toggleRecording}
+          disabled={audioState !== "connected" && state !== "connected"}
+          style={{
+            width: "32px",
+            height: "32px",
+            borderRadius: "50%",
+            border: "none",
+            backgroundColor: isRecording
+              ? "#ef4444"
+              : vadStatus === "speaking"
+                ? "#f59e0b"
+                : "#6b7280",
+            color: "white",
+            fontSize: "14px",
+            cursor: "pointer",
+            animation: isRecording ? "pulse 1.5s infinite" : "none",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          title={isRecording ? "Stop recording" : "Start recording"}
+        >
+          {isRecording ? "⏹" : "🎤"}
+        </button>
+
         <input
           type="text"
           value={chatText}
@@ -173,8 +279,7 @@ function App() {
             padding: "5px 12px",
             borderRadius: "16px",
             border: "none",
-            backgroundColor:
-              state === "connected" ? "#3b82f6" : "#ccc",
+            backgroundColor: state === "connected" ? "#3b82f6" : "#ccc",
             color: "white",
             fontSize: "12px",
             cursor: state === "connected" ? "pointer" : "default",
@@ -184,6 +289,7 @@ function App() {
         </button>
       </div>
 
+      {/* Status indicators */}
       <div
         style={{
           position: "absolute",
@@ -194,6 +300,45 @@ function App() {
           zIndex: 20,
         }}
       >
+        {vadStatus === "thinking" && !isPlaying && (
+          <span
+            style={{
+              fontSize: "10px",
+              color: "#fbbf24",
+              backgroundColor: "rgba(0,0,0,0.5)",
+              padding: "2px 6px",
+              borderRadius: "4px",
+            }}
+          >
+            思考中
+          </span>
+        )}
+        {isPlaying && (
+          <span
+            style={{
+              fontSize: "10px",
+              color: "#a78bfa",
+              backgroundColor: "rgba(0,0,0,0.5)",
+              padding: "2px 6px",
+              borderRadius: "4px",
+            }}
+          >
+            TTS
+          </span>
+        )}
+        {isRecording && (
+          <span
+            style={{
+              fontSize: "10px",
+              color: "#ef4444",
+              backgroundColor: "rgba(0,0,0,0.5)",
+              padding: "2px 6px",
+              borderRadius: "4px",
+            }}
+          >
+            REC
+          </span>
+        )}
         <span
           style={{
             fontSize: "10px",
@@ -217,6 +362,14 @@ function App() {
           {state}
         </span>
       </div>
+
+      {/* Pulse animation for recording button */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.7; transform: scale(1.1); }
+        }
+      `}</style>
     </div>
   );
 }

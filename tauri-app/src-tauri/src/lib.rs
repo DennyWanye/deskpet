@@ -2,6 +2,7 @@ use tauri::Manager;
 
 mod click_through;
 mod process_manager;
+mod webview_permissions;
 
 use process_manager::BackendProcess;
 
@@ -17,7 +18,14 @@ pub fn run() {
             process_manager::is_backend_running,
             process_manager::get_shared_secret,
         ])
-        .setup(|_app| {
+        .setup(|app| {
+            // Auto-grant microphone permission on the main WebView2 so
+            // getUserMedia works inside the desktop-pet window.
+            if let Some(win) = app.get_webview_window("main") {
+                if let Err(e) = webview_permissions::grant_media_permissions(&win) {
+                    eprintln!("[setup] grant_media_permissions failed: {e:?}");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

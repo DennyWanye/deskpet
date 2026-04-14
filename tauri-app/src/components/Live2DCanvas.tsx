@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 interface Live2DCanvasProps {
   modelPath: string;
   onFpsUpdate?: (fps: number) => void;
+  mouthOpenY?: number; // 0.0 ~ 1.0, drives ParamMouthOpenY for lip sync
 }
 
 /**
@@ -12,7 +13,7 @@ interface Live2DCanvasProps {
  * WebView2 transparent windows don't composite <canvas>/<WebGL>.
  * We render offscreen and display each frame via <img> (HTML = composites OK).
  */
-export function Live2DCanvas({ modelPath, onFpsUpdate }: Live2DCanvasProps) {
+export function Live2DCanvas({ modelPath, onFpsUpdate, mouthOpenY = 0 }: Live2DCanvasProps) {
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
@@ -20,6 +21,8 @@ export function Live2DCanvas({ modelPath, onFpsUpdate }: Live2DCanvasProps) {
   const modeRef = useRef<"loading" | "live2d" | "canvas2d">("loading");
   const [displayMode, setDisplayMode] = useState<string>("loading");
   const cleanupRef = useRef<(() => void) | null>(null);
+  const mouthRef = useRef(mouthOpenY);
+  mouthRef.current = mouthOpenY;
 
   // Track viewport
   useEffect(() => {
@@ -60,8 +63,28 @@ export function Live2DCanvas({ modelPath, onFpsUpdate }: Live2DCanvasProps) {
 
         if (destroyed) { pixiApp.destroy(true); return; }
 
-        // Append canvas to DOM (hidden) — WebGL needs DOM presence to render
+        // Disable PixiJS event system — we render offscreen via <img>, no
+        // pointer interaction is possible. Must use destroy() (not nulling
+        // domElement directly) so listeners are unbound properly.
+        // Prevents "Cannot read properties of null (reading 'isConnected')"
+        // spam on every pointer move.
+        try {
+          pixiApp.stage.eventMode = "none";
+          pixiApp.stage.interactiveChildren = false;
+          pixiApp.renderer?.events?.destroy?.();
+        } catch { /* ignore */ }
+
+        // Append canvas to DOM (hidden) — WebGL needs DOM presence to render.
+        // Before appending, purge any orphan pet-canvases from prior mounts
+        // (HMR partial-cleanup, StrictMode ghosts, Vite full-reload races).
+        // Without this, leftover canvases from previous React mounts would
+        // stack up and render overlapping Live2D characters.
+        document.querySelectorAll<HTMLCanvasElement>("canvas[data-pet-live2d]")
+          .forEach((stale) => {
+            try { stale.parentNode?.removeChild(stale); } catch { /* ignore */ }
+          });
         const pixiCanvas = pixiApp.view as HTMLCanvasElement;
+        pixiCanvas.setAttribute("data-pet-live2d", "1");
         pixiCanvas.style.cssText = "position:fixed;top:-9999px;left:-9999px;pointer-events:none;";
         document.body.appendChild(pixiCanvas);
 
@@ -119,6 +142,17 @@ export function Live2DCanvas({ modelPath, onFpsUpdate }: Live2DCanvasProps) {
               frameCount = 0;
               lastFpsTime = now;
             }
+
+            // Apply lip-sync mouth parameter
+            try {
+              const coreModel = (model as any).internalModel?.coreModel;
+              if (coreModel) {
+                const idx = coreModel.getParameterIndex?.("ParamMouthOpenY");
+                if (idx != null && idx >= 0) {
+                  coreModel.setParameterValueByIndex(idx, mouthRef.current);
+                }
+              }
+            } catch { /* ignore if model structure differs */ }
 
             // Extract frame via toBlob (async, faster than toDataURL)
             if (imgRef.current && pixiApp?.view) {
@@ -244,12 +278,19 @@ export function Live2DCanvas({ modelPath, onFpsUpdate }: Live2DCanvasProps) {
         ctx.fillStyle = "rgba(251,191,207,0.45)";
         ctx.beginPath(); ctx.ellipse(-42, 12 + bo, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.ellipse(42, 12 + bo, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
-        // Nose + Mouth
+        // Nose + Mouth (with lip-sync)
+        const mOpen = mouthRef.current;
         ctx.fillStyle = "rgba(196,181,253,0.8)";
         ctx.beginPath(); ctx.moveTo(0, 8 + bo); ctx.lineTo(-5, 14 + bo); ctx.lineTo(5, 14 + bo); ctx.closePath(); ctx.fill();
-        ctx.strokeStyle = "#4338ca"; ctx.lineWidth = 2; ctx.lineCap = "round";
-        ctx.beginPath(); ctx.arc(-8, 16 + bo, 8, -0.3, Math.PI * 0.7); ctx.stroke();
-        ctx.beginPath(); ctx.arc(8, 16 + bo, 8, Math.PI * 0.3, Math.PI + 0.3); ctx.stroke();
+        if (mOpen > 0.05) {
+          // Open mouth proportional to mouthOpenY
+          ctx.fillStyle = "rgba(67,56,202,0.6)";
+          ctx.beginPath(); ctx.ellipse(0, 20 + bo, 8, 4 + mOpen * 10, 0, 0, Math.PI * 2); ctx.fill();
+        } else {
+          ctx.strokeStyle = "#4338ca"; ctx.lineWidth = 2; ctx.lineCap = "round";
+          ctx.beginPath(); ctx.arc(-8, 16 + bo, 8, -0.3, Math.PI * 0.7); ctx.stroke();
+          ctx.beginPath(); ctx.arc(8, 16 + bo, 8, Math.PI * 0.3, Math.PI + 0.3); ctx.stroke();
+        }
         // Whiskers
         ctx.strokeStyle = "rgba(200,200,220,0.5)"; ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.moveTo(-30, 10 + bo); ctx.lineTo(-65, 5 + bo); ctx.stroke();
