@@ -1,8 +1,13 @@
-# Phase 2 Closeout — Slices S5–S10 HANDOFF
+# Phase 1 · Slices S5–S10 (W3–W4) HANDOFF
 
 **Date**: 2026-04-14
 **Scope**: Close out V5 plan residuals R5, R9, R10, R11, R12, R13, R14, R15, R16, R18, R19, R20.
 **Mode**: Autonomous slice-based execution (codingsys).
+
+> **Note**: this doc was originally filed as "Phase 2 Closeout" — the naming
+> was wrong. V5 §1.1 calls the whole 5-week ramp **Phase 1**; Phase 2 is the
+> upgrade path listed in V5 §13 (duplex ASR/TTS, cloud hybrid, etc.) and
+> hasn't started. See `2026-04-14-phase1-handoff.md` for the final wrap-up.
 
 ---
 
