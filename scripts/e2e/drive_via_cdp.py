@@ -186,6 +186,98 @@ def step_mic_toggle(page: Page) -> bool:
     return ok
 
 
+def step_dialog_bar(page: Page) -> bool:
+    """验证 VN 底栏行为：
+    1. 底栏只渲染最新 1 条助手消息（不是多条堆叠）
+    2. 用户消息气泡在 2s 内淡出（opacity < 0.3）
+    3. 展开历史按钮点击后，历史面板出现、关闭按钮生效
+    """
+    print("\n=== STEP: DIALOG BAR (VN 底栏) ===")
+    ensure_mic_idle(page)
+
+    # 确保至少有 1 条对话
+    page.locator('[data-testid="chat-input"]').fill("说句你好")
+    page.locator('[data-testid="send-button"]').click()
+    # 等助手回复出现在底栏
+    deadline = time.time() + 60
+    bar_text = ""
+    while time.time() < deadline:
+        bar = page.locator('[data-testid="dialog-bar-assistant"]')
+        if bar.count() and bar.inner_text().strip():
+            bar_text = bar.inner_text().strip()
+            break
+        page.wait_for_timeout(500)
+    if not bar_text:
+        print("[dialog] FAIL 底栏未渲染助手回复")
+        return False
+    print(f"[dialog] 底栏最新助手文本: {bar_text[:50]}...")
+    shot(page, "dialog_01_first_reply")
+
+    # 断言 1：底栏里 assistant 节点只有 1 个
+    assistant_nodes = page.locator('[data-testid="dialog-bar-assistant"]').count()
+    if assistant_nodes != 1:
+        print(f"[dialog] FAIL 底栏助手节点数 {assistant_nodes} != 1")
+        return False
+    print("[dialog] PASS 底栏只渲染 1 条助手消息")
+
+    # 断言 2：发第二条消息，底栏应替换为新内容
+    page.locator('[data-testid="chat-input"]').fill("再说一句")
+    page.locator('[data-testid="send-button"]').click()
+    # 等内容变化
+    deadline = time.time() + 60
+    new_text = bar_text
+    while time.time() < deadline:
+        cur = page.locator('[data-testid="dialog-bar-assistant"]').inner_text().strip()
+        if cur and cur != bar_text:
+            new_text = cur
+            break
+        page.wait_for_timeout(500)
+    if new_text == bar_text:
+        print("[dialog] FAIL 底栏未被第二条回复替换")
+        return False
+    print(f"[dialog] PASS 底栏被替换为新内容: {new_text[:50]}...")
+    shot(page, "dialog_02_replaced")
+
+    # 断言 3：用户消息气泡 2s 内淡出
+    page.locator('[data-testid="chat-input"]').fill("测试气泡")
+    page.locator('[data-testid="send-button"]').click()
+    page.wait_for_timeout(100)
+    user_bubble = page.locator('[data-testid="user-bubble-fleeting"]')
+    if user_bubble.count() == 0:
+        print("[dialog] FAIL 用户小气泡未出现")
+        return False
+    # 等 2.5s，应已淡出
+    page.wait_for_timeout(2500)
+    opacity_val = user_bubble.evaluate(
+        "el => parseFloat(getComputedStyle(el).opacity)"
+    ) if user_bubble.count() else 0.0
+    if opacity_val > 0.3:
+        print(f"[dialog] FAIL 用户气泡 2.5s 后仍可见 opacity={opacity_val}")
+        return False
+    print(f"[dialog] PASS 用户气泡淡出 opacity={opacity_val}")
+    shot(page, "dialog_03_user_faded")
+
+    # 断言 4：展开历史按钮点击 → 历史面板出现
+    page.locator('[data-testid="dialog-history-toggle"]').click()
+    page.wait_for_timeout(500)
+    panel = page.locator('[data-testid="chat-history-panel"]')
+    if panel.count() == 0:
+        print("[dialog] FAIL 点击按钮后历史面板未出现")
+        return False
+    shot(page, "dialog_04_history_open")
+
+    # 断言 5：历史面板关闭按钮生效
+    page.locator('[data-testid="chat-history-close"]').click()
+    page.wait_for_timeout(500)
+    if page.locator('[data-testid="chat-history-panel"]').count() != 0:
+        print("[dialog] FAIL 历史面板未关闭")
+        return False
+    print("[dialog] PASS 历史面板开关正常")
+    shot(page, "dialog_05_history_closed")
+
+    return True
+
+
 def step_esc_interrupt(page: Page) -> bool:
     print("\n=== STEP: ESC INTERRUPT ===")
     # Send a long-winded prompt
@@ -235,9 +327,9 @@ def step_esc_interrupt(page: Page) -> bool:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", default=[],
-                    choices=["chat", "memory", "mic", "esc"])
+                    choices=["chat", "memory", "mic", "esc", "dialog"])
     args = ap.parse_args()
-    steps = args.only or ["chat", "memory", "mic", "esc"]
+    steps = args.only or ["chat", "memory", "mic", "esc", "dialog"]
 
     ws_url = cdp_endpoint()
     print(f"[cdp] connecting to {ws_url}")
@@ -256,6 +348,8 @@ def main():
             results["mic"] = step_mic_toggle(page)
         if "esc" in steps:
             results["esc"] = step_esc_interrupt(page)
+        if "dialog" in steps:
+            results["dialog"] = step_dialog_bar(page)
 
         browser.close()
 
