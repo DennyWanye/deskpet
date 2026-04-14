@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DeskPet placeholder icon — clay-style purple cloud sprite.
+  Hand-written SVG, rendered to PNG via tauri-app/scripts/render-svg.mjs.
+  Spec: docs/superpowers/specs/2026-04-14-p2s1-icon-branding-design.md
+
+  Palette:
+    #863bff  cloud deep purple (bottom shadow, matches current favicon hue)
+    #9d63ff  cloud mid purple
+    #b899ff  cloud light purple (upper highlight)
+    #ede6ff  cloud brightest highlight (top reflection)
+    #1a0b33  near-black purple (eyes / mouth)
+    #ff9ec7  blush (semi-transparent)
+
+  Layout (canvas 1024×1024, cloud bbox ~200–822 × ~200–800):
+    - left bump    circle(320, 520, 180)
+    - top bump     circle(512, 380, 230)
+    - right bump   circle(704, 520, 180)
+    - bottom body  ellipse(512, 620, 280, 160)
+    - eyes         circle(430, 480, 30) / circle(594, 480, 30)
+    - eye highlights small white dots for liveliness
+    - mouth        path (quadratic arc)
+    - blush        soft pink radial dots
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="clayBody" cx="40%" cy="28%" r="75%">
+      <stop offset="0%"  stop-color="#ede6ff"/>
+      <stop offset="28%" stop-color="#b899ff"/>
+      <stop offset="62%" stop-color="#9d63ff"/>
+      <stop offset="100%" stop-color="#863bff"/>
+    </radialGradient>
+    <radialGradient id="blush" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#ff9ec7" stop-opacity="0.65"/>
+      <stop offset="100%" stop-color="#ff9ec7" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Cloud body: overlapping circles + base ellipse, all share the clay gradient -->
+  <g fill="url(#clayBody)">
+    <circle cx="320" cy="520" r="180"/>
+    <circle cx="512" cy="380" r="230"/>
+    <circle cx="704" cy="520" r="180"/>
+    <ellipse cx="512" cy="620" rx="280" ry="160"/>
+  </g>
+
+  <!-- Blush: behind eyes/mouth so they sit on top -->
+  <circle cx="380" cy="560" r="60" fill="url(#blush)"/>
+  <circle cx="644" cy="560" r="60" fill="url(#blush)"/>
+
+  <!-- Eyes -->
+  <circle cx="430" cy="480" r="30" fill="#1a0b33"/>
+  <circle cx="594" cy="480" r="30" fill="#1a0b33"/>
+  <!-- Eye catch-light -->
+  <circle cx="440" cy="470" r="9" fill="#ffffff"/>
+  <circle cx="604" cy="470" r="9" fill="#ffffff"/>
+
+  <!-- Mouth: small smile arc -->
+  <path d="M 475 555 Q 512 582 549 555"
+        stroke="#1a0b33" stroke-width="11" stroke-linecap="round" fill="none"/>
+</svg>
