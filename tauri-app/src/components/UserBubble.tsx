@@ -33,7 +33,10 @@ export function UserBubble({ text, visibleMs = 2000 }: Props) {
 
   useEffect(() => {
     if (!text) return;
-    setContent(text);
+    // App.tsx 追加尾部 U+200B 作为"强制刷新"令牌（保证相同文本重发时
+    // 字符串 prop 仍不等，effect 仍会重跑）。渲染时剥掉，避免零宽字符
+    // 进入 DOM —— 部分屏幕阅读器会把 ZWSP 念出来。
+    setContent(text.replace(/\u200B+$/, ""));
     setOpacity(1);
     const fadeTimer = window.setTimeout(
       () => setOpacity(0),

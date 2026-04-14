@@ -231,6 +231,20 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isPlaying, handleInterrupt]);
 
+  // Escape 关闭对话历史面板 —— 只在 historyOpen 为真时绑定，和上面的
+  // isPlaying-Escape 处理器解耦。两者都只改 state，可以共存：即使同时
+  // 触发也只是关闭面板 + 打断 TTS，都是用户按 Esc 合理期待的"停止"语义。
+  useEffect(() => {
+    if (!historyOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setHistoryOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [historyOpen]);
+
   const toggleRecording = async () => {
     if (isRecording) {
       stopRecording();
