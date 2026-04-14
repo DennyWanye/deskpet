@@ -209,14 +209,16 @@ def step_dialog_bar(page: Page) -> bool:
         page.wait_for_timeout(500)
     if not bar_text:
         print("[dialog] FAIL 底栏未渲染助手回复")
+        shot(page, "dialog_01_fail_no_reply")
         return False
-    print(f"[dialog] 底栏最新助手文本: {bar_text[:50]}...")
+    print(f"[dialog] 底栏最新助手文本: {bar_text[:50]}")
     shot(page, "dialog_01_first_reply")
 
     # 断言 1：底栏里 assistant 节点只有 1 个
     assistant_nodes = page.locator('[data-testid="dialog-bar-assistant"]').count()
     if assistant_nodes != 1:
         print(f"[dialog] FAIL 底栏助手节点数 {assistant_nodes} != 1")
+        shot(page, "dialog_01_fail_multi_nodes")
         return False
     print("[dialog] PASS 底栏只渲染 1 条助手消息")
 
@@ -227,13 +229,16 @@ def step_dialog_bar(page: Page) -> bool:
     deadline = time.time() + 60
     new_text = bar_text
     while time.time() < deadline:
-        cur = page.locator('[data-testid="dialog-bar-assistant"]').inner_text().strip()
-        if cur and cur != bar_text:
-            new_text = cur
-            break
+        bar2 = page.locator('[data-testid="dialog-bar-assistant"]')
+        if bar2.count():
+            cur = bar2.inner_text().strip()
+            if cur and cur != bar_text:
+                new_text = cur
+                break
         page.wait_for_timeout(500)
     if new_text == bar_text:
         print("[dialog] FAIL 底栏未被第二条回复替换")
+        shot(page, "dialog_02_fail")
         return False
     print(f"[dialog] PASS 底栏被替换为新内容: {new_text[:50]}...")
     shot(page, "dialog_02_replaced")
@@ -241,18 +246,32 @@ def step_dialog_bar(page: Page) -> bool:
     # 断言 3：用户消息气泡 2s 内淡出
     page.locator('[data-testid="chat-input"]').fill("测试气泡")
     page.locator('[data-testid="send-button"]').click()
-    page.wait_for_timeout(100)
     user_bubble = page.locator('[data-testid="user-bubble-fleeting"]')
-    if user_bubble.count() == 0:
+    # 轮询等气泡出现（最多 2s）
+    bubble_deadline = time.time() + 2.0
+    appeared = False
+    while time.time() < bubble_deadline:
+        if user_bubble.count() > 0:
+            appeared = True
+            break
+        page.wait_for_timeout(100)
+    if not appeared:
         print("[dialog] FAIL 用户小气泡未出现")
+        shot(page, "dialog_03_fail_no_bubble")
         return False
     # 等 2.5s，应已淡出
     page.wait_for_timeout(2500)
-    opacity_val = user_bubble.evaluate(
-        "el => parseFloat(getComputedStyle(el).opacity)"
-    ) if user_bubble.count() else 0.0
+    count_after = user_bubble.count()
+    if count_after == 0:
+        # DOM 已移除也算淡出
+        opacity_val = 0.0
+    else:
+        opacity_val = user_bubble.evaluate(
+            "el => parseFloat(getComputedStyle(el).opacity)"
+        )
     if opacity_val > 0.3:
         print(f"[dialog] FAIL 用户气泡 2.5s 后仍可见 opacity={opacity_val}")
+        shot(page, "dialog_03_fail_visible")
         return False
     print(f"[dialog] PASS 用户气泡淡出 opacity={opacity_val}")
     shot(page, "dialog_03_user_faded")
@@ -263,7 +282,9 @@ def step_dialog_bar(page: Page) -> bool:
     panel = page.locator('[data-testid="chat-history-panel"]')
     if panel.count() == 0:
         print("[dialog] FAIL 点击按钮后历史面板未出现")
+        shot(page, "dialog_04_fail_no_panel")
         return False
+    print("[dialog] PASS 历史面板已打开")
     shot(page, "dialog_04_history_open")
 
     # 断言 5：历史面板关闭按钮生效
@@ -271,6 +292,7 @@ def step_dialog_bar(page: Page) -> bool:
     page.wait_for_timeout(500)
     if page.locator('[data-testid="chat-history-panel"]').count() != 0:
         print("[dialog] FAIL 历史面板未关闭")
+        shot(page, "dialog_05_fail_still_open")
         return False
     print("[dialog] PASS 历史面板开关正常")
     shot(page, "dialog_05_history_closed")
