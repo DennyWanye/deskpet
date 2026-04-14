@@ -33,9 +33,10 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
-  // Use ref for mode to avoid re-render killing the render loop
+  // Use ref for mode to avoid re-render killing the render loop. We don't
+  // expose this as React state because the render loop captures it once and
+  // toggling it would otherwise tear down + re-init the whole pipeline.
   const modeRef = useRef<"loading" | "live2d" | "canvas2d">("loading");
-  const [displayMode, setDisplayMode] = useState<string>("loading");
   const cleanupRef = useRef<(() => void) | null>(null);
   const mouthRef = useRef(mouthOpenY);
   mouthRef.current = mouthOpenY;
@@ -163,7 +164,6 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         modelRef.current = model;
 
         modeRef.current = "live2d";
-        setDisplayMode("live2d");
         console.warn("[Live2D] render loop starting");
 
         // Render loop — cap at ~30fps for performance
@@ -240,7 +240,6 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
 
         if (!destroyed) {
           modeRef.current = "canvas2d";
-          setDisplayMode("canvas2d");
           startCanvas2D();
         }
       }
@@ -255,8 +254,13 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
       const dpr = window.devicePixelRatio || 1;
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+      // Narrow the context type once at the top so the inner draw() closure
+      // sees a non-null CanvasRenderingContext2D. With `function draw()` (a
+      // hoisted declaration), TS doesn't carry the `if (!rawCtx) return;`
+      // narrowing into the closure; an explicit non-null typed const does.
+      const rawCtx = canvas.getContext("2d");
+      if (!rawCtx) return;
+      const ctx: CanvasRenderingContext2D = rawCtx;
 
       let frameCount = 0;
       let lastFpsTime = performance.now();
