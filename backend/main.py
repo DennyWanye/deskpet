@@ -34,7 +34,10 @@ from providers.silero_vad import SileroVAD
 from providers.faster_whisper_asr import FasterWhisperASR
 from providers.edge_tts_provider import EdgeTTSProvider
 from agent.providers.simple_llm import SimpleLLMAgent
+from agent.providers.tool_using import ToolUsingAgent
 from memory.conversation import SqliteConversationMemory
+from tools.registry import ToolRegistry
+from tools.get_time import get_time_tool
 
 ollama_llm = OllamaLLM(
     model=config.llm.model,
@@ -48,9 +51,15 @@ service_context.register("llm_engine", ollama_llm)
 memory_store = SqliteConversationMemory(db_path=config.memory.db_path)
 service_context.register("memory_store", memory_store)
 
-# V5 §2.3: agent_engine 与 llm_engine 分层。SimpleLLMAgent 代理 LLM +
-# 可选注入 memory_store(S2); S3 工具路由是独立 Agent 类, 不动此处。
-agent = SimpleLLMAgent(ollama_llm, memory=memory_store)
+# V5 §2.3: agent_engine 与 llm_engine 分层。
+# 组装栈:ToolUsingAgent(S3) 包装 SimpleLLMAgent(S2 + S0), memory 在内层。
+# 工具调用的结果是 inline 注入 user-facing stream,不走 memory 持久化。
+tool_registry = ToolRegistry()
+tool_registry.register(get_time_tool)
+service_context.register("tool_router", tool_registry)
+
+base_agent = SimpleLLMAgent(ollama_llm, memory=memory_store)
+agent = ToolUsingAgent(base=base_agent, registry=tool_registry)
 service_context.register("agent_engine", agent)
 
 vad = SileroVAD(
