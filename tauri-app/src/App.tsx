@@ -1,6 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
 import { MemoryPanel } from "./components/MemoryPanel";
+import { DialogBar } from "./components/DialogBar";
+import { ChatHistoryPanel } from "./components/ChatHistoryPanel";
+import { UserBubble } from "./components/UserBubble";
 import { useControlChannel } from "./hooks/useWebSocket";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
@@ -90,6 +93,10 @@ function App() {
 
   // S14 — memory management panel toggle.
   const [memoryOpen, setMemoryOpen] = useState(false);
+
+  // VN 底栏 —— 最新用户输入（驱动 UserBubble 淡出计时）+ 历史面板开关。
+  const [latestUserInput, setLatestUserInput] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // Audio channel (voice pipeline)
   const {
@@ -190,6 +197,9 @@ function App() {
   const handleSend = () => {
     if (!chatText.trim()) return;
     setMessages((prev) => [...prev, { role: "user", text: chatText }]);
+    // 触发 UserBubble —— 每次用新对象 ref 重置淡出计时，避免相同文本重发时
+    // React 因为字符串相等不重置 state（追加零宽空格保证每次 text prop 唯一）。
+    setLatestUserInput(chatText + "\u200B".repeat(messages.length));
     sendChat(chatText);
     setChatText("");
   };
@@ -246,6 +256,10 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // 底栏渲染用 —— 从 messages 里取最后一条 assistant。
+  const latestAssistant =
+    [...messages].reverse().find((m) => m.role === "assistant")?.text ?? null;
+
   return (
     <div
       style={{
@@ -263,49 +277,26 @@ function App() {
         mouthOpenY={mouthOpenY}
       />
 
-      {messages.length > 0 && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: "55px",
-            left: "5px",
-            right: "5px",
-            maxHeight: "200px",
-            overflowY: "auto",
-            display: "flex",
-            flexDirection: "column",
-            gap: "6px",
-            zIndex: 10,
-            padding: "4px",
-          }}
-        >
-          {messages.slice(-5).map((msg, i) => (
-            <div
-              key={i}
-              data-testid={`chat-bubble-${msg.role}`}
-              style={{
-                alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
-                backgroundColor:
-                  msg.role === "user"
-                    ? "rgba(59, 130, 246, 0.9)"
-                    : "rgba(30, 30, 50, 0.85)",
-                color: "white",
-                borderRadius: "10px",
-                padding: "6px 10px",
-                maxWidth: "260px",
-                fontSize: "12px",
-                lineHeight: "1.4",
-                maxHeight: "80px",
-                overflowY: "auto",
-                wordBreak: "break-word",
-              }}
-            >
-              {stripMarkdown(msg.text)}
-            </div>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
-      )}
+      {/* VN 底栏：只展示最新一条助手回复 */}
+      <DialogBar
+        latestAssistant={latestAssistant ? stripMarkdown(latestAssistant) : null}
+        onOpenHistory={() => setHistoryOpen(true)}
+      />
+
+      {/* 用户消息 2s 小气泡 */}
+      <UserBubble text={latestUserInput} visibleMs={2000} />
+
+      {/* 完整会话历史（点 💬 按钮展开）*/}
+      <ChatHistoryPanel
+        open={historyOpen}
+        messages={messages.map((m) => ({ role: m.role, text: stripMarkdown(m.text) }))}
+        onClose={() => setHistoryOpen(false)}
+      />
+
+      {/* 旧 messagesEndRef 节点：新架构下不再需要自动滚动，但保留 hook 声明
+          以免改动 hook 调用顺序；挂一个隐藏 div 让 ref 指向有效节点 */}
+      <div ref={messagesEndRef} style={{ display: "none" }} />
+
 
       <div
         style={{
