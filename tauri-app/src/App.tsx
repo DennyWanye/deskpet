@@ -20,7 +20,40 @@ function stripMarkdown(text: string): string {
 function App() {
   const [fps, setFps] = useState(0);
   const [chatText, setChatText] = useState("");
-  const [secret, _setSecret] = useState("");
+  // Shared secret — fetched from Tauri backend command after it has read the
+  // SHARED_SECRET line from the spawned Python process. Empty string while
+  // polling; once populated, the WebSocket hooks reconnect with proper auth.
+  const [secret, setSecret] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function pollSecret() {
+      // Resolve Tauri invoke lazily so dev-browser (vite server without Tauri
+      // shell) still renders without crashing.
+      try {
+        const core = await import("@tauri-apps/api/core").catch(() => null);
+        if (!core) return;
+        for (let i = 0; i < 60 && !cancelled; i++) {
+          try {
+            const s = await core.invoke<string>("get_shared_secret");
+            if (s) {
+              if (!cancelled) setSecret(s);
+              return;
+            }
+          } catch {
+            // backend not yet up; retry
+          }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      } catch {
+        /* not running under Tauri */
+      }
+    }
+    pollSecret();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [messages, setMessages] = useState<
     { role: "user" | "assistant"; text: string }[]
   >([]);

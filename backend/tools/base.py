@@ -12,9 +12,16 @@ from typing import Protocol, runtime_checkable
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """Metadata the LLM sees when deciding whether to call a tool."""
+    """Metadata the LLM sees when deciding whether to call a tool.
+
+    ``requires_confirmation`` marks tools that touch user state (delete file,
+    run script, open URL). When True, the ToolUsingAgent must obtain explicit
+    user confirmation (Tauri dialog via control channel) before ``invoke``.
+    Defaults to False so existing tools keep their behaviour.
+    """
     name: str
     description: str
+    requires_confirmation: bool = False
 
 
 @runtime_checkable

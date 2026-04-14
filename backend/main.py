@@ -36,6 +36,7 @@ from providers.edge_tts_provider import EdgeTTSProvider
 from agent.providers.simple_llm import SimpleLLMAgent
 from agent.providers.tool_using import ToolUsingAgent
 from memory.conversation import SqliteConversationMemory
+from memory.sensitive_filter import RedactingMemoryStore
 from tools.registry import ToolRegistry
 from tools.get_time import get_time_tool
 from observability.vram import recommend_asr_device
@@ -49,7 +50,9 @@ service_context.register("llm_engine", ollama_llm)
 
 # S2: memory store — short-term conversation history (SQLite).
 # Path from config.toml; falls back to ./data/memory.db if unset.
-memory_store = SqliteConversationMemory(db_path=config.memory.db_path)
+# S6 (R13): wrap with RedactingMemoryStore so secrets/PII never hit disk.
+raw_memory = SqliteConversationMemory(db_path=config.memory.db_path)
+memory_store = RedactingMemoryStore(raw_memory)
 service_context.register("memory_store", memory_store)
 
 # V5 §2.3: agent_engine 与 llm_engine 分层。
