@@ -38,6 +38,7 @@ from agent.providers.tool_using import ToolUsingAgent
 from memory.conversation import SqliteConversationMemory
 from tools.registry import ToolRegistry
 from tools.get_time import get_time_tool
+from observability.vram import recommend_asr_device
 
 ollama_llm = OllamaLLM(
     model=config.llm.model,
@@ -69,10 +70,18 @@ vad = SileroVAD(
 )
 service_context.register("vad_engine", vad)
 
+# S4: device="auto" in config.toml → pick cuda/cpu based on detected VRAM.
+# Explicit "cuda" or "cpu" is respected verbatim (user override).
+if config.asr.device == "auto":
+    _asr_device, _asr_compute = recommend_asr_device()
+    logger.info("asr_device_selected", device=_asr_device, compute=_asr_compute, source="auto")
+else:
+    _asr_device, _asr_compute = config.asr.device, config.asr.compute_type
+
 asr = FasterWhisperASR(
     model=config.asr.model,
-    device=config.asr.device,
-    compute_type=config.asr.compute_type,
+    device=_asr_device,
+    compute_type=_asr_compute,
     local_dir=str(Path(__file__).parent / "assets" / "faster-whisper-large-v3-turbo"),
 )
 service_context.register("asr_engine", asr)
