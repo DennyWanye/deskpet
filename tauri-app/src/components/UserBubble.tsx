@@ -1,5 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+
+/** CSS fade duration — must stay in sync with the `transition` below. */
+const FADE_DURATION_MS = 400;
 
 type Props = {
   /** 最新用户输入文本；每次文本变化重置淡出计时器 */
@@ -13,18 +16,38 @@ type Props = {
  *
  * 放在输入框上方，让用户确认"发出去了"。
  * 不进入对话历史 —— 历史已由 App.tsx 的 messages state 维护。
+ *
+ * 生命周期：
+ * 1. 新 text 进来 → snapshot 到 content、opacity 1
+ * 2. visibleMs 后 → opacity 0（触发 CSS fade）
+ * 3. visibleMs + FADE_DURATION_MS 后 → content null，节点彻底从 DOM 移除
+ *    （避免屏幕阅读器读隐藏文字，也让 E2E locator.count() 归零）
  */
 export function UserBubble({ text, visibleMs = 2000 }: Props) {
   const [opacity, setOpacity] = useState(0);
   const [content, setContent] = useState<string | null>(null);
+  // visibleMs 用 ref 承载：避免把它放进 effect deps 导致新 text 来之前
+  // 单独改 visibleMs 会重启计时器（不是 spec 意图）。
+  const visibleMsRef = useRef(visibleMs);
+  visibleMsRef.current = visibleMs;
 
   useEffect(() => {
     if (!text) return;
     setContent(text);
     setOpacity(1);
-    const t = window.setTimeout(() => setOpacity(0), visibleMs);
-    return () => window.clearTimeout(t);
-  }, [text, visibleMs]);
+    const fadeTimer = window.setTimeout(
+      () => setOpacity(0),
+      visibleMsRef.current,
+    );
+    const removeTimer = window.setTimeout(
+      () => setContent(null),
+      visibleMsRef.current + FADE_DURATION_MS,
+    );
+    return () => {
+      window.clearTimeout(fadeTimer);
+      window.clearTimeout(removeTimer);
+    };
+  }, [text]);
 
   if (!content) return null;
 
@@ -34,8 +57,9 @@ export function UserBubble({ text, visibleMs = 2000 }: Props) {
       style={{
         ...bubbleStyle,
         opacity,
-        transition: "opacity 400ms ease-out",
-        pointerEvents: opacity < 0.1 ? "none" : "auto",
+        transition: `opacity ${FADE_DURATION_MS}ms ease-out`,
+        // 气泡只做视觉确认，从不接受点击
+        pointerEvents: "none",
       }}
     >
       {content}
