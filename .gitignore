@@ -16,3 +16,8 @@ logs/
 backend/assets/
 backend/temp/
 temp/
+
+# E2E driver screenshots — regenerated on every run, not source-of-truth
+scripts/e2e/shots/
+scripts/e2e/shots_cdp/
+scripts/e2e/deskpet_window.png

@@ -153,6 +153,7 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
       >
         <strong style={{ fontSize: "14px" }}>记忆管理 · {sessionId}</strong>
         <button
+          data-testid="memory-close"
           onClick={onClose}
           style={{
             background: "transparent",
@@ -169,14 +170,15 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
       </div>
 
       <div style={{ display: "flex", gap: "4px", marginBottom: "6px", flexWrap: "wrap" }}>
-        <button onClick={refresh} style={btnStyle("#3b82f6")}>
+        <button data-testid="memory-refresh" onClick={refresh} style={btnStyle("#3b82f6")}>
           {loading ? "…" : "刷新"}
         </button>
-        <button onClick={handleExport} style={btnStyle("#10b981")}>
+        <button data-testid="memory-export" onClick={handleExport} style={btnStyle("#10b981")}>
           导出 JSON
         </button>
         {!confirmingClear ? (
           <button
+            data-testid="memory-clear-prompt"
             onClick={() => setConfirmingClear(true)}
             style={btnStyle("#dc2626")}
           >
@@ -184,13 +186,14 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
           </button>
         ) : (
           <>
-            <button onClick={handleClearSession} style={btnStyle("#dc2626")}>
+            <button data-testid="memory-clear-session" onClick={handleClearSession} style={btnStyle("#dc2626")}>
               仅本会话
             </button>
-            <button onClick={handleClearAll} style={btnStyle("#7f1d1d")}>
+            <button data-testid="memory-clear-all" onClick={handleClearAll} style={btnStyle("#7f1d1d")}>
               全部会话
             </button>
             <button
+              data-testid="memory-clear-cancel"
               onClick={() => setConfirmingClear(false)}
               style={btnStyle("#6b7280")}
             >
@@ -223,6 +226,8 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
         {turns.map((t) => (
           <div
             key={t.id}
+            data-testid={`memory-turn-${t.id}`}
+            data-turn-role={t.role}
             style={{
               display: "flex",
               gap: "6px",
@@ -251,6 +256,7 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
               {t.content}
             </span>
             <button
+              data-testid={`memory-delete-${t.id}`}
               onClick={() => handleDelete(t.id)}
               style={{
                 ...btnStyle("#991b1b"),

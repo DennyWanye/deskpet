@@ -282,6 +282,7 @@ function App() {
           {messages.slice(-5).map((msg, i) => (
             <div
               key={i}
+              data-testid={`chat-bubble-${msg.role}`}
               style={{
                 alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
                 backgroundColor:
@@ -319,6 +320,7 @@ function App() {
       >
         {/* Mic button */}
         <button
+          data-testid="mic-button"
           onClick={toggleRecording}
           disabled={audioState !== "connected" && state !== "connected"}
           style={{
@@ -347,6 +349,7 @@ function App() {
         {/* Interrupt button — appears only while TTS is playing */}
         {isPlaying && (
           <button
+            data-testid="interrupt-button"
             onClick={handleInterrupt}
             style={{
               width: "32px",
@@ -368,6 +371,7 @@ function App() {
         )}
 
         <input
+          data-testid="chat-input"
           type="text"
           value={chatText}
           onChange={(e) => setChatText(e.target.value)}
@@ -387,6 +391,7 @@ function App() {
           }}
         />
         <button
+          data-testid="send-button"
           onClick={handleSend}
           disabled={state !== "connected" || !chatText.trim()}
           style={{
@@ -416,6 +421,7 @@ function App() {
       >
         {/* Memory management panel toggle (S14) */}
         <button
+          data-testid="memory-toggle"
           onClick={() => setMemoryOpen(true)}
           title="记忆管理"
           style={{
