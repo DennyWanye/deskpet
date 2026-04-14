@@ -11,3 +11,8 @@ Thumbs.db
 *.log
 crash_reports/
 logs/
+
+# Voice pipeline model weights & runtime artifacts (GB-scale, not for git)
+backend/assets/
+backend/temp/
+temp/
