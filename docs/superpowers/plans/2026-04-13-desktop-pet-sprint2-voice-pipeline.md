@@ -14,29 +14,61 @@
 
 ---
 
-## 模型下载指南
+## 模型资产获取
 
-### 1. silero-vad
-```bash
-# PyTorch Hub 自动下载，无需手动操作
-# 首次 import 时自动从 GitHub 拉取
-pip install torch torchaudio  # 如果还没有
+> **注意:** `backend/assets/` 与 `backend/temp/` 已在 `.gitignore` 中被忽略（单目录可达 GB 量级，不进版本库）。新机器 clone 仓库后需要按下面步骤补齐模型。
+
+**目录约定:**
+```
+backend/
+├── assets/
+│   ├── faster-whisper-large-v3-turbo/   # ASR 主模型 (~2.7GB)
+│   ├── cosyvoice2/                       # 预留给未来本地 TTS (~5.3GB, 可选)
+│   └── ...                               # silero-vad 由 torch.hub 缓存至 ~/.cache/torch/hub
+└── temp/                                 # TTS/ASR 运行时产物
 ```
 
-### 2. faster-whisper
+### 1. Silero VAD（自动，无需人工下载）
+首次 `import silero_vad` 时 torch.hub 会从 GitHub 自动拉取 (~2MB)，缓存在 `~/.cache/torch/hub/snakers4_silero-vad_master/`。离线环境可预先 `git clone https://github.com/snakers4/silero-vad` 到该路径。
+
 ```bash
-pip install faster-whisper
-# 模型首次使用时自动从 HuggingFace 下载到 ~/.cache/huggingface/
-# large-v3-turbo 约 1.5GB
+uv pip install torch torchaudio  # GPU 版本用 --extra-index-url https://download.pytorch.org/whl/cu121
 ```
 
-### 3. CosyVoice 2
+### 2. faster-whisper (ASR, 必需)
+默认从 HuggingFace 下载 `Systran/faster-whisper-large-v3-turbo`（~1.5GB CT2 权重，FP16 ~2.7GB 展开）。
+
+**推荐：离线放置 + `model_dir` 指定路径**
 ```bash
-pip install cosyvoice2
-# 或从 ModelScope 下载模型文件：
-# pip install modelscope
-# modelscope download --model iic/CosyVoice2-0.5B --local_dir ./assets/cosyvoice2
+# 方法 A: huggingface-cli
+pip install huggingface_hub
+huggingface-cli download Systran/faster-whisper-large-v3-turbo \
+    --local-dir backend/assets/faster-whisper-large-v3-turbo
+
+# 方法 B: ModelScope 镜像（国内网络更稳）
+pip install modelscope
+modelscope download --model keepitsimple/faster-whisper-large-v3-turbo \
+    --local-dir backend/assets/faster-whisper-large-v3-turbo
 ```
+
+然后在 `config.toml` 中把 `[asr].model_dir` 指向该路径即可（留空则走默认 HF 缓存 `~/.cache/huggingface/`）。
+
+### 3. TTS
+**当前默认：edge-tts（在线、无需权重）**
+```toml
+[tts]
+provider = "edge-tts"
+voice = "zh-CN-XiaoyiNeural"   # 可选 XiaoxiaoNeural / YunxiNeural 等
+```
+依赖 Microsoft Edge 在线合成服务，首次运行 `pip install edge-tts` 即可；无模型权重需要下载。
+
+**未来升级：CosyVoice 2（本地，离线可用）**
+```bash
+pip install modelscope
+modelscope download --model iic/CosyVoice2-0.5B \
+    --local-dir backend/assets/cosyvoice2
+```
+切换时把 `[tts].provider` 改为 `cosyvoice2` 并实现对应 provider。
 
 ---
 
