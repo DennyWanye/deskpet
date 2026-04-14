@@ -38,6 +38,7 @@ from providers.ollama_llm import OllamaLLM
 from providers.silero_vad import SileroVAD
 from providers.faster_whisper_asr import FasterWhisperASR
 from providers.edge_tts_provider import EdgeTTSProvider
+from providers.cosyvoice_tts import CosyVoice2Provider
 from agent.providers.simple_llm import SimpleLLMAgent
 from agent.providers.tool_using import ToolUsingAgent
 from memory.conversation import SqliteConversationMemory
@@ -110,7 +111,18 @@ asr = FasterWhisperASR(
 )
 service_context.register("asr_engine", asr)
 
-tts = EdgeTTSProvider(voice=config.tts.voice)
+# S9 (R11): TTS provider selection. "cosyvoice2" tries local first, with
+# built-in edge-tts fallback on any failure (see CosyVoice2Provider.load).
+# "edge-tts" (or anything else) goes straight to the cloud voice.
+if config.tts.provider == "cosyvoice2":
+    # model_dir is relative to the backend directory by convention.
+    _cosy_dir = Path(__file__).parent / config.tts.model_dir.lstrip("./")
+    tts = CosyVoice2Provider(
+        model_dir=str(_cosy_dir),
+        fallback_voice=config.tts.voice,
+    )
+else:
+    tts = EdgeTTSProvider(voice=config.tts.voice)
 service_context.register("tts_engine", tts)
 
 
