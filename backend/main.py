@@ -32,6 +32,7 @@ from providers.ollama_llm import OllamaLLM
 from providers.silero_vad import SileroVAD
 from providers.faster_whisper_asr import FasterWhisperASR
 from providers.edge_tts_provider import EdgeTTSProvider
+from agent.providers.simple_llm import SimpleLLMAgent
 
 ollama_llm = OllamaLLM(
     model=config.llm.model,
@@ -39,6 +40,11 @@ ollama_llm = OllamaLLM(
     temperature=config.llm.temperature,
 )
 service_context.register("llm_engine", ollama_llm)
+
+# V5 §2.3: agent_engine 与 llm_engine 分层。当前 SimpleLLMAgent 纯代理;
+# S2 接记忆、S3 接工具路由都在 Agent 层扩展, 不动 WebSocket 层。
+agent = SimpleLLMAgent(ollama_llm)
+service_context.register("agent_engine", agent)
 
 vad = SileroVAD(
     threshold=config.vad.threshold,
@@ -123,16 +129,19 @@ async def control_channel(ws: WebSocket):
                 text = raw.get("payload", {}).get("text", "")
                 response_text = f"[echo] {text}"
 
-                llm = service_context.llm_engine
-                if llm:
+                # V5 §2.3: route through agent_engine (not llm_engine directly).
+                # Keeps WS layer stable when S2/S3 add memory/tools to Agent.
+                agent_engine = service_context.agent_engine
+                if agent_engine:
                     try:
                         response_text = ""
-                        async for token in llm.chat_stream(
-                            [{"role": "user", "content": text}]
+                        async for token in agent_engine.chat_stream(
+                            [{"role": "user", "content": text}],
+                            session_id=session_id,
                         ):
                             response_text += token
                     except Exception as exc:
-                        logger.warning("llm_stream_failed", error=str(exc))
+                        logger.warning("agent_stream_failed", error=str(exc))
                         response_text = f"[echo] {text}"
 
                 await ws.send_json({
