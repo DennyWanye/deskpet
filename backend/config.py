@@ -11,9 +11,10 @@ class BackendConfig:
 
 @dataclass
 class LLMConfig:
-    provider: str = "ollama"
+    provider: str = "openai_compatible"
     model: str = "gemma4:e4b"
-    base_url: str = "http://localhost:11434"
+    base_url: str = "http://localhost:11434/v1"
+    api_key: str = "ollama"
     temperature: float = 0.7
     max_tokens: int = 2048
 

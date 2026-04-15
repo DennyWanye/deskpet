@@ -6,9 +6,10 @@ port = 8100
 log_level = "INFO"
 
 [llm]
-provider = "ollama"
+provider = "openai_compatible"
 model = "gemma4:e4b"
-base_url = "http://localhost:11434"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
 temperature = 0.7
 max_tokens = 2048
 
