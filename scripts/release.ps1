@@ -53,12 +53,23 @@ try {
     Write-Host "[release] running tauri build"
     if ($NoSign) {
         Write-Host "[release] --no-sign: artifacts will not be verifiable by the updater."
-        npm run tauri -- build -- --bundles nsis msi
     } else {
         if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
             throw "TAURI_SIGNING_PRIVATE_KEY not set. Either export it or pass -NoSign."
         }
-        npm run tauri -- build -- --bundles nsis msi
+    }
+
+    # Single `--` separates npm run args from the script's args. A second
+    # `--` gets interpreted by tauri-cli as a POSIX end-of-options marker,
+    # so `--bundles` becomes a positional arg and the build bails within
+    # a few seconds. (This bit us on CI v0.2.0 run #1 — 8-second "success".)
+    npm run tauri -- build --bundles nsis msi
+
+    # PowerShell's $ErrorActionPreference = "Stop" does NOT trip on native
+    # command non-zero exit codes. Must check $LASTEXITCODE explicitly or
+    # the script silently claims success while the build actually failed.
+    if ($LASTEXITCODE -ne 0) {
+        throw "tauri build failed with exit code $LASTEXITCODE"
     }
 
     Write-Host "[release] done. Bundles under src-tauri\target\release\bundle\"

@@ -64,7 +64,50 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: pwsh
         run: |
-          pwsh ../scripts/release.ps1 -Version ${{ steps.ver.outputs.version }}
+          # PowerShell does not propagate native command non-zero exits by
+          # default. Opt into native error propagation (PS 7.3+) AND keep
+          # an explicit LASTEXITCODE check as a belt-and-braces fallback.
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+            throw "TAURI_SIGNING_PRIVATE_KEY secret is not set on this repo."
+          }
+          # Versions are already synced on the tagged commit (see bump
+          # commit for the tag), so skip release.ps1's version-edit block
+          # and just invoke tauri-cli directly. Single `--` only — a
+          # second `--` turns --bundles into a positional and the build
+          # aborts in seconds.
+          npm run tauri -- build --bundles nsis msi
+          if ($LASTEXITCODE -ne 0) { throw "tauri build exit=$LASTEXITCODE" }
+
+      - name: Verify bundle artifacts exist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = "tauri-app/src-tauri/target/release/bundle"
+          Write-Host "--- bundle tree ---"
+          if (Test-Path $bundle) {
+            Get-ChildItem -Recurse $bundle | Select-Object FullName, Length
+          } else {
+            Write-Host "(bundle directory does not exist)"
+          }
+          $v = "${{ steps.ver.outputs.version }}"
+          $expected = @(
+            "$bundle/nsis/DeskPet_${v}_x64-setup.exe",
+            "$bundle/nsis/DeskPet_${v}_x64-setup.exe.sig",
+            "$bundle/msi/DeskPet_${v}_x64_en-US.msi",
+            "$bundle/msi/DeskPet_${v}_x64_en-US.msi.sig"
+          )
+          $missing = @()
+          foreach ($f in $expected) {
+            if (-not (Test-Path $f)) { $missing += $f }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "MISSING:"
+            $missing | ForEach-Object { Write-Host "  $_" }
+            throw "$($missing.Count) expected artifact(s) missing — see bundle tree above."
+          }
+          Write-Host "All 4 expected artifacts present."
 
       - name: Generate latest.json manifest
         shell: pwsh
