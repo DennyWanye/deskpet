@@ -25,6 +25,8 @@ from agent.providers.simple_llm import SimpleLLMAgent
 
 # --- helpers ---------------------------------------------------------------
 
+_MODELS_PATH = "/models"
+
 SSE_OK = (
     b'data: {"choices":[{"delta":{"content":"hello "}}]}\n\n'
     b'data: {"choices":[{"delta":{"content":"world"}}]}\n\n'
@@ -33,7 +35,7 @@ SSE_OK = (
 
 
 def _ok_handler(req: httpx.Request) -> httpx.Response:
-    if req.url.path.endswith("/models"):
+    if req.url.path.endswith(_MODELS_PATH):
         return httpx.Response(200, json={"data": [{"id": "fake-model"}]})
     return httpx.Response(
         200,
@@ -43,7 +45,7 @@ def _ok_handler(req: httpx.Request) -> httpx.Response:
 
 
 def _503_handler(req: httpx.Request) -> httpx.Response:
-    if req.url.path.endswith("/models"):
+    if req.url.path.endswith(_MODELS_PATH):
         # health probe still 200 so router will try chat -- that's where 503 fires
         return httpx.Response(200, json={"data": [{"id": "fake-model"}]})
     return httpx.Response(503, text="upstream unavailable")
@@ -52,7 +54,7 @@ def _503_handler(req: httpx.Request) -> httpx.Response:
 def _make_provider(handler, model: str = "fake") -> OpenAICompatibleProvider:
     p = OpenAICompatibleProvider(
         base_url="http://invalid/v1",
-        api_key="x",
+        api_key="test-key",
         model=model,
     )
     p._test_transport = httpx.MockTransport(handler)
@@ -144,14 +146,21 @@ def app_with_router(monkeypatch):
     return client, set_router
 
 
-def _send_chat_and_collect_response(client: TestClient, text: str) -> dict:
+def _send_chat_and_collect_response(
+    client: TestClient, text: str, max_iters: int = 20
+) -> dict:
     with client.websocket_connect("/ws/control?secret=&session_id=fb-test") as ws:
         ws.send_json({"type": "chat", "payload": {"text": text}})
-        while True:
+        seen_types: list[str] = []
+        for _ in range(max_iters):
             msg = ws.receive_json()
+            seen_types.append(msg.get("type", "<missing>"))
             if msg["type"] == "chat_response":
                 return msg["payload"]
             # ignore pong / others
+        raise AssertionError(
+            f"没在 {max_iters} 条消息内收到 chat_response，收到的消息类型：{seen_types}"
+        )
 
 
 # --- scenarios -------------------------------------------------------------
