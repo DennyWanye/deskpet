@@ -35,7 +35,43 @@ const DEFAULT_BASE_URL =
   "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const DEFAULT_MODEL = "qwen3.6-plus";
 
+// P2-1 前端持久化 key；P2-2 会迁移到 config.toml 服务端写，届时移除这三个。
+const LS_BASE_URL = "deskpet.cloud.baseUrl";
+const LS_MODEL = "deskpet.cloud.model";
+const LS_STRATEGY = "deskpet.router.strategy";
+
 type Strategy = "local_first" | "cloud_first" | "cost_aware" | "latency_aware";
+
+const DEFAULT_STRATEGY: Strategy = "local_first";
+const VALID_STRATEGIES: ReadonlySet<Strategy> = new Set<Strategy>([
+  "local_first",
+  "cloud_first",
+  "cost_aware",
+  "latency_aware",
+]);
+
+/**
+ * P2-1 前端持久化：读取 localStorage，读不到/异常时回退默认值。
+ * P2-2 迁移到 config.toml 服务端写后，此辅助会被删除。
+ */
+function readLS(key: string, fallback: string): string {
+  try {
+    const v = localStorage.getItem(key);
+    return v !== null && v !== "" ? v : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readStrategyLS(): Strategy {
+  try {
+    const v = localStorage.getItem(LS_STRATEGY);
+    if (v && VALID_STRATEGIES.has(v as Strategy)) return v as Strategy;
+  } catch {
+    /* noop */
+  }
+  return DEFAULT_STRATEGY;
+}
 
 const STRATEGY_LABELS: Record<Strategy, string> = {
   local_first: "local_first（本地优先）",
@@ -78,8 +114,14 @@ export function SettingsPanel({
   lastMessage,
 }: SettingsPanelProps) {
   // ----- Cloud account section -----------------------------------------------
-  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  // Lazy init from localStorage so refresh 不丢用户编辑的 baseUrl/model。
+  // P2-2 迁移到 config.toml 服务端写后，initializer 会换成 props 注入。
+  const [baseUrl, setBaseUrl] = useState<string>(() =>
+    readLS(LS_BASE_URL, DEFAULT_BASE_URL),
+  );
+  const [model, setModel] = useState<string>(() =>
+    readLS(LS_MODEL, DEFAULT_MODEL),
+  );
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [hasKey, setHasKey] = useState(false);
   const [testStatus, setTestStatus] = useState<
@@ -88,7 +130,7 @@ export function SettingsPanel({
   const [testMessage, setTestMessage] = useState<string>("");
 
   // ----- Routing strategy section --------------------------------------------
-  const [strategy, setStrategy] = useState<Strategy>("local_first");
+  const [strategy, setStrategy] = useState<Strategy>(() => readStrategyLS());
 
   // ----- Daily budget section ------------------------------------------------
   const [budget, setBudget] = useState<DailyBudgetStatus | null>(null);
@@ -211,16 +253,27 @@ export function SettingsPanel({
         setApiKeyInput("");
         setHasKey(true);
       }
-      // TODO(P2-1-S6/S8): persist baseUrl/model/strategy/daily_budget to
-      // backend config. Not in S3 scope — those slices own backend-side
-      // strategy + billing.
+      // P2-1 前端持久：把 baseUrl/model/strategy 写 localStorage，避免关窗即丢。
+      // P2-2 会迁移到 config.toml 服务端写（跨设备 + 可被 backend reload），
+      // 届时这三行 setItem 会被替换成 control-WS `update_config` 调用。
+      try {
+        localStorage.setItem(LS_BASE_URL, baseUrl);
+        localStorage.setItem(LS_MODEL, model);
+        localStorage.setItem(LS_STRATEGY, strategy);
+      } catch (e) {
+        // localStorage 配额满或被策略禁用都非致命 —— apiKey 已经进 keyring，
+        // 只是下次重开面板会回退到硬编码默认值。
+        console.warn("[SettingsPanel] persist prefs failed:", e);
+      }
+      // TODO(P2-1-S6/S8): strategy 真实生效仍依赖 S6 backend switching；
+      // daily_budget 仍依赖 S8 ledger。这里只是把 UI 编辑值留到下次会话。
       onClose();
     } catch (e) {
       setSaveError(String(e));
     } finally {
       setSaving(false);
     }
-  }, [apiKeyInput, onClose]);
+  }, [apiKeyInput, baseUrl, model, strategy, onClose]);
 
   const handleRefreshBudget = useCallback(async () => {
     try {
@@ -291,8 +344,13 @@ export function SettingsPanel({
             />
           </label>
           <div style={btnRowStyle}>
-            <button type="button" onClick={handleTestConnection} style={btnStyle}>
-              测试连接
+            <button
+              type="button"
+              onClick={handleTestConnection}
+              disabled={testStatus === "pending" || saving}
+              style={btnStyle}
+            >
+              {testStatus === "pending" ? "测试中…" : "测试连接"}
             </button>
             <button type="button" onClick={handleResetDefaults} style={btnStyle}>
               重置默认
