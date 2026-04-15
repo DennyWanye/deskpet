@@ -10,6 +10,7 @@ Design references:
 from __future__ import annotations
 
 import enum
+import time
 from typing import AsyncIterator, Callable
 
 import structlog
@@ -17,6 +18,68 @@ import structlog
 from providers.base import LLMProvider
 
 logger = structlog.get_logger()
+
+_HEALTH_TTL_SECONDS = 30.0
+_CIRCUIT_OPEN_AFTER_FAILURES = 3
+_CIRCUIT_OPEN_DURATION_SECONDS = 30.0
+
+
+def _now() -> float:
+    """Monkeypatchable time source for deterministic tests."""
+    return time.monotonic()
+
+
+class _CircuitState(str, enum.Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+class _ProviderState:
+    """Per-provider rolling state: circuit breaker + health cache.
+
+    Held by HybridRouter as a private attribute; not part of public API.
+    """
+
+    def __init__(self) -> None:
+        self.consecutive_failures: int = 0
+        self.circuit: _CircuitState = _CircuitState.CLOSED
+        self._opened_at: float | None = None
+        self._health_value: bool | None = None
+        self._health_at: float | None = None
+
+    # --- circuit breaker ---
+
+    def record_chat_failure(self) -> None:
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= _CIRCUIT_OPEN_AFTER_FAILURES:
+            self.circuit = _CircuitState.OPEN
+            self._opened_at = _now()
+
+    def record_chat_success(self) -> None:
+        self.consecutive_failures = 0
+        self.circuit = _CircuitState.CLOSED
+        self._opened_at = None
+
+    def circuit_state_now(self) -> _CircuitState:
+        """Returns logical state, transitioning OPEN→HALF_OPEN if cooldown elapsed."""
+        if self.circuit == _CircuitState.OPEN and self._opened_at is not None:
+            if _now() - self._opened_at >= _CIRCUIT_OPEN_DURATION_SECONDS:
+                return _CircuitState.HALF_OPEN
+        return self.circuit
+
+    # --- health cache ---
+
+    def cache_health(self, value: bool) -> None:
+        self._health_value = value
+        self._health_at = _now()
+
+    def cached_health(self) -> bool | None:
+        if self._health_at is None:
+            return None
+        if _now() - self._health_at > _HEALTH_TTL_SECONDS:
+            return None
+        return self._health_value
 
 
 class LLMUnavailableError(RuntimeError):
