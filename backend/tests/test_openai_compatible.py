@@ -41,7 +41,7 @@ async def test_health_check_returns_true_on_200():
     )
     transport = httpx.MockTransport(handler)
     # Inject the mock transport via a provider hook (see impl below).
-    provider._transport = transport
+    provider._test_transport = transport
     assert await provider.health_check() is True
 
 
@@ -55,7 +55,7 @@ async def test_health_check_returns_false_on_5xx():
         api_key="test-key",
         model="x",
     )
-    provider._transport = httpx.MockTransport(handler)
+    provider._test_transport = httpx.MockTransport(handler)
     assert await provider.health_check() is False
 
 
@@ -69,7 +69,7 @@ async def test_health_check_returns_false_on_connect_error():
         api_key="test-key",
         model="x",
     )
-    provider._transport = httpx.MockTransport(handler)
+    provider._test_transport = httpx.MockTransport(handler)
     assert await provider.health_check() is False
 
 
@@ -113,7 +113,7 @@ async def test_chat_stream_yields_tokens_in_order():
         api_key="sk-test",
         model="qwen3.6-plus",
     )
-    provider._transport = httpx.MockTransport(handler)
+    provider._test_transport = httpx.MockTransport(handler)
 
     tokens: list[str] = []
     async for tok in provider.chat_stream(
@@ -156,7 +156,7 @@ async def test_chat_stream_skips_empty_and_missing_content_deltas():
         api_key="k",
         model="m",
     )
-    provider._transport = httpx.MockTransport(handler)
+    provider._test_transport = httpx.MockTransport(handler)
 
     tokens = [t async for t in provider.chat_stream([{"role": "user", "content": "x"}])]
     assert tokens == ["abc"]
@@ -180,7 +180,7 @@ async def test_chat_stream_respects_explicit_temperature_override():
         model="m",
         temperature=0.7,
     )
-    provider._transport = httpx.MockTransport(handler)
+    provider._test_transport = httpx.MockTransport(handler)
     async for _ in provider.chat_stream(
         [{"role": "user", "content": "x"}],
         temperature=0.2,
@@ -199,7 +199,7 @@ async def test_chat_stream_raises_on_http_error():
         api_key="wrong",
         model="m",
     )
-    provider._transport = httpx.MockTransport(handler)
+    provider._test_transport = httpx.MockTransport(handler)
 
     with pytest.raises(httpx.HTTPStatusError):
         async for _ in provider.chat_stream([{"role": "user", "content": "x"}]):

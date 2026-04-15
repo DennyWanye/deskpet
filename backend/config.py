@@ -1,7 +1,10 @@
 from __future__ import annotations
+import logging
 import tomli
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dc_fields
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class BackendConfig:
@@ -51,6 +54,24 @@ class AppConfig:
     vad: VADConfig = field(default_factory=VADConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
 
+def _load_section(cls, raw_dict: dict):
+    """Build a dataclass from a raw dict, dropping keys the dataclass no
+    longer declares.
+
+    Rationale: a removed/renamed field in a future release shouldn't lock
+    out users whose config.toml still carries the old key. Dataclass
+    defaults already cover missing keys; this helper covers extra ones.
+    """
+    known = {f.name for f in dc_fields(cls)}
+    unknown = set(raw_dict) - known
+    if unknown:
+        logger.warning(
+            "config section %s ignoring unknown keys: %s",
+            cls.__name__, sorted(unknown),
+        )
+    return cls(**{k: v for k, v in raw_dict.items() if k in known})
+
+
 def load_config(path: str | Path = "config.toml") -> AppConfig:
     path = Path(path)
     if not path.exists():
@@ -59,15 +80,15 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         raw = tomli.load(f)
     config = AppConfig()
     if "backend" in raw:
-        config.backend = BackendConfig(**raw["backend"])
+        config.backend = _load_section(BackendConfig, raw["backend"])
     if "llm" in raw:
-        config.llm = LLMConfig(**raw["llm"])
+        config.llm = _load_section(LLMConfig, raw["llm"])
     if "asr" in raw:
-        config.asr = ASRConfig(**raw["asr"])
+        config.asr = _load_section(ASRConfig, raw["asr"])
     if "tts" in raw:
-        config.tts = TTSConfig(**raw["tts"])
+        config.tts = _load_section(TTSConfig, raw["tts"])
     if "vad" in raw:
-        config.vad = VADConfig(**raw["vad"])
+        config.vad = _load_section(VADConfig, raw["vad"])
     if "memory" in raw:
-        config.memory = MemoryConfig(**raw["memory"])
+        config.memory = _load_section(MemoryConfig, raw["memory"])
     return config

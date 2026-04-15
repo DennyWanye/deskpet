@@ -33,8 +33,10 @@ class OpenAICompatibleProvider:
         self.model = model
         self.temperature = temperature
         self.timeout = timeout
-        # Test-only injection point; real code leaves this None.
-        self._transport: httpx.BaseTransport | None = None
+        # Test-only injection: unit tests assign an httpx.MockTransport here.
+        # Production code MUST leave this None; otherwise every request goes
+        # through the mock and never reaches the real endpoint.
+        self._test_transport: httpx.BaseTransport | None = None
 
     def _client(self, timeout: float) -> httpx.AsyncClient:
         headers = {
@@ -44,7 +46,7 @@ class OpenAICompatibleProvider:
         return httpx.AsyncClient(
             timeout=timeout,
             headers=headers,
-            transport=self._transport,
+            transport=self._test_transport,
         )
 
     async def chat_stream(
