@@ -130,7 +130,13 @@ def app_with_router(monkeypatch):
     import importlib
     import main as main_mod
 
+    # Preserve SHARED_SECRET across reload. Other test modules (e.g.
+    # test_websocket) capture the value at import time; if we regenerate it
+    # here, their cached copy no longer matches ``main.SHARED_SECRET`` and
+    # later WS auth checks fail with 4001 depending on collection order.
+    prior_secret = main_mod.SHARED_SECRET
     importlib.reload(main_mod)
+    main_mod.SHARED_SECRET = prior_secret
     monkeypatch.setattr(main_mod, "DEV_MODE", True)
     client = TestClient(main_mod.app)
 

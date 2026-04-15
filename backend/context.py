@@ -6,6 +6,9 @@ from typing import Any
 _VALID_SERVICES = frozenset({
     "llm_engine", "asr_engine", "tts_engine",
     "vad_engine", "agent_engine", "memory_store", "tool_router",
+    # P2-1-S8: BillingLedger registered so per-session handlers can read the
+    # daily-budget ledger without re-plumbing config.
+    "billing_ledger",
 })
 
 @dataclass
@@ -17,6 +20,7 @@ class ServiceContext:
     agent_engine: Any | None = None
     memory_store: Any | None = None
     tool_router: Any | None = None
+    billing_ledger: Any | None = None
 
     def register(self, name: str, provider: Any) -> None:
         if name not in _VALID_SERVICES:
