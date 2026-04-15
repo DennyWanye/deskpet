@@ -4,7 +4,7 @@
 > this first before touching anything. Last updated at the close of each sprint
 > or at major inflection points.
 
-**Last updated:** 2026-04-15 (end of Sprint P2-0 + S8 key rotation; + P2-1-S1)
+**Last updated:** 2026-04-15 (end of Sprint P2-0 + S8 key rotation; + P2-1-S1; + P2-1 scope cut: S4/S5 PersonaRegistry deferred)
 **Current version:** `v0.2.0` (first public beta; next `v0.2.x` will use rotated pubkey)
 **Active branch:** `master`
 **Active tag:** `v0.2.0` at commit `718d70a`
@@ -33,7 +33,7 @@
 |-------|--------|--------|-------|
 | 1 — MVP loop | — | ✅ complete | v0.1.0 internal milestone |
 | 2 — Polish & distribute | **P2-0** | ✅ complete | S1–S7 all shipped; v0.2.0 public |
-| 2 — Polish & distribute | **P2-1** | 🟡 in progress | S1 ✅ shipped (OpenAI-compat provider); S2-S6 pending (see roadmap §3.2) |
+| 2 — Polish & distribute | **P2-1** | 🟡 in progress | S1 ✅ shipped (OpenAI-compat provider); S2/S3/S6/S7/S8 pending; **S4/S5 cut 2026-04-15** (PersonaRegistry deferred to Phase 3, see roadmap §3.2) |
 | 3 — Backend auto-launch | — | ⏳ future | Blocker follow-up: bundle Python backend |
 | 4 — v1.0 GA | — | ⏳ future | Once P2/P3 land |
 
