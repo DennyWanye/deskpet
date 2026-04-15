@@ -54,7 +54,43 @@ class OpenAICompatibleProvider:
         temperature: float | None = None,
         max_tokens: int = 2048,
     ) -> AsyncIterator[str]:
-        raise NotImplementedError  # implemented in Task 3
+        temp = temperature if temperature is not None else self.temperature
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "temperature": temp,
+            "max_tokens": max_tokens,
+        }
+        async with self._client(timeout=self.timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if not data_str:
+                        continue
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "openai_compat_bad_sse_frame", raw=data_str
+                        )
+                        continue
+                    choices = data.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    token = delta.get("content")
+                    if token:
+                        yield token
 
     async def health_check(self) -> bool:
         try:

@@ -71,3 +71,136 @@ async def test_health_check_returns_false_on_connect_error():
     )
     provider._transport = httpx.MockTransport(handler)
     assert await provider.health_check() is False
+
+
+def _sse(frames: list[dict | str]) -> bytes:
+    """Serialize OpenAI-style SSE frames. A str entry is treated as raw data (e.g. '[DONE]')."""
+    lines: list[str] = []
+    for frame in frames:
+        if isinstance(frame, str):
+            lines.append(f"data: {frame}\n")
+        else:
+            lines.append(f"data: {json.dumps(frame)}\n")
+        lines.append("\n")
+    return "".join(lines).encode("utf-8")
+
+
+def _delta(text: str) -> dict:
+    return {
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {"content": text}}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_yields_tokens_in_order():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        body = _sse([_delta("Hello"), _delta(" "), _delta("world"), "[DONE]"])
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"content-type": "text/event-stream"},
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://example.invalid/v1",
+        api_key="sk-test",
+        model="qwen3.6-plus",
+    )
+    provider._transport = httpx.MockTransport(handler)
+
+    tokens: list[str] = []
+    async for tok in provider.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        max_tokens=32,
+    ):
+        tokens.append(tok)
+
+    assert tokens == ["Hello", " ", "world"]
+    assert captured["url"] == "http://example.invalid/v1/chat/completions"
+    assert captured["auth"] == "Bearer sk-test"
+    assert captured["body"]["model"] == "qwen3.6-plus"
+    assert captured["body"]["stream"] is True
+    assert captured["body"]["max_tokens"] == 32
+    assert captured["body"]["messages"] == [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_skips_empty_and_missing_content_deltas():
+    """Role-only opening delta and empty content chunks must not emit tokens."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        frames = [
+            # First frame is role-only (no 'content') — OpenAI sends this.
+            {
+                "choices": [{"index": 0, "delta": {"role": "assistant"}}],
+            },
+            _delta(""),        # empty string — skip
+            _delta("abc"),
+            "[DONE]",
+        ]
+        return httpx.Response(
+            200,
+            content=_sse(frames),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://example.invalid/v1",
+        api_key="k",
+        model="m",
+    )
+    provider._transport = httpx.MockTransport(handler)
+
+    tokens = [t async for t in provider.chat_stream([{"role": "user", "content": "x"}])]
+    assert tokens == ["abc"]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_respects_explicit_temperature_override():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=_sse(["[DONE]"]),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://example.invalid/v1",
+        api_key="k",
+        model="m",
+        temperature=0.7,
+    )
+    provider._transport = httpx.MockTransport(handler)
+    async for _ in provider.chat_stream(
+        [{"role": "user", "content": "x"}],
+        temperature=0.2,
+    ):
+        pass
+    assert captured["body"]["temperature"] == 0.2
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_raises_on_http_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "bad key"}})
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://example.invalid/v1",
+        api_key="wrong",
+        model="m",
+    )
+    provider._transport = httpx.MockTransport(handler)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        async for _ in provider.chat_stream([{"role": "user", "content": "x"}]):
+            pass
