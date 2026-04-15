@@ -53,6 +53,32 @@ class MemoryConfig:
     db_path: str = "./data/memory.db"
     embedding_model: str = "bge-m3"
 
+
+@dataclass(frozen=True)
+class BillingConfig:
+    """P2-1-S8 BillingLedger config.
+
+    `db_path` is computed at load-time from the MemoryConfig data dir so we
+    keep the two SQLite files side-by-side under `./data/`.
+    """
+    daily_budget_cny: float = 10.0
+    unknown_model_price_cny_per_m_tokens: float = 20.0
+    pricing: dict[str, float] = field(default_factory=dict)
+    db_path: Path = field(default_factory=lambda: Path("./data/billing.db"))
+
+    @classmethod
+    def from_toml(cls, data: dict, db_dir: Path) -> "BillingConfig":
+        b = data.get("billing", {}) or {}
+        return cls(
+            daily_budget_cny=float(b.get("daily_budget_cny", 10.0)),
+            unknown_model_price_cny_per_m_tokens=float(
+                b.get("unknown_model_price_cny_per_m_tokens", 20.0)
+            ),
+            pricing=dict(b.get("pricing", {}) or {}),
+            db_path=db_dir / "billing.db",
+        )
+
+
 @dataclass
 class AppConfig:
     backend: BackendConfig = field(default_factory=BackendConfig)
@@ -61,6 +87,7 @@ class AppConfig:
     tts: TTSConfig = field(default_factory=TTSConfig)
     vad: VADConfig = field(default_factory=VADConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    billing: BillingConfig = field(default_factory=BillingConfig)
 
 def _load_section(cls, raw_dict: dict):
     """Build a dataclass from a raw dict, dropping keys the dataclass no
@@ -121,4 +148,8 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         config.vad = _load_section(VADConfig, raw["vad"])
     if "memory" in raw:
         config.memory = _load_section(MemoryConfig, raw["memory"])
+    # BillingConfig always resolved — even if [billing] is absent we want a
+    # default daily_budget_cny so main.py can construct the ledger.
+    db_dir = Path(config.memory.db_path).parent
+    config.billing = BillingConfig.from_toml(raw, db_dir=db_dir)
     return config

@@ -23,6 +23,21 @@ max_tokens = 2048
 # temperature = 0.7
 # max_tokens = 2048
 
+[billing]
+# Daily spend cap (CNY). HybridRouter refuses cloud calls once exceeded;
+# local calls stay free and unaffected.
+daily_budget_cny = 10.0
+# Fallback price for models not in [billing.pricing] (CNY per 1M tokens,
+# prompt+completion combined). Intentionally pessimistic so unknown models
+# don't silently burn budget.
+unknown_model_price_cny_per_m_tokens = 20.0
+
+[billing.pricing]
+# Per-1M-token price (CNY). Cover the models listed in [llm.cloud]; unknown
+# models fall back to `unknown_model_price_cny_per_m_tokens` above.
+"qwen3.6-plus" = 8.0
+"deepseek-chat" = 1.0
+
 [asr]
 provider = "faster-whisper"
 model = "large-v3-turbo"
