@@ -5,6 +5,8 @@ and the default `allow_all_budget` hook behavior.
 """
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from router.types import (
@@ -16,7 +18,7 @@ from router.types import (
 
 def test_budget_context_is_frozen():
     ctx = BudgetContext(route="cloud", model="qwen3.6-plus")
-    with pytest.raises(Exception):  # FrozenInstanceError
+    with pytest.raises(dataclasses.FrozenInstanceError):
         ctx.route = "local"  # type: ignore[misc]
 
 

@@ -140,7 +140,11 @@ class HybridRouter:
         async for tok in provider.chat_stream(
             messages, temperature=temperature, max_tokens=max_tokens
         ):
-            if first:
+            # Only a truthy (non-empty) chunk counts as the first token.
+            # Some providers yield an empty string as a keep-alive before
+            # the real content arrives; observing TTFT on that would
+            # record a near-zero sample and skew the histogram.
+            if first and tok:
                 llm_ttft_seconds.labels(
                     provider=provider_label,
                     model=getattr(provider, "model", "unknown"),

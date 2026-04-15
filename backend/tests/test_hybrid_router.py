@@ -334,6 +334,48 @@ async def test_ttft_recorded_for_cloud_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ttft_skips_empty_leading_chunks(monkeypatch):
+    """Empty leading chunks must NOT be counted as the first token.
+
+    Some OpenAI-compatible backends stream an empty delta as a keep-alive
+    before the real content. Observing TTFT on that chunk records a
+    near-zero sample and poisons the histogram. The router must wait for
+    the first truthy chunk.
+    """
+    from observability.metrics import llm_ttft_seconds
+
+    fake_now = [3000.0]
+    monkeypatch.setattr("router.hybrid_router._now", lambda: fake_now[0])
+
+    class _EmptyThenReal:
+        model = "fake-empty-then-real"
+
+        async def health_check(self) -> bool:
+            return True
+
+        async def chat_stream(self, messages, *, temperature=0.7, max_tokens=2048):
+            # Two keep-alive empties arrive instantly...
+            yield ""
+            yield ""
+            # ...then real content arrives 0.6s later.
+            fake_now[0] += 0.6
+            yield "hello"
+
+    router = HybridRouter(local=_EmptyThenReal(), cloud=None)
+
+    hist = llm_ttft_seconds.labels(provider="local", model="fake-empty-then-real")
+    before_sum = hist._sum.get()
+
+    await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+
+    # The observed delta must reflect the 0.6s simulated latency —
+    # not ~0, which is what we'd get if an empty chunk triggered
+    # the first-token observation.
+    observed = hist._sum.get() - before_sum
+    assert observed >= 0.5, f"expected >=0.5s (got {observed}); empty chunks poisoned TTFT"
+
+
+@pytest.mark.asyncio
 async def test_budget_hook_param_accepted():
     """HybridRouter __init__ accepts ``budget_hook`` (not ``budget_check``)."""
     from router.types import BudgetDecision

@@ -33,12 +33,17 @@ _default_logger = structlog.get_logger()
 # Buckets chosen for typical LLM TTFT range:
 #   local Ollama: 100ms-2s
 #   cloud (DashScope/etc): 200ms-5s
-# The +Inf bucket is implicit in prometheus_client but we include it
-# explicitly for readability.
+# prometheus_client auto-appends +Inf; the trailing float("inf") here is
+# redundant-but-harmless and kept for readability of the bucket list.
 _TTFT_BUCKETS = (
     0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, float("inf"),
 )
 
+# NOTE: cardinality risk if `model` ever becomes user-supplied. Today
+# provider_label ∈ {"local","cloud"} and `model` comes from config, so
+# the cross-product is O(#providers × #configured_models). If a future
+# slice starts taking model names from request headers / user input,
+# aggregate to a bounded label set before passing through.
 llm_ttft_seconds = Histogram(
     "llm_ttft_seconds",
     "Time from chat_stream call to first yielded token, by provider+model",

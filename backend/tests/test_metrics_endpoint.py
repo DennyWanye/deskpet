@@ -33,7 +33,11 @@ def _build_app(dev_mode: bool) -> FastAPI:
         if not dev_mode:
             secret = request.headers.get("x-shared-secret", "")
             if not secret or not _secrets.compare_digest(secret, SHARED_SECRET):
-                return Response(status_code=401)
+                # Mirror main.py: 401 carries WWW-Authenticate per RFC 7235.
+                return Response(
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Bearer realm="metrics"'},
+                )
         body, content_type = render_metrics()
         return Response(content=body, media_type=content_type)
 
@@ -64,6 +68,14 @@ def test_metrics_with_wrong_secret_returns_401():
     tc = TestClient(_build_app(dev_mode=False))
     resp = tc.get("/metrics", headers={"x-shared-secret": "not-the-secret"})
     assert resp.status_code == 401
+
+
+def test_metrics_401_carries_www_authenticate_header():
+    """RFC 7235 §3.1: a 401 response MUST include WWW-Authenticate."""
+    tc = TestClient(_build_app(dev_mode=False))
+    resp = tc.get("/metrics")
+    assert resp.status_code == 401
+    assert resp.headers.get("www-authenticate", "").lower().startswith("bearer")
 
 
 def test_metrics_response_content_type_is_prometheus_text():
