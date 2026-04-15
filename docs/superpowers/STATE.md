@@ -4,8 +4,8 @@
 > this first before touching anything. Last updated at the close of each sprint
 > or at major inflection points.
 
-**Last updated:** 2026-04-15 (end of Sprint P2-0)
-**Current version:** `v0.2.0` (first public beta)
+**Last updated:** 2026-04-15 (end of Sprint P2-0 + S8 key rotation)
+**Current version:** `v0.2.0` (first public beta; next `v0.2.x` will use rotated pubkey)
 **Active branch:** `master`
 **Active tag:** `v0.2.0` at commit `718d70a`
 
@@ -48,18 +48,25 @@
 | S5 | `handoffs/p2s5-vn-dialog-nit.md` | DialogBar empty placeholder + mic idle fix |
 | S6 | `handoffs/p2s6-chat-history-a11y.md` | Focus trap + Escape close |
 | S7 | `handoffs/p2s7-release-v0.2.0.md` | v0.2.0 tag + CI release |
+| S8 | `handoffs/p2s8-key-rotation.md` | Updater signing key rotated (passphrase + new pubkey) |
 
 ## Pending follow-ups (not blocking P2-1)
 
-1. **v0.2.0 self-update smoke test** — run on a Windows box with v0.1.0
-   installed, confirm updater flow end-to-end.
-   See `p2s7-release-v0.2.0.md` § "Post-push verification plan".
-2. **Rotate signing key with passphrase** — current key has empty passphrase.
-   Generate new keypair, upload both `TAURI_SIGNING_PRIVATE_KEY` and
-   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets, update `tauri.conf.json`
-   pubkey, ship v0.2.1. See `p2s7-release-v0.2.0.md` § "Follow-ups".
-3. **Release-notes template** — workflow currently publishes with
-   GitHub-generated notes. Should cross-link the relevant CHANGELOG section.
+1. **v0.2.0 → v0.2.x self-update smoke test** — the next `v0.2.x`
+   release will be the first signed by the rotated key
+   (`5F623E5CDBAA4C5A`). Clients on v0.2.0 have the **old** pubkey
+   (`609610CD2AB388D1`) baked in, so their self-update will
+   deliberately fail; they need a one-time manual reinstall. Confirm
+   this expected failure on a v0.2.0 box, then confirm that a machine
+   with v0.2.1 installed manually can self-update to v0.2.2 cleanly.
+   See `p2s8-key-rotation.md` + `p2s7-release-v0.2.0.md` §
+   "Post-push verification plan".
+2. **Release-notes template** — workflow currently publishes with
+   GitHub-generated notes. Should cross-link the relevant CHANGELOG
+   section.
+3. **First `v0.2.x` after rotation** — add a CHANGELOG note explaining
+   why v0.2.0 users must manually reinstall this one release
+   (pubkey rotation by design; see `p2s8-key-rotation.md`).
 
 ## Key files to read before any work
 
@@ -108,8 +115,9 @@ Pick the 2–3 that match your task; don't read everything.
 > 和 `docs/superpowers/STATE.md`。逐个决策点抛 1-2 个发散问题，让我回答后
 > 收敛成 spec，再写 plan。"
 
-**For signing key rotation** (side-task, ~30 min):
-> "请执行签名密钥轮换：生成带口令的新 Ed25519 密钥对、更新
-> `tauri.conf.json` pubkey、指导我上传 GitHub secrets、发 v0.2.1 打点
-> 验证新密钥。参考 `docs/superpowers/handoffs/p2s7-release-v0.2.0.md`
-> § Follow-ups。"
+**For v0.2.1 打点验证新密钥** (short, ~15 min — run once there's
+content worth cutting a release for):
+> "请帮我在 `master` 上 bump 到 v0.2.1、写一段 CHANGELOG 说明 pubkey
+> 已轮换 (v0.2.0 用户需手动重装一次)、打 tag 推上去观察 CI 能否用新密钥
+> 成功签名。参考 `docs/superpowers/handoffs/p2s8-key-rotation.md` §
+> Follow-ups。"

@@ -1,25 +1,36 @@
 # Packaging & Release (W5 / R17)
 
-## Status: signing key generated (P2-0-S2, 2026-04-15)
+## Status: signing key rotated to passphrase-protected key (P2-0-S8, 2026-04-15)
 
-An Ed25519 keypair was generated and committed to `tauri.conf.json` in
-slice **P2-0-S2**. The private key lives at
-`%USERPROFILE%\.tauri\deskpet.key` on the release maintainer's machine
-**and** in the repo's `TAURI_SIGNING_PRIVATE_KEY` Actions secret —
-never in git.
+An Ed25519 (minisign) keypair protects the Tauri updater. The private
+key lives at `%USERPROFILE%\.tauri\deskpet.key` on the release
+maintainer's machine **and** in the repo's `TAURI_SIGNING_PRIVATE_KEY`
+Actions secret — never in git. The matching passphrase is stored in
+the `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` Actions secret.
 
 The public key is baked into `tauri-app/src-tauri/tauri.conf.json`
-under `plugins.updater.pubkey`. **This key cannot be rotated** once
-`v0.2.0` ships — every future release's `.sig` file must be signed
-with the matching private key or installed clients will reject the
-update.
+under `plugins.updater.pubkey`. From **v0.2.1 onward** the public key
+is effectively locked: every future release's `.sig` file must be
+signed with the matching private key, or installed clients will
+reject the update.
 
-**No passphrase** is set on the current key (P2-0-S2 deferred this).
-Before the first public release (`v0.2.0`), the key should be
-regenerated **with** a passphrase and the new pubkey swapped in —
-see "Rotating the signing key" below. This is safe to do until
-`v0.2.0` actually ships, because no end users are running a signed
-build yet.
+### Key rotation history
+
+| Date | Key ID (first 16 hex) | Passphrase | Reason |
+|---|---|---|---|
+| 2026-04-15 (early) | `609610CD2AB388D1` | none | Initial P2-0-S2 keypair; shipped with `v0.2.0` |
+| 2026-04-15 (late)  | `5F623E5CDBAA4C5A` | ✅ | P2-0-S8 rotation; adds passphrase before real user base exists |
+
+The pre-rotation `v0.2.0` build has the **old** `609610CD...` public key
+baked in. Clients running v0.2.0 therefore cannot self-update past the
+rotation — they must manually install v0.2.1 (or later) once, after
+which the new `5F623E5C...` pubkey takes over and self-update resumes
+normally. This was judged acceptable because v0.2.0 had no real
+external users.
+
+The pre-rotation private key is retained at
+`%USERPROFILE%\.tauri\deskpet.key.v0.2.0.bak` in case a hotfix signed
+against the old pubkey is ever needed for stranded v0.2.0 installs.
 
 ## One-time setup (already done for this repo)
 
@@ -44,23 +55,41 @@ $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $env:USERPROFILE\.tauri\deskpet.key
 **Never commit the private key.** It belongs in your personal keystore / CI
 secret vault, not the repo.
 
-## Rotating the signing key (safe only before first signed release)
+## Rotating the signing key
 
-Once `v0.2.0` is published, the pubkey is locked — changing it breaks
-every installed client. Before that, rotation is free:
+Rotating the pubkey **breaks self-update for every installed client
+running the pre-rotation build** — those clients still trust the old
+pubkey, so they will reject anything signed by the new key. Only
+rotate when (a) no real users are on the current pubkey yet, or (b)
+you are willing to ask existing users to manually reinstall once.
+
+Procedure (use the interactive form — do NOT pass `--password` on the
+command line; that puts the passphrase in shell history):
 
 ```powershell
-# 1. Regenerate (with passphrase this time):
-npx @tauri-apps/cli signer generate --ci --password "YOUR_PASSPHRASE" -f `
+# 0. Back up the outgoing keypair in case a hotfix for pre-rotation
+#    clients is ever needed.
+Move-Item "$env:USERPROFILE\.tauri\deskpet.key" `
+          "$env:USERPROFILE\.tauri\deskpet.key.<prev-version>.bak"
+Move-Item "$env:USERPROFILE\.tauri\deskpet.key.pub" `
+          "$env:USERPROFILE\.tauri\deskpet.key.pub.<prev-version>.bak"
+
+# 1. Regenerate interactively — the CLI will prompt for the new
+#    passphrase twice (input is not echoed).
+npx @tauri-apps/cli signer generate `
     -w "$env:USERPROFILE\.tauri\deskpet.key"
 
 # 2. Paste the new contents of deskpet.key.pub into
 #    tauri-app/src-tauri/tauri.conf.json > plugins.updater.pubkey
 
-# 3. Update the repo secrets:
-#    TAURI_SIGNING_PRIVATE_KEY          = contents of deskpet.key
-#    TAURI_SIGNING_PRIVATE_KEY_PASSWORD = YOUR_PASSPHRASE
+# 3. Update the repo secrets at
+#    https://github.com/DennyWanye/deskpet/settings/secrets/actions
+#      TAURI_SIGNING_PRIVATE_KEY          = contents of deskpet.key
+#      TAURI_SIGNING_PRIVATE_KEY_PASSWORD = new passphrase
 ```
+
+After rotation, append an entry to the "Key rotation history" table
+above and open a handoff doc recording the rationale.
 
 ## CI-driven releases (primary path)
 
@@ -79,7 +108,7 @@ Required repo secrets (Settings → Secrets and variables → Actions):
 | Secret | Required | Notes |
 |---|---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | ✅ | Contents of `~/.tauri/deskpet.key` (entire file) |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | conditional | Only if key has a passphrase |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | ✅ | Passphrase for the current key (required since P2-0-S8 rotation) |
 
 The updater endpoint is already wired to
 `https://github.com/DennyWanye/deskpet/releases/latest/download/latest.json`,
