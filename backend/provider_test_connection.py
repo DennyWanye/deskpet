@@ -55,12 +55,16 @@ async def handle_provider_test_connection(ws: Any, payload: dict) -> None:
             model=model,
         )
         ok = await candidate.health_check()
+        # ok=False typically means /models returned non-200 (bad key, wrong
+        # base_url, network blocked). health_check() swallows the exception
+        # so we can't surface the real cause — give the user a generic but
+        # honest reason instead of letting the UI render "失败: unknown".
+        payload: dict = {"ok": bool(ok), "tested_url": tested_url}
+        if not ok:
+            payload["error"] = "health check failed (bad key, wrong URL, or unreachable)"
         await ws.send_json({
             "type": "provider_test_connection_result",
-            "payload": {
-                "ok": bool(ok),
-                "tested_url": tested_url,
-            },
+            "payload": payload,
         })
     except Exception as exc:
         # provider init or the GET /models both land here. Log + surface

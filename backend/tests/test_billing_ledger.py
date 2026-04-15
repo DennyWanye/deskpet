@@ -72,7 +72,8 @@ async def test_status_reports_remaining(ledger):
     assert s["spent_today_cny"] > 0
     assert s["daily_budget_cny"] == 10.0
     assert s["remaining_cny"] == pytest.approx(10.0 - s["spent_today_cny"])
-    assert s["percent_used"] == pytest.approx(s["spent_today_cny"] / 10.0)
+    # percent_used contract: 0..100 (see tauri-app/src/types/messages.ts)
+    assert s["percent_used"] == pytest.approx(s["spent_today_cny"] / 10.0 * 100.0)
 
 
 @pytest.mark.asyncio

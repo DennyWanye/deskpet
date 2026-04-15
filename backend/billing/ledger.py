@@ -134,7 +134,15 @@ class BillingLedger:
     async def status(self) -> dict:
         spent = await self.spent_today_cny()
         remaining = max(0.0, self._daily_budget - spent)
-        pct = spent / self._daily_budget if self._daily_budget > 0 else 1.0
+        # UI contract (tauri-app/src/types/messages.ts): percent_used is
+        # 0..100. Keep the division-by-zero guard returning 100 (fully
+        # consumed) — matches `daily_budget_cny = 0.0` meaning "always
+        # denied".
+        pct = (
+            (spent / self._daily_budget) * 100.0
+            if self._daily_budget > 0
+            else 100.0
+        )
         return {
             "spent_today_cny": spent,
             "daily_budget_cny": self._daily_budget,

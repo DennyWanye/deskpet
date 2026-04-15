@@ -11,7 +11,8 @@
       "Bash(python -c ':*)",
       "Bash(NODE_PATH=\"D:/nodejs/node_modules\" node create_v5.js)",
       "Bash(rm \"/c/Users/24378/.claude/projects/G--projects/memory/user_codingsys_setup.md\" \"/c/Users/24378/.claude/projects/G--projects/memory/feedback_use_codingsys_framework.md\")",
-      "Read(//c/Users/24378/.claude/projects/G--projects/memory//**)"
+      "Read(//c/Users/24378/.claude/projects/G--projects/memory//**)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }
