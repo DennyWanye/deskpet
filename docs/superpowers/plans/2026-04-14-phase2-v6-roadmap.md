@@ -122,11 +122,13 @@ Phase 1 handoff 已经声明这 6 个扩展点 survive Phase 2。V6 的实施路
 
 **开工前决策点：**
 - ~~**D1-1**：接哪几家云？~~ ✅ 已定：**阿里百炼 DashScope**（其它厂 Phase 2 不做）
-- **D1-1a**（新增）：DashScope 默认模型选 `qwen-plus`（质量优先）还是 `qwen-turbo`（成本优先）？是否暴露用户手动切换？
-- **D1-2**：默认策略选哪个？我推 `local_first`（隐私优先，云端只在用户显式触发或本地拒绝时使用）
-- **D1-3**：单次预算上限 & 月度预算 —— 需要用户给数字（人民币，按 DashScope 计费单位）
+- ~~**D1-1a**：DashScope 默认模型~~ ✅ **已定（2026-04-15）**：默认 **`qwen3.6-plus`**（DashScope 当前最新 plus 档）；SettingsPanel 暴露下拉切换（可填任意 DashScope 兼容 model id）
+- ~~**D1-2**：默认策略~~ ✅ **已定（2026-04-15）**：**`local_first`**（隐私 + 离线 + 成本三优先；云端仅在 health_check 失败或用户显式触发时启用）；SettingsPanel 暴露切换
+- ~~**D1-3**：预算上限~~ ✅ **已定（2026-04-15）**：**仅设日上限 ¥10**（不设单次 / 月度），超额当日剩余请求自动降级到本地 Ollama，第二天 0 点重置；SettingsPanel 暴露金额编辑
 - ~~**D1-4**：persona 配置文件放哪？~~ ✅ **已撤**（2026-04-15 砍 S4/S5 时一并撤）
-- **D1-5**（新增）：DashScope API key 注册流程是否写入用户引导？首次启动是否强制弹窗引导？
+- ~~**D1-5**：DashScope API key 首启引导~~ ✅ **已定（2026-04-15）**：**完全静默**（C 方案）—— 不弹任何首启引导；云端能力默认隐藏在 SettingsPanel 内，用户主动配置 key 后启用
+
+**Settings 暴露面（影响 S3 scope）：** 上述 D1-1a / D1-2 / D1-3 全部需要在 SettingsPanel "云端账号" tab 暴露为可改字段。S3 的交付物从原来的"API key 输入框"扩展为完整的云端配置区：API key + model id 下拉 + 路由策略下拉 + 日预算输入。
 
 **风险：**
 - API key 泄露 —— 必须走 Credential Manager，**禁止** .env / config.toml
@@ -267,7 +269,7 @@ SemVer，`v0.X.Y-phaseN-<tag>`：
 
 **P2-0 前：** ~~D0-1（图标）~~ ✅ AI 占位 · D0-2（更新渠道）
 
-**P2-1 前：** ~~D1-1（云厂选型）~~ ✅ DashScope 百炼 · D1-1a（qwen 模型档位）· D1-2（默认策略）· D1-3（预算）· ~~D1-4（persona 配置路径）~~ ✅ 撤（2026-04-15 砍 S4/S5）· D1-5（首启引导）
+**P2-1 前：** ~~D1-1（云厂）~~ ✅ DashScope · ~~D1-1a（模型）~~ ✅ qwen3.6-plus · ~~D1-2（策略）~~ ✅ local_first · ~~D1-3（预算）~~ ✅ 日 ¥10 · ~~D1-4（persona 路径）~~ ✅ 撤 · ~~D1-5（首启引导）~~ ✅ 静默 → **全部 closed，可开 S2**
 
 **P2-2 前：** D2-1（流式 ASR 选型）· D2-2（信令通道）· D2-3（A/B 阶段拆 release）
 
