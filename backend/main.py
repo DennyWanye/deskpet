@@ -14,12 +14,13 @@ from contextlib import asynccontextmanager
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from pathlib import Path
 
 from config import load_config
 from context import ServiceContext
 from observability.crash_reports import install_crash_reporter
+from observability.metrics import render as render_metrics
 
 # Install the uncaught-exception hook as early as possible so import-time
 # failures later in this file still land in crash_reports/.
@@ -189,6 +190,22 @@ def _validate_secret(ws: WebSocket) -> bool:
 @app.get("/health")
 async def health():
     return {"status": "ok", "secret_hint": SHARED_SECRET[:4] + "..."}
+
+
+@app.get("/metrics")
+async def metrics(request: Request):
+    """Prometheus scrape endpoint (P2-1-S6).
+
+    Gated by the same shared secret that protects WS connections. In
+    DEV_MODE the gate is open so local `curl` / smoke scripts can hit it
+    without juggling headers.
+    """
+    if not DEV_MODE:
+        secret = request.headers.get("x-shared-secret", "")
+        if not secret or not secrets.compare_digest(secret, SHARED_SECRET):
+            return Response(status_code=401)
+    body, content_type = render_metrics()
+    return Response(content=body, media_type=content_type)
 
 
 # --- S14 memory management dispatch -----------------------------------------
