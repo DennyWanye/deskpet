@@ -8,7 +8,7 @@
 **Status**: DRAFT → **PARTIALLY SIGNED-OFF**（2026-04-14）
 - ✅ 整体节奏接受
 - ✅ D0-1 图标：当前 `icon.png` 为红色占位符，Live2D Hiyori 素材受版权限制不能商用，无其它自有素材可用 → 回退方案：AI 生成一张临时桌宠头像走 `npx tauri icon` 全套生成，留占位待设计师替换。
-- ✅ D1-1 云厂选型：**仅接阿里百炼（DashScope）**，其它厂商待 P2-1 结束后再评估。
+- ✅ D1-1 云厂选型：~~仅接阿里百炼~~ → **修订（2026-04-15）：vendor-agnostic OpenAI 兼容协议**，单一 `OpenAICompatibleProvider` 类适配任意兼容 endpoint。DashScope 仅作 first-run materialize 的默认值，用户可在 SettingsPanel 把 baseUrl/apiKey/model 改成 OpenRouter / DeepSeek / vLLM / 自部署 LiteLLM 等任意兼容服务。
 
 ---
 
@@ -99,7 +99,7 @@ Phase 1 handoff 已经声明这 6 个扩展点 survive Phase 2。V6 的实施路
 
 ### 3.2 Sprint P2-1 — 云端混合推理（目标版本 `v0.3.0`）
 
-**目标：** 上线云端 LLM fallback（DashScope）+ 安全的 API key 管理 + 计费护栏。
+**目标：** 上线云端 LLM fallback（任意 OpenAI 兼容 endpoint，DashScope 作默认）+ 安全的 API key 管理 + 计费护栏。
 
 **Scope 调整记录（2026-04-15）：** 砍掉 PersonaRegistry + Switcher UI（原 S4/S5），多角色推迟到 Phase 3。Phase 2 维持单 ServiceContext / 单角色定位 —— DeskPet 是一只桌宠，不是分身平台。本 sprint 收敛到纯 "云端混合 + 安全护栏" 这一条主线。
 
@@ -109,7 +109,7 @@ Phase 1 handoff 已经声明这 6 个扩展点 survive Phase 2。V6 的实施路
 
 | Slice | 内容 | Deliverables |
 |---|---|---|
-| P2-1-S1 LLMProvider 云端实现 | **仅接阿里百炼 `providers/dashscope.py`**（D1-1 决策）。默认模型 `qwen-plus` / `qwen-turbo`（按 D1-1a 待定）；走官方 DashScope Python SDK 或直 HTTP（二选一按 spike 结果） | DashScopeProvider 实现 + 统一 `AsyncIterator[Token]` 接口 + SSE 流式解析；抽象保留"多厂商"余地但不实现 |
+| P2-1-S1 LLMProvider 云端实现 ✅ shipped | **vendor-agnostic** `providers/openai_compatible.py`（spec §4 决策）：单一类适配 OpenAI `/v1/chat/completions` SSE 协议；本地 Ollama 通过其 OpenAI-compat 端点 (`/v1`) 接入，云端 DashScope 通过 `compatible-mode/v1` 接入，两边对称。`backend/providers/ollama_llm.py` 已删 | `OpenAICompatibleProvider` + 单元测试覆盖 mock SSE / 错误路径 / 两条集成 path（Ollama 默认开 / DashScope 凭 env key 开） |
 | P2-1-S2 HybridRouter | `providers/hybrid_router.py` —— 策略：`local_first` / `cloud_first` / `cost_aware` / `latency_aware` | 包含 circuit breaker + fallback 计数 + 埋点 |
 | P2-1-S3 API key 管理 | Windows Credential Manager 集成；前端 SettingsPanel 新增 "云端账号" tab | `src-tauri/src/secrets.rs` + Tauri 命令 `get_api_key` / `set_api_key`；明文 **绝不** 入 SQLite |
 | ~~P2-1-S4 PersonaRegistry~~ | **已砍（2026-04-15）** | 多角色延后到 Phase 3；Phase 2 维持单 ServiceContext |
@@ -121,19 +121,25 @@ Phase 1 handoff 已经声明这 6 个扩展点 survive Phase 2。V6 的实施路
 **剩余 slice 顺序：** S2 → S3 → S6 → S7 → S8（5 个，原编号保留以兼容已有 handoff 引用）。
 
 **开工前决策点：**
-- ~~**D1-1**：接哪几家云？~~ ✅ 已定：**阿里百炼 DashScope**（其它厂 Phase 2 不做）
-- ~~**D1-1a**：DashScope 默认模型~~ ✅ **已定（2026-04-15）**：默认 **`qwen3.6-plus`**（DashScope 当前最新 plus 档）；SettingsPanel 暴露下拉切换（可填任意 DashScope 兼容 model id）
+- ~~**D1-1**：接哪几家云？~~ ✅ **修订（2026-04-15）**：**vendor-agnostic OpenAI-compat 协议**，DashScope 仅作默认 baseUrl/model 值；用户可改任意兼容 endpoint
+- ~~**D1-1a**：默认云端 ProviderProfile~~ ✅ **已定（2026-04-15）**：架构走 spec §4 单一 `OpenAICompatibleProvider`，**不绑死任何厂商**。硬编码默认值仅作 first-run materialize 用：`baseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1` + `model=qwen3.6-plus`。SettingsPanel 完整暴露 **3 个文本输入框**：`baseUrl` / `apiKey` / `model`，用户可填任意 OpenAI-compat endpoint（Ollama / DashScope / DeepSeek / OpenRouter / vLLM / 自部署 LiteLLM 等）。云端 profile 编辑页右上角放"重置为 DashScope 官方默认"按钮（一键恢复 baseUrl/model，不动 apiKey）
 - ~~**D1-2**：默认策略~~ ✅ **已定（2026-04-15）**：**`local_first`**（隐私 + 离线 + 成本三优先；云端仅在 health_check 失败或用户显式触发时启用）；SettingsPanel 暴露切换
 - ~~**D1-3**：预算上限~~ ✅ **已定（2026-04-15）**：**仅设日上限 ¥10**（不设单次 / 月度），超额当日剩余请求自动降级到本地 Ollama，第二天 0 点重置；SettingsPanel 暴露金额编辑
 - ~~**D1-4**：persona 配置文件放哪？~~ ✅ **已撤**（2026-04-15 砍 S4/S5 时一并撤）
 - ~~**D1-5**：DashScope API key 首启引导~~ ✅ **已定（2026-04-15）**：**完全静默**（C 方案）—— 不弹任何首启引导；云端能力默认隐藏在 SettingsPanel 内，用户主动配置 key 后启用
 
-**Settings 暴露面（影响 S3 scope）：** 上述 D1-1a / D1-2 / D1-3 全部需要在 SettingsPanel "云端账号" tab 暴露为可改字段。S3 的交付物从原来的"API key 输入框"扩展为完整的云端配置区：API key + model id 下拉 + 路由策略下拉 + 日预算输入。
+**Settings 暴露面（影响 S3 scope）：** 上述 D1-1a / D1-2 / D1-3 全部需要在 SettingsPanel 暴露为可改字段。S3 的交付物从原来的"API key 输入框"扩展为：
+
+- **Provider 配置区**（vendor-agnostic）：`baseUrl` 文本框 + `model` 文本框 + `apiKey` 文本框 + "重置为 DashScope 官方默认"按钮 + "测试连接" 按钮（调 health_check）
+- **路由策略**：下拉（`local_first` / `cloud_first` / `cost_aware` / `latency_aware`）
+- **日预算**：金额输入（默认 ¥10）+ 当日已消耗显示
+
+明确**不写**任何厂商专属 SDK / 厂商专属字段。配置即代码：用户只要给一个 OpenAI 兼容 endpoint，DeskPet 就能用。
 
 **风险：**
 - API key 泄露 —— 必须走 Credential Manager，**禁止** .env / config.toml
-- ~~多 provider 的 tokenizer 差异~~ → 只接 DashScope，此项暂不成立；但 qwen 系列不同模型 tokenizer 有细微差别，计费用官方返回的 `usage.total_tokens` 为准而非本地估算
-- DashScope 海外可用性 / IP 屏蔽 —— 如果目标用户群有海外场景，P2-3 前需加 proxy 或地域选择逻辑
+- 多 provider 的 tokenizer 差异 → vendor-agnostic 模式下计费一律以**官方返回的 `usage.total_tokens`** 为准，不在本地估算（避免错算）
+- 默认 endpoint 海外可用性 / IP 屏蔽 —— 如果默认 DashScope 不可达，"测试连接"按钮失败时给用户提示去配置自己的 endpoint（OpenRouter / 自部署 等），不强制默认
 
 ---
 
@@ -241,7 +247,7 @@ SemVer，`v0.X.Y-phaseN-<tag>`：
 | 版本 | 里程碑 | 阻塞 sprint |
 |---|---|---|
 | `v0.2.0-phase2-beta1` | 首次公测（图标 + updater + 多会话 UI） | P2-0 |
-| `v0.3.0-phase2-beta2` | 云端混合（DashScope + HybridRouter + API key 安全 + 计费护栏） | P2-1 |
+| `v0.3.0-phase2-beta2` | 云端混合（OpenAI-compat provider + HybridRouter + API key 安全 + 计费护栏） | P2-1 |
 | `v0.3.1-phase2-beta2.1`（可选） | 阶段 1 打断（A 级双工） | P2-2-A |
 | `v0.4.0-phase2-beta3` | 真双工 | P2-2-B |
 | `v0.5.0-phase2-rc` | 多模态 + 桌面自动化 | P2-3-S1..S8 |
@@ -269,7 +275,7 @@ SemVer，`v0.X.Y-phaseN-<tag>`：
 
 **P2-0 前：** ~~D0-1（图标）~~ ✅ AI 占位 · D0-2（更新渠道）
 
-**P2-1 前：** ~~D1-1（云厂）~~ ✅ DashScope · ~~D1-1a（模型）~~ ✅ qwen3.6-plus · ~~D1-2（策略）~~ ✅ local_first · ~~D1-3（预算）~~ ✅ 日 ¥10 · ~~D1-4（persona 路径）~~ ✅ 撤 · ~~D1-5（首启引导）~~ ✅ 静默 → **全部 closed，可开 S2**
+**P2-1 前：** ~~D1-1（云厂）~~ ✅ vendor-agnostic OpenAI-compat（DashScope 仅作默认） · ~~D1-1a（默认 profile）~~ ✅ qwen3.6-plus + 3 字段自由输入 · ~~D1-2（策略）~~ ✅ local_first · ~~D1-3（预算）~~ ✅ 日 ¥10 · ~~D1-4（persona 路径）~~ ✅ 撤 · ~~D1-5（首启引导）~~ ✅ 静默 → **全部 closed，可开 S2**
 
 **P2-2 前：** D2-1（流式 ASR 选型）· D2-2（信令通道）· D2-3（A/B 阶段拆 release）
 
@@ -318,20 +324,23 @@ Phase 2 结束时应该有：
 
 ## 8. 下一步
 
-**已拍板（2026-04-14）：**
-- ✅ 整体节奏接受
-- ✅ D0-1：AI 生成临时占位图标（Hiyori 版权不可用，无自有素材）
-- ✅ D1-1：仅接阿里百炼 DashScope
+**已拍板：**
+- ✅ 整体节奏接受（2026-04-14）
+- ✅ D0-1：AI 生成临时占位图标（Hiyori 版权不可用，无自有素材）（2026-04-14）
+- ✅ D1-1：~~仅接 DashScope~~ → 修订（2026-04-15）：vendor-agnostic OpenAI-compat 协议，DashScope 仅作默认
+- ✅ D1-1a / D1-2 / D1-3 / D1-5（2026-04-15，详见 §3.2）
+- ✅ D1-4：撤（2026-04-15，砍 PersonaRegistry 时一并撤）
+- ✅ Phase 2 scope 调整（2026-04-15）：砍 P2-1-S4 / S5（PersonaRegistry + Switcher UI）延后到 Phase 3
+- ✅ Sprint P2-0 全 slice 已 ship，v0.2.0 公测包已发；P2-1-S1 已 ship
 
-**仍待拍板（可滚动决策，不阻塞 P2-0 开工）：**
-- D0-2（更新渠道）
-- D1-1a / D1-2 / D1-3 / D1-4 / D1-5（P2-1 开工前必须定）
+**仍待拍板（可滚动决策）：**
+- D0-2（更新渠道）—— 当前用 GitHub Releases，运行良好
 - D2-1 / D2-2 / D2-3（P2-2 开工前）
 - D3-1 / D3-2 / D3-3 / D3-4（P2-3 开工前）
 
-**下一步动作：** 立即进入 Sprint **P2-0** —— 第一个 slice 是 `P2-0-S1 图标品牌化（临时占位）`，按 §6 标准流程开工：
-1. brainstorm（决定 AI 图像生成工具：fal.ai / Seedream / DALL-E）
-2. `sp-writing-plans` 产出 `docs/superpowers/plans/YYYY-MM-DD-p2s1-icon-branding.md`
+**下一步动作（2026-04-15 更新）：** 进入 Sprint **P2-1 第二个 slice `P2-1-S2 HybridRouter`**，按 §6 标准流程开工：
+1. brainstorm（health_check 探测节奏 / circuit breaker 状态机 / 与 S3 SettingsPanel 配置接口对齐）
+2. `sp-writing-plans` 产出 `docs/superpowers/plans/2026-04-XX-p2-1-s2-hybrid-router.md`
 3. Worktree 隔离 + subagent-driven 执行
 
-**V6 路线图状态：** SIGNED-OFF（2026-04-14，含 D0-1 + D1-1；其它决策点随 sprint 推进滚动确认）
+**V6 路线图状态：** SIGNED-OFF（2026-04-14 首次签字；2026-04-15 修订：D1-1 vendor-agnostic + 砍 S4/S5）
