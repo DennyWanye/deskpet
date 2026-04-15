@@ -4,7 +4,7 @@
 > this first before touching anything. Last updated at the close of each sprint
 > or at major inflection points.
 
-**Last updated:** 2026-04-15 (end of Sprint P2-0 + S8 key rotation)
+**Last updated:** 2026-04-15 (end of Sprint P2-0 + S8 key rotation; + P2-1-S1)
 **Current version:** `v0.2.0` (first public beta; next `v0.2.x` will use rotated pubkey)
 **Active branch:** `master`
 **Active tag:** `v0.2.0` at commit `718d70a`
@@ -49,6 +49,12 @@
 | S6 | `handoffs/p2s6-chat-history-a11y.md` | Focus trap + Escape close |
 | S7 | `handoffs/p2s7-release-v0.2.0.md` | v0.2.0 tag + CI release |
 | S8 | `handoffs/p2s8-key-rotation.md` | Updater signing key rotated (passphrase + new pubkey) |
+
+## Active P2-1 slices
+
+| Slice | Status | Theme |
+|-------|--------|-------|
+| S1 | ✅ merged | OpenAICompatibleProvider replaces OllamaLLM; unit + integration tests |
 
 ## Pending follow-ups (not blocking P2-1)
 
