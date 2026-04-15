@@ -19,11 +19,17 @@ type Props = {
 // MemoryPanel — V5 §6 threat 5 affordance: list / delete / clear / export
 // the persisted conversation history. Everything rides the control channel,
 // so auth reuses the shared-secret gate already in place for chat.
+type MemoryScope = "session" | "all";
+
 export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
   const [turns, setTurns] = useState<StoredTurn[]>([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
+  // P2-0-S3: scope tab — "session" lists this session only, "all" lists
+  // every session's turns in one view (still uses the same delete/export
+  // machinery; backend already supports scope=all everywhere).
+  const [scope, setScope] = useState<MemoryScope>("session");
 
   // Subscribe to memory_* responses from the shared control channel. Non-
   // memory messages are forwarded to the usual App.tsx handler via the same
@@ -95,11 +101,16 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
     const ch = getChannel();
     if (!ch) return;
     setLoading(true);
+    // scope=all ignores session_id on the backend, but we still send null
+    // to make the payload's intent legible in logs.
     ch.send({
       type: "memory_list",
-      payload: { scope: "session", session_id: sessionId },
+      payload:
+        scope === "all"
+          ? { scope: "all", session_id: null }
+          : { scope: "session", session_id: sessionId },
     });
-  }, [getChannel, sessionId]);
+  }, [getChannel, sessionId, scope]);
 
   useEffect(() => {
     if (open) refresh();
@@ -151,7 +162,9 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
           marginBottom: "8px",
         }}
       >
-        <strong style={{ fontSize: "14px" }}>记忆管理 · {sessionId}</strong>
+        <strong style={{ fontSize: "14px" }}>
+          记忆管理{scope === "session" ? ` · ${sessionId}` : " · 全部会话"}
+        </strong>
         <button
           data-testid="memory-close"
           onClick={onClose}
@@ -166,6 +179,34 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
           title="Close"
         >
           ✕
+        </button>
+      </div>
+
+      {/* Scope tabs — keep these on their own row so they read as view-
+          switch, not a verb. Active tab uses filled bg; inactive uses
+          ghost to match the button-bar visual language below. */}
+      <div
+        style={{ display: "flex", gap: "4px", marginBottom: "6px" }}
+        role="tablist"
+        aria-label="Memory scope"
+      >
+        <button
+          data-testid="memory-scope-session"
+          role="tab"
+          aria-selected={scope === "session"}
+          onClick={() => setScope("session")}
+          style={tabStyle(scope === "session")}
+        >
+          本会话
+        </button>
+        <button
+          data-testid="memory-scope-all"
+          role="tab"
+          aria-selected={scope === "all"}
+          onClick={() => setScope("all")}
+          style={tabStyle(scope === "all")}
+        >
+          全部会话
         </button>
       </div>
 
@@ -228,6 +269,7 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
             key={t.id}
             data-testid={`memory-turn-${t.id}`}
             data-turn-role={t.role}
+            data-turn-session={t.session_id}
             style={{
               display: "flex",
               gap: "6px",
@@ -253,6 +295,27 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
                 wordBreak: "break-word",
               }}
             >
+              {scope === "all" && (
+                <span
+                  style={{
+                    display: "inline-block",
+                    marginRight: "6px",
+                    padding: "0 4px",
+                    opacity: 0.55,
+                    fontSize: "10px",
+                    border: "1px solid #444",
+                    borderRadius: "3px",
+                    verticalAlign: "middle",
+                  }}
+                  title={t.session_id}
+                >
+                  {/* Short-form session tag. Full id still on data-turn-session
+                      for E2E + tooltip. */}
+                  {t.session_id.length > 12
+                    ? `…${t.session_id.slice(-10)}`
+                    : t.session_id}
+                </span>
+              )}
               {t.content}
             </span>
             <button
@@ -284,5 +347,21 @@ function btnStyle(bg: string): React.CSSProperties {
     padding: "3px 8px",
     fontSize: "11px",
     cursor: "pointer",
+  };
+}
+
+// Scope-tab button — filled when active, outlined + muted when inactive.
+// Keeping this visually distinct from the action buttons below so the
+// user doesn't confuse a view switch with a destructive action.
+function tabStyle(active: boolean): React.CSSProperties {
+  return {
+    background: active ? "#2563eb" : "transparent",
+    color: active ? "white" : "#cbd5e1",
+    border: `1px solid ${active ? "#2563eb" : "#334155"}`,
+    borderRadius: "4px",
+    padding: "3px 10px",
+    fontSize: "11px",
+    cursor: "pointer",
+    fontWeight: active ? 600 : 400,
   };
 }
