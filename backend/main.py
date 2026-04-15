@@ -34,7 +34,7 @@ SHARED_SECRET = secrets.token_hex(16)
 service_context = ServiceContext()
 
 # --- Register providers ---
-from providers.ollama_llm import OllamaLLM
+from providers.openai_compatible import OpenAICompatibleProvider
 from providers.silero_vad import SileroVAD
 from providers.faster_whisper_asr import FasterWhisperASR
 from providers.edge_tts_provider import EdgeTTSProvider
@@ -49,12 +49,13 @@ from tools.clipboard import read_clipboard_tool
 from tools.reminder import list_reminders_tool
 from observability.vram import classify_tier, recommend_asr_device
 
-ollama_llm = OllamaLLM(
-    model=config.llm.model,
+llm = OpenAICompatibleProvider(
     base_url=config.llm.base_url,
+    api_key=config.llm.api_key,
+    model=config.llm.model,
     temperature=config.llm.temperature,
 )
-service_context.register("llm_engine", ollama_llm)
+service_context.register("llm_engine", llm)
 
 # S2: memory store — short-term conversation history (SQLite).
 # Path from config.toml; falls back to ./data/memory.db if unset.
@@ -84,7 +85,7 @@ logger.info(
     recommended_asr=_tier.asr_model,
 )
 
-base_agent = SimpleLLMAgent(ollama_llm, memory=memory_store)
+base_agent = SimpleLLMAgent(llm, memory=memory_store)
 agent = ToolUsingAgent(base=base_agent, registry=tool_registry)
 service_context.register("agent_engine", agent)
 

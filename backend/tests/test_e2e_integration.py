@@ -37,7 +37,7 @@ from main import (
 
 
 class FakeLLM:
-    """Stand-in for OllamaLLM that streams a deterministic reply."""
+    """Stand-in for OpenAICompatibleProvider that streams a deterministic reply."""
 
     def __init__(self, reply: str = "hi from fake llm"):
         self.reply = reply
