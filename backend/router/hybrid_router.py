@@ -113,6 +113,8 @@ class HybridRouter:
         self._cloud = cloud
         self._strategy = strategy
         self._budget_check = budget_check
+        self._local_state = _ProviderState()
+        self._cloud_state = _ProviderState()
 
     async def chat_stream(
         self,
@@ -124,5 +126,21 @@ class HybridRouter:
         raise NotImplementedError("filled in Task 5")
         yield  # pragma: no cover  (make it an async generator)
 
+    async def _check_health(self, provider: LLMProvider, state: _ProviderState) -> bool:
+        cached = state.cached_health()
+        if cached is not None:
+            return cached
+        try:
+            ok = await provider.health_check()
+        except Exception as exc:
+            logger.warning("router_health_check_raised", error=str(exc))
+            ok = False
+        state.cache_health(ok)
+        return ok
+
     async def health_check(self) -> bool:
-        raise NotImplementedError("filled in Task 4")
+        if self._local is not None and await self._check_health(self._local, self._local_state):
+            return True
+        if self._cloud is not None and await self._check_health(self._cloud, self._cloud_state):
+            return True
+        return False

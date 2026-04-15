@@ -72,3 +72,67 @@ def test_health_cache_returns_within_ttl(monkeypatch):
     # 31s later — expired
     fake_now[0] += 2.0
     assert s.cached_health() is None
+
+
+class _FakeProvider:
+    """Minimal LLMProvider stub for router tests."""
+    def __init__(self, *, health: bool = True, chat_chunks: list[str] | None = None,
+                 chat_raises: Exception | None = None):
+        self._health = health
+        self._chat_chunks = chat_chunks or []
+        self._chat_raises = chat_raises
+        self.health_calls = 0
+        self.chat_calls = 0
+
+    async def health_check(self) -> bool:
+        self.health_calls += 1
+        return self._health
+
+    async def chat_stream(self, messages, *, temperature=0.7, max_tokens=2048):
+        self.chat_calls += 1
+        if self._chat_raises is not None:
+            raise self._chat_raises
+        for c in self._chat_chunks:
+            yield c
+
+
+@pytest.mark.asyncio
+async def test_router_health_check_true_when_local_healthy():
+    router = HybridRouter(local=_FakeProvider(health=True), cloud=None)
+    assert await router.health_check() is True
+
+
+@pytest.mark.asyncio
+async def test_router_health_check_true_when_cloud_healthy_only():
+    router = HybridRouter(
+        local=_FakeProvider(health=False),
+        cloud=_FakeProvider(health=True),
+    )
+    assert await router.health_check() is True
+
+
+@pytest.mark.asyncio
+async def test_router_health_check_false_when_all_dead():
+    router = HybridRouter(
+        local=_FakeProvider(health=False),
+        cloud=_FakeProvider(health=False),
+    )
+    assert await router.health_check() is False
+
+
+@pytest.mark.asyncio
+async def test_router_health_check_false_when_no_providers():
+    router = HybridRouter(local=None, cloud=None)
+    assert await router.health_check() is False
+
+
+@pytest.mark.asyncio
+async def test_router_health_uses_cache_within_ttl(monkeypatch):
+    """Two consecutive health_check calls within TTL → underlying provider hit once."""
+    fake_now = [1000.0]
+    monkeypatch.setattr("router.hybrid_router._now", lambda: fake_now[0])
+    local = _FakeProvider(health=True)
+    router = HybridRouter(local=local, cloud=None)
+    assert await router.health_check() is True
+    assert await router.health_check() is True
+    assert local.health_calls == 1  # cached on second call
