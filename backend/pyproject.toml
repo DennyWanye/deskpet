@@ -14,6 +14,10 @@ dependencies = [
     "aiosqlite>=0.22.1",
     # P2-0-S4: scripts/perf/rss_sampler.py uses psutil to watch process RSS.
     "psutil>=5.9.0",
+    # P2-1-S8 review: zoneinfo needs a tz database on Windows (no system
+    # /usr/share/zoneinfo). tzdata ships the IANA data as a wheel. Harmless
+    # no-op on Linux/macOS where the system DB is used by default.
+    "tzdata>=2024.1 ; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

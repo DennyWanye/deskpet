@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 import pytest_asyncio
@@ -98,3 +100,75 @@ async def test_hook_allows_cloud_when_under_budget(ledger):
     hook = ledger.create_hook()
     decision = await hook(BudgetContext(route="cloud", model="qwen3.6-plus"))
     assert decision.allow is True
+
+
+# ---------------------------------------------------------------------------
+# P2-1-S8 review — daily rollover honors configured tz, not UTC
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_day_boundary_uses_configured_tz(monkeypatch):
+    """At 02:00 Asia/Shanghai the UTC date is still 'yesterday'; the
+    ledger must record today in local time so the daily budget rolls over
+    on the Chinese midnight users expect, not the UTC midnight they don't.
+    """
+    tz = ZoneInfo("Asia/Shanghai")
+
+    # 2026-04-15 02:00 Shanghai == 2026-04-14 18:00 UTC. A UTC-based
+    # rollover would bucket this call into 2026-04-14; the local-tz path
+    # buckets it into 2026-04-15.
+    fixed_local = datetime(2026, 4, 15, 2, 0, tzinfo=tz)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz_arg=None):  # type: ignore[override]
+            return fixed_local.astimezone(tz_arg) if tz_arg else fixed_local
+
+    monkeypatch.setattr("billing.ledger.datetime", _FixedDatetime)
+
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "billing.db"
+        l = BillingLedger(
+            db_path=db,
+            pricing={"qwen3.6-plus": 8.0},
+            unknown_model_price_cny_per_m_tokens=20.0,
+            daily_budget_cny=10.0,
+            tz=tz,
+        )
+        await l.init()
+        await l.record(
+            provider="cloud", model="qwen3.6-plus",
+            prompt_tokens=1000, completion_tokens=500,
+        )
+        # spent_today reads the Shanghai-local date, so the row we just
+        # wrote counts toward "today" rather than being stranded on
+        # yesterday's UTC partition.
+        spent = await l.spent_today_cny()
+        assert spent > 0
+        s = await l.status()
+        assert s["tz"] == "Asia/Shanghai"
+
+
+@pytest.mark.asyncio
+async def test_hook_denies_cloud_when_budget_is_zero():
+    """Nit: daily_budget_cny=0 must deny every cloud call, even at 0 spent.
+    Pin this so a future tweak to the gate (e.g. `spent > budget`) can't
+    silently open the cloud up on the zero-budget config users pick to
+    disable cloud entirely.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "billing.db"
+        l = BillingLedger(
+            db_path=db,
+            pricing={},
+            unknown_model_price_cny_per_m_tokens=20.0,
+            daily_budget_cny=0.0,
+        )
+        await l.init()
+        hook = l.create_hook()
+        decision = await hook(BudgetContext(route="cloud", model="any"))
+        assert decision.allow is False
+        # Local is still free even when cloud is hard-disabled.
+        decision_local = await hook(BudgetContext(route="local", model="any"))
+        assert decision_local.allow is True

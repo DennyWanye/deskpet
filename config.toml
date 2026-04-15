@@ -31,6 +31,11 @@ daily_budget_cny = 10.0
 # prompt+completion combined). Intentionally pessimistic so unknown models
 # don't silently burn budget.
 unknown_model_price_cny_per_m_tokens = 20.0
+# IANA timezone name used for daily rollover. Defaults to Asia/Shanghai
+# (product targets Chinese users — UTC rollover would reset the budget
+# at 08:00 Beijing, right in the active-user window). Override if you're
+# running the pet outside China, e.g. tz = "America/Los_Angeles".
+tz = "Asia/Shanghai"
 
 [billing.pricing]
 # Per-1M-token price (CNY). Cover the models listed in [llm.cloud]; unknown

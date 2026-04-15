@@ -60,11 +60,16 @@ class BillingConfig:
 
     `db_path` is computed at load-time from the MemoryConfig data dir so we
     keep the two SQLite files side-by-side under `./data/`.
+
+    `tz` is the IANA timezone name used for daily rollover. Defaults to
+    Asia/Shanghai (product targets Chinese users); deployments overseas
+    can override via [billing] tz = "America/Los_Angeles" etc.
     """
     daily_budget_cny: float = 10.0
     unknown_model_price_cny_per_m_tokens: float = 20.0
     pricing: dict[str, float] = field(default_factory=dict)
     db_path: Path = field(default_factory=lambda: Path("./data/billing.db"))
+    tz: str = "Asia/Shanghai"
 
     @classmethod
     def from_toml(cls, data: dict, db_dir: Path) -> "BillingConfig":
@@ -76,6 +81,7 @@ class BillingConfig:
             ),
             pricing=dict(b.get("pricing", {}) or {}),
             db_path=db_dir / "billing.db",
+            tz=str(b.get("tz", "Asia/Shanghai")),
         )
 
 

@@ -11,6 +11,7 @@ except AttributeError:
 import os
 import secrets
 from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
 
 import structlog
 import uvicorn
@@ -75,6 +76,7 @@ billing_ledger = BillingLedger(
     pricing=config.billing.pricing,
     unknown_model_price_cny_per_m_tokens=config.billing.unknown_model_price_cny_per_m_tokens,
     daily_budget_cny=config.billing.daily_budget_cny,
+    tz=ZoneInfo(config.billing.tz),
 )
 service_context.register("billing_ledger", billing_ledger)
 

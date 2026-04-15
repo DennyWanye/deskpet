@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 import structlog
@@ -19,6 +20,16 @@ import structlog
 from router.types import BudgetContext, BudgetDecision, BudgetHook
 
 logger = structlog.get_logger()
+
+# Nit (P2-1-S8 review): lift the magic string so hook / record / cost
+# logic all agree on what "local means zero-cost, skip the budget gate".
+_LOCAL_ROUTE = "local"
+
+# P2-1-S8 review: daily rollover defaults to Asia/Shanghai because the
+# product targets Chinese users — at 02:00 Beijing the UTC `.date()` is
+# still "yesterday", so a fresh-day budget reset would be off by a day
+# during the active-user window. Can be overridden via BillingConfig.tz.
+_DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
 
 
 CREATE_SQL = """
@@ -50,11 +61,13 @@ class BillingLedger:
         pricing: dict[str, float],
         unknown_model_price_cny_per_m_tokens: float,
         daily_budget_cny: float,
+        tz: ZoneInfo = _DEFAULT_TZ,
     ) -> None:
         self._db_path = db_path
         self._pricing = pricing
         self._unknown_price = unknown_model_price_cny_per_m_tokens
         self._daily_budget = daily_budget_cny
+        self._tz = tz
         self._lock = asyncio.Lock()
 
     async def init(self) -> None:
@@ -64,7 +77,7 @@ class BillingLedger:
             await db.commit()
 
     def _cost_cny(self, provider: str, model: str, total_tokens: int) -> float:
-        if provider == "local":
+        if provider == _LOCAL_ROUTE:
             return 0.0
         price = self._pricing.get(model, self._unknown_price)
         return total_tokens / 1_000_000.0 * price
@@ -78,7 +91,10 @@ class BillingLedger:
     ) -> None:
         total = prompt_tokens + completion_tokens
         cost = self._cost_cny(provider, model, total)
-        now = datetime.now(timezone.utc)
+        # ts_utc keeps the canonical UTC wall clock for auditing; ts_date is
+        # the *local* day key used by the daily rollover (see _DEFAULT_TZ).
+        now_utc = datetime.now(timezone.utc)
+        today_local = datetime.now(self._tz).date().isoformat()
         async with self._lock:
             async with aiosqlite.connect(self._db_path) as db:
                 await db.execute(
@@ -86,8 +102,8 @@ class BillingLedger:
                     "prompt_tokens, completion_tokens, cost_cny) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
-                        now.isoformat(),
-                        now.date().isoformat(),
+                        now_utc.isoformat(),
+                        today_local,
                         provider,
                         model,
                         prompt_tokens,
@@ -106,7 +122,7 @@ class BillingLedger:
         )
 
     async def spent_today_cny(self) -> float:
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now(self._tz).date().isoformat()
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute(
                 "SELECT COALESCE(SUM(cost_cny), 0.0) FROM calls WHERE ts_date = ?",
@@ -124,6 +140,9 @@ class BillingLedger:
             "daily_budget_cny": self._daily_budget,
             "remaining_cny": remaining,
             "percent_used": pct,
+            # Exposed so the frontend can show which clock the rollover
+            # uses (debugging a disputed "why is my budget still X?" trip).
+            "tz": str(self._tz),
         }
 
     def create_hook(self) -> BudgetHook:
@@ -134,7 +153,7 @@ class BillingLedger:
           - cloud route → deny once spent_today >= daily_budget_cny
         """
         async def _hook(ctx: BudgetContext) -> BudgetDecision:
-            if ctx.route == "local":
+            if ctx.route == _LOCAL_ROUTE:
                 return BudgetDecision(allow=True)
             spent = await self.spent_today_cny()
             if spent >= self._daily_budget:

@@ -26,6 +26,16 @@ def test_billing_config_defaults():
     assert cfg.daily_budget_cny == 10.0
     assert cfg.pricing == {}
     assert cfg.unknown_model_price_cny_per_m_tokens == 20.0
+    # P2-1-S8 review: daily rollover defaults to Asia/Shanghai (Chinese
+    # user-base), not UTC — UTC rollover would reset the budget at 08:00
+    # Beijing, right in the active-use window.
+    assert cfg.tz == "Asia/Shanghai"
+
+
+def test_billing_config_tz_override(tmp_path):
+    raw = {"billing": {"tz": "America/Los_Angeles"}}
+    cfg = BillingConfig.from_toml(raw, db_dir=tmp_path)
+    assert cfg.tz == "America/Los_Angeles"
 
 
 def test_billing_config_unknown_keys_tolerated(tmp_path):
