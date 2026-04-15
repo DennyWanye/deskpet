@@ -48,7 +48,8 @@ from tools.get_time import get_time_tool
 from tools.clipboard import read_clipboard_tool
 from tools.reminder import list_reminders_tool
 from observability.vram import classify_tier, recommend_asr_device
-from router.hybrid_router import HybridRouter, RoutingStrategy
+from router.hybrid_router import HybridRouter, LLMUnavailableError, RoutingStrategy
+from billing.ledger import BillingLedger
 
 local_llm = OpenAICompatibleProvider(
     base_url=config.llm.local.base_url,
@@ -66,15 +67,22 @@ if config.llm.cloud is not None:
         temperature=config.llm.cloud.temperature,
     )
 
+# P2-1-S8: BillingLedger — SQLite ledger of every chat_stream call + its
+# cost in CNY. Its .create_hook() becomes the BudgetHook HybridRouter gates
+# cloud calls through. Local calls bypass the hook entirely (they're free).
+billing_ledger = BillingLedger(
+    db_path=config.billing.db_path,
+    pricing=config.billing.pricing,
+    unknown_model_price_cny_per_m_tokens=config.billing.unknown_model_price_cny_per_m_tokens,
+    daily_budget_cny=config.billing.daily_budget_cny,
+)
+service_context.register("billing_ledger", billing_ledger)
+
 llm = HybridRouter(
     local=local_llm,
     cloud=cloud_llm,
     strategy=RoutingStrategy(config.llm.strategy),
-    # TODO(P2-1-S8): wire BillingLedger. Tighten signature to accept
-    # provider context (local|cloud + estimated tokens) so local calls
-    # bypass budget gating — local is free; only cloud should debit.
-    # See handoff p2-1-s2-hybrid-router.md §"Slice-wide review follow-ups".
-    budget_check=None,
+    budget_hook=billing_ledger.create_hook(),
 )
 service_context.register("llm_engine", llm)
 
@@ -152,6 +160,14 @@ service_context.register("tts_engine", tts)
 async def lifespan(app: FastAPI):
     """Preload models on startup (best-effort — failures logged but don't block)."""
     logger.info("preloading models...")
+    # P2-1-S8: billing DB must exist before the first chat call. Failure
+    # here is logged but doesn't block startup — the ledger simply won't
+    # record anything until the DB is reachable on a future boot.
+    try:
+        await billing_ledger.init()
+        logger.info("billing_ledger_ready", db_path=str(config.billing.db_path))
+    except Exception as exc:
+        logger.warning("billing_ledger_init_failed", error=str(exc))
     for name in ("vad_engine", "asr_engine", "tts_engine"):
         engine = service_context.get(name)
         if engine and hasattr(engine, "load"):
@@ -328,6 +344,8 @@ async def control_channel(ws: WebSocket):
             elif msg_type == "chat":
                 text = raw.get("payload", {}).get("text", "")
                 response_text = f"[echo] {text}"
+                budget_exceeded = False
+                budget_reason: str | None = None
 
                 # V5 §2.3: route through agent_engine (not llm_engine directly).
                 # Keeps WS layer stable when S2/S3 add memory/tools to Agent.
@@ -340,13 +358,58 @@ async def control_channel(ws: WebSocket):
                             session_id=session_id,
                         ):
                             response_text += token
+                    except LLMUnavailableError as exc:
+                        # P2-1-S8: surface budget-denied refusals distinctly
+                        # so the UI can toast "预算已用尽" instead of a
+                        # generic failure. Any other LLMUnavailableError
+                        # (cloud+local both dead) still degrades to echo.
+                        reason = getattr(llm, "_last_budget_reason", None)
+                        llm._last_budget_reason = None  # consume
+                        logger.warning("llm_unavailable", error=str(exc), reason=reason)
+                        response_text = f"[echo] {text}"
+                        if reason and "budget" in reason:
+                            budget_exceeded = True
+                            budget_reason = reason
                     except Exception as exc:
                         logger.warning("agent_stream_failed", error=str(exc))
                         response_text = f"[echo] {text}"
 
+                # P2-1-S8: on a successful stream, consult the underlying
+                # providers' last_usage (set by OpenAICompatibleProvider) and
+                # debit the ledger. We probe both local and cloud — whichever
+                # actually served the request left its usage on that object.
+                if not budget_exceeded:
+                    for route, provider in (
+                        ("cloud", llm._cloud),
+                        ("local", llm._local),
+                    ):
+                        if provider is None:
+                            continue
+                        usage = getattr(provider, "last_usage", None)
+                        if not usage:
+                            continue
+                        try:
+                            await billing_ledger.record(
+                                provider=route,
+                                model=getattr(provider, "model", "unknown"),
+                                prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                                completion_tokens=int(usage.get("completion_tokens", 0)),
+                            )
+                        except Exception as exc:
+                            logger.warning("billing_record_failed", error=str(exc))
+                        # Clear so the next call doesn't double-debit this
+                        # usage block if only one provider ran.
+                        provider.last_usage = None
+                        break
+
+                payload: dict = {"text": response_text}
+                if budget_exceeded:
+                    payload["budget_exceeded"] = True
+                    if budget_reason:
+                        payload["budget_reason"] = budget_reason
                 await ws.send_json({
                     "type": "chat_response",
-                    "payload": {"text": response_text},
+                    "payload": payload,
                 })
 
             elif msg_type == "interrupt":
@@ -359,6 +422,18 @@ async def control_channel(ws: WebSocket):
                 else:
                     logger.info("interrupt received but no active pipeline", session_id=session_id)
                 await ws.send_json({"type": "interrupt_ack"})
+
+            elif msg_type == "budget_status":
+                # P2-1-S8: SettingsPanel "今日使用" pulls from here.
+                try:
+                    status = await billing_ledger.status()
+                    await ws.send_json({"type": "budget_status", "payload": status})
+                except Exception as exc:
+                    logger.warning("budget_status_failed", error=str(exc))
+                    await ws.send_json({
+                        "type": "error",
+                        "payload": {"message": f"budget_status failed: {exc}"},
+                    })
 
             elif msg_type in ("memory_list", "memory_delete", "memory_clear", "memory_export"):
                 # S14 (V5 §6 threat 5): user-facing controls over persisted
