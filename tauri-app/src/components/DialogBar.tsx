@@ -1,11 +1,16 @@
 import type { CSSProperties } from "react";
 
 type Props = {
-  /** 最新一条助手消息文本；空则底栏留白（不显示占位文字） */
+  /** 最新一条助手消息文本；空则显示 placeholder 引导用户说话 */
   latestAssistant: string | null;
   /** 点击展开历史 */
   onOpenHistory: () => void;
 };
+
+// 留白时的引导文案。空字符串版本在盲测里被误以为"坏了"，所以 P2-0-S5
+// 起改成软提示；长度压在两行内，避免底栏在 TTS 第一个 token 到达前就
+// 先抖一下。保持 muted 色（opacity<1）以跟真实助手回复区分。
+const EMPTY_PLACEHOLDER = "按住下方按钮说话，或输入消息开始聊天…";
 
 /**
  * VN 风格底栏对话框。
@@ -16,6 +21,7 @@ type Props = {
  * - 文本超出时在内部 textStyle 区域 scroll，外框高度不变
  */
 export function DialogBar({ latestAssistant, onOpenHistory }: Props) {
+  const isEmpty = latestAssistant === null || latestAssistant === "";
   return (
     <div
       style={barStyle}
@@ -23,9 +29,10 @@ export function DialogBar({ latestAssistant, onOpenHistory }: Props) {
     >
       <div
         data-testid="dialog-bar-assistant"
-        style={textStyle}
+        data-empty={isEmpty ? "true" : "false"}
+        style={isEmpty ? { ...textStyle, ...placeholderStyle } : textStyle}
       >
-        {latestAssistant ?? ""}
+        {isEmpty ? EMPTY_PLACEHOLDER : latestAssistant}
       </div>
       <button
         data-testid="dialog-history-toggle"
@@ -65,6 +72,13 @@ const textStyle: CSSProperties = {
   maxHeight: "100%",
   whiteSpace: "pre-wrap",
   wordBreak: "break-word",
+};
+
+// Muted + italic 让空态提示从真实助手回复里视觉区分出来，
+// 同时 data-empty="true" 给 E2E 一个稳定的断言钩子。
+const placeholderStyle: CSSProperties = {
+  opacity: 0.5,
+  fontStyle: "italic",
 };
 
 const historyBtnStyle: CSSProperties = {

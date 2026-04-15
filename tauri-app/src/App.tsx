@@ -265,14 +265,6 @@ function App() {
     [],
   );
 
-  // VN 底栏架构下不再需要自动滚动，但保留 ref 声明避免改动 hook 调用顺序。
-  // ref 挂到隐藏 div（渲染层），effect 清空为 no-op 只在 messages 变化时跑一次
-  // 空函数——成本可忽略，好处是不会误导后续维护者以为有滚动逻辑。
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    // no-op: 旧自动滚动已由 DialogBar 单条渲染替代
-  }, [messages]);
-
   // 底栏渲染用 —— 从 messages 里取最后一条 assistant。
   const latestAssistant =
     [...messages].reverse().find((m) => m.role === "assistant")?.text ?? null;
@@ -309,11 +301,6 @@ function App() {
         messages={messages.map((m) => ({ role: m.role, text: stripMarkdown(m.text) }))}
         onClose={() => setHistoryOpen(false)}
       />
-
-      {/* 旧 messagesEndRef 节点：新架构下不再需要自动滚动，但保留 hook 声明
-          以免改动 hook 调用顺序；挂一个隐藏 div 让 ref 指向有效节点 */}
-      <div ref={messagesEndRef} style={{ display: "none" }} />
-
 
       <div
         style={{

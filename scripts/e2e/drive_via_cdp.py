@@ -221,6 +221,10 @@ def step_dialog_bar(page: Page) -> bool:
     print("[dialog] PASS 底栏只渲染 1 条助手消息")
 
     # 断言 2：发第二条消息，底栏应替换为新内容
+    # P2-0-S5: 在每次 send 前重新确认 mic 空闲。助手回复中途若有任何路径
+    # 误触 Start recording（罕见，但在 step 重跑 / VAD 误判时见过），
+    # 后续 chat 会排队到 audio pipeline 后面，假性拉长 60s 超时预算。
+    ensure_mic_idle(page)
     page.locator('[data-testid="chat-input"]').fill("再说一句")
     page.locator('[data-testid="send-button"]').click()
     # 等内容变化
@@ -242,6 +246,7 @@ def step_dialog_bar(page: Page) -> bool:
     shot(page, "dialog_02_replaced")
 
     # 断言 3：用户消息气泡 2s 内淡出
+    ensure_mic_idle(page)
     page.locator('[data-testid="chat-input"]').fill("测试气泡")
     page.locator('[data-testid="send-button"]').click()
     user_bubble = page.locator('[data-testid="user-bubble-fleeting"]')
