@@ -62,15 +62,40 @@ impl BackendProcess {
 /// Spawn the Python backend and read its SHARED_SECRET announcement.
 /// Shared logic between the initial `start_backend` command and the
 /// supervisor's respawn path.
+///
+/// P2-1-S3: before spawning we peek at the OS keychain via `secrets::`
+/// and, if a cloud LLM API key is configured, inject it as
+/// `DESKPET_CLOUD_API_KEY` so `backend/main.py::_resolve_cloud_api_key`
+/// can find it. When nothing is saved the backend logs "cloud disabled"
+/// and carries on local-only — that's the documented first-launch flow.
 fn spawn_once(
     python_path: &str,
     backend_dir: &str,
 ) -> Result<(Child, String), String> {
-    let mut child = Command::new(python_path)
-        .arg("main.py")
+    let mut cmd = Command::new(python_path);
+    cmd.arg("main.py")
         .current_dir(backend_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    // Read key from keychain. Errors are logged to stderr but don't
+    // block startup — if the keychain itself is busted, local-only is
+    // still useful.
+    match crate::secrets::get_cloud_api_key() {
+        Ok(Some(key)) if !key.is_empty() => {
+            cmd.env("DESKPET_CLOUD_API_KEY", key);
+        }
+        Ok(_) => {
+            // Not configured — backend will skip cloud provider init.
+        }
+        Err(e) => {
+            eprintln!(
+                "[process_manager] warning: could not read cloud API key from keychain: {e}"
+            );
+        }
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn backend: {e}"))?;
 

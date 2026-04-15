@@ -58,14 +58,25 @@ local_llm = OpenAICompatibleProvider(
     temperature=config.llm.local.temperature,
 )
 
+from config import resolve_cloud_api_key as _resolve_cloud_api_key  # P2-1-S3
+
 cloud_llm = None
 if config.llm.cloud is not None:
-    cloud_llm = OpenAICompatibleProvider(
-        base_url=config.llm.cloud.base_url,
-        api_key=config.llm.cloud.api_key,
-        model=config.llm.cloud.model,
-        temperature=config.llm.cloud.temperature,
-    )
+    _cloud_key = _resolve_cloud_api_key()
+    if _cloud_key:
+        cloud_llm = OpenAICompatibleProvider(
+            base_url=config.llm.cloud.base_url,
+            api_key=_cloud_key,
+            model=config.llm.cloud.model,
+            temperature=config.llm.cloud.temperature,
+        )
+    else:
+        # No env var = user hasn't saved a key yet. Local-only is a
+        # perfectly valid mode; don't spam the user at ERROR.
+        logger.info(
+            "cloud_llm_skipped",
+            reason="DESKPET_CLOUD_API_KEY env not set — cloud provider disabled",
+        )
 
 llm = HybridRouter(
     local=local_llm,
@@ -396,6 +407,14 @@ async def control_channel(ws: WebSocket):
                 # conversation history. All four go through the same memory
                 # store the agent reads from, so redaction-on-write still holds.
                 await _handle_memory_message(ws, session_id, msg_type, raw.get("payload", {}) or {})
+
+            elif msg_type == "provider_test_connection":
+                # P2-1-S3: SettingsPanel「测试连接」button. The candidate
+                # credentials travel through the already-authenticated control
+                # channel; nothing is persisted here — the UI saves via the
+                # Tauri `set_cloud_api_key` command only on success.
+                from provider_test_connection import handle_provider_test_connection
+                await handle_provider_test_connection(ws, raw.get("payload", {}) or {})
 
             else:
                 await ws.send_json({

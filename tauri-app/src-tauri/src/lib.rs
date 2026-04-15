@@ -3,6 +3,7 @@ use tauri::Manager;
 mod click_through;
 mod crash_reports;
 mod process_manager;
+mod secrets;
 mod webview_permissions;
 
 use process_manager::BackendProcess;
@@ -32,6 +33,12 @@ pub fn run() {
             process_manager::stop_backend,
             process_manager::is_backend_running,
             process_manager::get_shared_secret,
+            // P2-1-S3: cloud LLM API key commands; UI invokes these from
+            // SettingsPanel.
+            secrets::set_cloud_api_key,
+            secrets::get_cloud_api_key,
+            secrets::delete_cloud_api_key,
+            secrets::has_cloud_api_key,
         ])
         .setup(|app| {
             // Auto-grant microphone permission on the main WebView2 so
