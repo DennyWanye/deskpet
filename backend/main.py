@@ -363,11 +363,12 @@ async def control_channel(ws: WebSocket):
                         # so the UI can toast "预算已用尽" instead of a
                         # generic failure. Any other LLMUnavailableError
                         # (cloud+local both dead) still degrades to echo.
-                        reason = getattr(llm, "_last_budget_reason", None)
-                        llm._last_budget_reason = None  # consume
+                        # Reason rides on the exception itself now — no more
+                        # racy instance attribute shared between requests.
+                        reason = exc.budget_reason
                         logger.warning("llm_unavailable", error=str(exc), reason=reason)
                         response_text = f"[echo] {text}"
-                        if reason and "budget" in reason:
+                        if reason is not None:
                             budget_exceeded = True
                             budget_reason = reason
                     except Exception as exc:

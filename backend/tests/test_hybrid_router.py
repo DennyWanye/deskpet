@@ -194,8 +194,11 @@ async def test_chat_raises_when_all_providers_dead():
         local=_FakeProvider(health=False),
         cloud=_FakeProvider(health=False),
     )
-    with pytest.raises(LLMUnavailableError):
+    with pytest.raises(LLMUnavailableError) as ei:
         await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    # P2-1-S8 review: non-budget failures carry budget_reason=None so
+    # main.py knows to treat this as a generic degradation, not a quota toast.
+    assert ei.value.budget_reason is None
 
 
 @pytest.mark.asyncio
@@ -257,8 +260,9 @@ async def test_budget_denies_cloud_when_local_unavailable_raises():
             router.chat_stream([{"role": "user", "content": "q"}])
         )
     assert "budget" in str(ei.value).lower()
-    # last_budget_reason is set so main.py can surface it to the UI.
-    assert router._last_budget_reason == "budget_exceeded_test"
+    # P2-1-S8 review: budget_reason travels on the exception (not on a
+    # racy instance attribute) so main.py can attach it to the UI payload.
+    assert ei.value.budget_reason == "budget_exceeded_test"
 
 
 @pytest.mark.asyncio

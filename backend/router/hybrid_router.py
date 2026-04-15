@@ -84,7 +84,19 @@ class _ProviderState:
 
 
 class LLMUnavailableError(RuntimeError):
-    """All routes exhausted (local + cloud both failed or unconfigured)."""
+    """All routes exhausted (local + cloud both failed or unconfigured).
+
+    ``budget_reason`` is set when the failure is due to a BudgetHook denial
+    (non-None → caller should surface as a UI-visible budget exceeded toast,
+    not a generic transport failure). P2-1-S8 review: we previously tracked
+    this on a HybridRouter instance attribute, but that side-channel raced
+    between concurrent text-chat and voice-pipeline requests. Carrying it on
+    the exception itself scopes it to the raising call path.
+    """
+
+    def __init__(self, msg: str, *, budget_reason: str | None = None) -> None:
+        super().__init__(msg)
+        self.budget_reason = budget_reason
 
 
 class RoutingStrategy(str, enum.Enum):
@@ -116,10 +128,6 @@ class HybridRouter:
         self._budget_hook = budget_hook
         self._local_state = _ProviderState()
         self._cloud_state = _ProviderState()
-        # P2-1-S8: last BudgetDecision.reason when we raised
-        # LLMUnavailableError due to budget denial. main.py reads this to
-        # attach `budget_exceeded` metadata to the chat_response payload.
-        self._last_budget_reason: str | None = None
 
     async def chat_stream(
         self,
@@ -181,9 +189,9 @@ class HybridRouter:
             logger.info(
                 "router_cloud_budget_denied", reason=decision.reason,
             )
-            self._last_budget_reason = decision.reason
             raise LLMUnavailableError(
-                f"budget denied: {decision.reason}"
+                f"budget denied: {decision.reason}",
+                budget_reason=decision.reason,
             )
         cloud_state = self._cloud_state
         if cloud_state.circuit_state_now() == _CircuitState.OPEN:
