@@ -33,7 +33,7 @@
 |-------|--------|--------|-------|
 | 1 — MVP loop | — | ✅ complete | v0.1.0 internal milestone |
 | 2 — Polish & distribute | **P2-0** | ✅ complete | S1–S7 all shipped; v0.2.0 public |
-| 2 — Polish & distribute | **P2-1** | ⏳ not started | 6 decision points pending (see roadmap §3.2) |
+| 2 — Polish & distribute | **P2-1** | 🟡 in progress | S1 ✅ shipped (OpenAI-compat provider); S2-S6 pending (see roadmap §3.2) |
 | 3 — Backend auto-launch | — | ⏳ future | Blocker follow-up: bundle Python backend |
 | 4 — v1.0 GA | — | ⏳ future | Once P2/P3 land |
 
