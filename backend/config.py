@@ -93,6 +93,20 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         raw_llm = raw["llm"]
         raw_local = raw_llm.pop("local", None)
         raw_cloud = raw_llm.pop("cloud", None)
+        # P2-1-S2: warn loudly if user is still on the pre-split [llm] schema.
+        # _load_section silently drops these keys, but a missing [llm.local]
+        # then quietly falls back to LLMEndpointConfig() defaults — which
+        # would silently revert the user's custom model. Better to nudge
+        # them in the logs than let it puzzle them later.
+        _OLD_LLM_KEYS = {"model", "base_url", "api_key", "provider", "temperature", "max_tokens"}
+        stray = _OLD_LLM_KEYS & set(raw_llm)
+        if stray and raw_local is None:
+            logger.warning(
+                "config [llm] uses pre-P2-1-S2 schema (keys: %s); "
+                "these are ignored and local LLM defaults will be used. "
+                "Move them under [llm.local]. See CHANGELOG for migration.",
+                sorted(stray),
+            )
         routing = _load_section(LLMRoutingConfig, raw_llm)
         if raw_local is not None:
             routing.local = _load_section(LLMEndpointConfig, raw_local)

@@ -181,9 +181,14 @@ class HybridRouter:
                 yield tok
             cloud_state.record_chat_success()
         except Exception as exc:
+            # Symmetry with local-failure path: don't poison the health cache
+            # here. The circuit breaker is the source of truth for "this
+            # provider is broken"; once it OPENs after 3 failures, the gate
+            # at line 169 short-circuits before _check_health runs. Caching
+            # False here would also keep the public health_check() returning
+            # False for 30s after the cloud comes back, which masks recovery.
             cloud_state.record_chat_failure()
-            cloud_state.cache_health(False)
-            logger.error("router_cloud_chat_failed", error=str(exc))
+            logger.error("router_cloud_chat_failed", error=str(exc), provider="cloud")
             raise LLMUnavailableError(f"cloud chat failed: {exc}") from exc
 
     async def _check_health(self, provider: LLMProvider, state: _ProviderState) -> bool:

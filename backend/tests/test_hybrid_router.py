@@ -15,16 +15,17 @@ import httpx
 
 from providers.base import LLMProvider
 from providers.openai_compatible import OpenAICompatibleProvider
-from router.hybrid_router import HybridRouter, LLMUnavailableError
+from router.hybrid_router import (
+    HybridRouter,
+    LLMUnavailableError,
+    _CircuitState,
+    _ProviderState,
+)
 
 
 def test_hybrid_router_implements_llm_provider_protocol():
     router = HybridRouter(local=None, cloud=None)
     assert isinstance(router, LLMProvider)
-
-
-import time
-from router.hybrid_router import _ProviderState, _CircuitState
 
 
 def test_provider_state_starts_closed():

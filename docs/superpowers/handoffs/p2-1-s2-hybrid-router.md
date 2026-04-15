@@ -182,10 +182,32 @@ Expected: `[smoke] VERDICT: PASS — real LLM reply via agent->provider->Ollama`
 
 ## Known issues
 
-None blocking. Two follow-ups worth tracking:
+None blocking. Two real follow-ups documented below from the slice-wide review.
 
-- The `cache_health(False)` symmetry inconsistency in `_stream_cloud` (see deviation #1 above).
-- The HybridRouter is instantiated **once** at startup; multiple WebSocket sessions share the same `_local_state` / `_cloud_state`. This is the right design for a circuit breaker (it's about provider health, not per-session state), but worth a sanity-check by an independent reviewer for race conditions on `consecutive_failures` mutations under concurrent `chat_stream` invocations. Python's GIL plus the fact that all mutations are done from `await`-resumed coroutines on the single event loop should make this safe, but a fresh pair of eyes is welcome.
+## Slice-wide review follow-ups (2026-04-15)
+
+The slice-wide `code-reviewer` agent ran on the full diff and found two important issues + two follow-ups. Three were fixed in this slice; two are deferred with explicit owners.
+
+### Fixed inline before merge
+
+- **`cache_health(False)` removed from `_stream_cloud` exception handler too** — the `_stream_cloud` path was leaving the same poisoned-cache footgun that was already removed from the local-failure path (see deviation #1 above). After failures 1 and 2, `cache_health(False)` would keep `health_check()` returning False for 30s even after the cloud recovered, masking recovery to any `/healthz` poller. Now the circuit breaker is the single source of truth for "this provider is broken"; the health cache is purely a result cache.
+- **Pre-P2-1-S2 schema warning in `load_config`** — users upgrading from v0.2.0 with a flat `[llm]` block (e.g., `model = "qwen2.5:7b"` at the top) would silently lose their custom model: `_load_section` drops unknown keys, missing `[llm.local]` falls through to defaults, and the user starts up with `gemma4:e4b` with no indication anything changed. `load_config` now detects pre-split keys (`model`, `base_url`, `api_key`, `provider`, `temperature`, `max_tokens`) at the top level of `[llm]` and logs a `WARNING` pointing at the CHANGELOG. Regression test: `test_load_config_warns_on_pre_split_llm_schema`.
+- **Test-file import hygiene** — `import time` (unused) removed; `_ProviderState`/`_CircuitState` imports consolidated into the top-of-file block.
+
+### Deferred (filed as TODOs for future slices)
+
+- **`HALF_OPEN` race under concurrent sessions.** `circuit_state_now()` is a pure read; two coroutines can both observe `HALF_OPEN` and both pass the `!= OPEN` gate, defeating the "single trial call" intent of the half-open state. Same race exists in `_check_health`'s cache-miss window. Today the app runs one active WS session, so the race never fires — but P2-2 (real-time duplex) and any future multi-window/multi-session work will surface it. Fix sketch in the reviewer's report: per-`_ProviderState` `_half_open_trial_in_flight: bool` flag and a coalesced `asyncio.Future` for in-flight health probes. **Owner: P2-2 prep work** (or the next slice that introduces concurrent LLM call paths).
+- **`budget_check: Callable[[], bool] | None` is too thin for S8.** The current signature can't distinguish "block all calls" from "block cloud only, local is free". A `local_first` router with a daily budget logically wants the latter — local should never be budget-blocked. Suggested upgrade: `BudgetHook = Callable[[BudgetContext], BudgetDecision]` carrying `provider: Literal["local","cloud"]` and `estimated_tokens: int | None`. **Owner: P2-1-S8** — change the signature when wiring `BillingLedger`. Documented as `TODO(P2-1-S8): use BudgetContext signature` near the call site.
+
+### Other reviewer notes acknowledged (deferred or judgment-call)
+
+See the full reviewer report in the slice's commit message for `e613b91`'s follow-up commit. Highlights:
+
+- N1 (typed `LLMUnavailableError.cause`) — useful when the `[echo]` fallback in `main.py` becomes a user-facing message; not needed today.
+- N2 (consistent `provider` log key) — partially addressed in the `cache_health` fix commit (cloud failure log now carries `provider="cloud"`); local-failure log still uses verb-phrase event name. Tighten in S6 alongside TTFT metric work.
+- N5 (extract `_stream_one(provider, state)` helper) — wait until `cost_aware`/`latency_aware` strategies actually land, otherwise it's premature abstraction.
+- N6 (`health_detail()` per-provider endpoint) — S6 observability work, not S2.
+- N7 (separate `LocalEndpointConfig` / `CloudEndpointConfig` defaults) — S3 will restructure cloud config when Credential Manager lands; do it then.
 
 ---
 

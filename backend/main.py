@@ -70,7 +70,11 @@ llm = HybridRouter(
     local=local_llm,
     cloud=cloud_llm,
     strategy=RoutingStrategy(config.llm.strategy),
-    budget_check=None,  # TODO(P2-1-S8): wire BillingLedger
+    # TODO(P2-1-S8): wire BillingLedger. Tighten signature to accept
+    # provider context (local|cloud + estimated tokens) so local calls
+    # bypass budget gating — local is free; only cloud should debit.
+    # See handoff p2-1-s2-hybrid-router.md §"Slice-wide review follow-ups".
+    budget_check=None,
 )
 service_context.register("llm_engine", llm)
 

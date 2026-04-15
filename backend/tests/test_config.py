@@ -95,3 +95,33 @@ def test_load_config_llm_cloud_optional(tmp_path):
     cfg = load_config(cfg_path)
     assert cfg.llm.cloud is None
     assert cfg.llm.local.model == "gemma4:e4b"
+
+
+def test_load_config_warns_on_pre_split_llm_schema(tmp_path, caplog):
+    """User on the pre-P2-1-S2 flat [llm] schema should get a loud warning,
+    not a silent revert to default model.
+
+    Failure mode this guards against: user upgrading from v0.2.0 with a
+    custom `[llm] model = "qwen2.5:7b"` would silently start using the
+    `gemma4:e4b` default because the old keys get dropped and no
+    [llm.local] section means the dataclass defaults take over.
+    """
+    import logging
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(dedent("""
+        [llm]
+        strategy = "local_first"
+        model = "qwen2.5:7b"
+        base_url = "http://localhost:11434/v1"
+        api_key = "ollama"
+    """).strip())
+
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(cfg_path)
+
+    # The custom model is silently lost (we can't recover it without invasive
+    # auto-migration), but the user is warned in logs.
+    assert cfg.llm.local.model == "gemma4:e4b"  # default kicked in
+    assert any("pre-P2-1-S2 schema" in r.message for r in caplog.records)
+    assert any("model" in r.message for r in caplog.records)
