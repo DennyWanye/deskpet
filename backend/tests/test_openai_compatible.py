@@ -207,6 +207,99 @@ async def test_chat_stream_raises_on_http_error():
 
 
 # --------------------------------------------------------------------------
+# P2-1-S8 — last_usage capture from the OpenAI stream_options.include_usage
+# terminal chunk. The provider must record it for BillingLedger to bill.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_captures_usage():
+    """OpenAI/DashScope emit a terminal chunk with `usage` when include_usage
+    is set. The provider must stash it in self.last_usage."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        # Shape matches what OpenAI/DashScope actually emit: the last data
+        # frame has empty choices and a populated usage.
+        frames = [
+            _delta("hi"),
+            {
+                "id": "chatcmpl",
+                "object": "chat.completion.chunk",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            },
+            "[DONE]",
+        ]
+        return httpx.Response(
+            200,
+            content=_sse(frames),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://example.invalid/v1",
+        api_key="k",
+        model="m",
+    )
+    provider._test_transport = httpx.MockTransport(handler)
+    tokens = [t async for t in provider.chat_stream(
+        [{"role": "user", "content": "q"}],
+    )]
+    assert tokens == ["hi"]
+    assert provider.last_usage == {
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "total_tokens": 15,
+    }
+    # Sanity: include_usage must be in the outgoing body.
+    assert captured["body"]["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_last_usage_resets_when_absent():
+    """Second call without a usage chunk must leave last_usage=None, not
+    reuse the previous stream's usage."""
+    calls = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if calls[0] == 0:
+            frames = [
+                _delta("a"),
+                {
+                    "choices": [],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                },
+                "[DONE]",
+            ]
+        else:
+            # Ollama-style: no usage frame at all.
+            frames = [_delta("b"), "[DONE]"]
+        calls[0] += 1
+        return httpx.Response(
+            200,
+            content=_sse(frames),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://example.invalid/v1",
+        api_key="k",
+        model="m",
+    )
+    provider._test_transport = httpx.MockTransport(handler)
+    _ = [t async for t in provider.chat_stream([{"role": "user", "content": "q"}])]
+    assert provider.last_usage is not None
+    _ = [t async for t in provider.chat_stream([{"role": "user", "content": "q"}])]
+    assert provider.last_usage is None
+
+
+# --------------------------------------------------------------------------
 # Integration tests — skipped by default unless the endpoint is reachable.
 # --------------------------------------------------------------------------
 

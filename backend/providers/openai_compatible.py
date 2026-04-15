@@ -33,6 +33,12 @@ class OpenAICompatibleProvider:
         self.model = model
         self.temperature = temperature
         self.timeout = timeout
+        # P2-1-S8: last completed stream's usage block from the OpenAI SSE
+        # protocol (populated only when the server emits one — OpenAI/DashScope
+        # always do when stream_options.include_usage=True; Ollama today does
+        # NOT emit usage in its SSE stream, so this stays None after Ollama
+        # calls and billing records nothing. main.py handles that case.
+        self.last_usage: dict | None = None
         # Test-only injection: unit tests assign an httpx.MockTransport here.
         # Production code MUST leave this None; otherwise every request goes
         # through the mock and never reaches the real endpoint.
@@ -57,10 +63,17 @@ class OpenAICompatibleProvider:
         max_tokens: int = 2048,
     ) -> AsyncIterator[str]:
         temp = temperature if temperature is not None else self.temperature
+        # P2-1-S8: reset per-call so stale data from the previous stream
+        # never leaks into billing when the current stream carries no usage.
+        self.last_usage = None
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": True,
+            # S8: ask OpenAI-compat servers to emit a terminal chunk with
+            # a `usage` field so BillingLedger can record prompt/completion
+            # tokens. Harmless on servers that ignore it (Ollama).
+            "stream_options": {"include_usage": True},
             "temperature": temp,
             "max_tokens": max_tokens,
         }
@@ -86,6 +99,12 @@ class OpenAICompatibleProvider:
                             "openai_compat_bad_sse_frame", raw=data_str
                         )
                         continue
+                    # P2-1-S8: the usage chunk typically arrives as the
+                    # terminal frame (choices=[], usage={...}). Capture it
+                    # regardless of whether choices is empty.
+                    usage = data.get("usage")
+                    if usage:
+                        self.last_usage = usage
                     choices = data.get("choices") or []
                     if not choices:
                         continue
