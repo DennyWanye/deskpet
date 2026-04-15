@@ -204,3 +204,53 @@ async def test_chat_stream_raises_on_http_error():
     with pytest.raises(httpx.HTTPStatusError):
         async for _ in provider.chat_stream([{"role": "user", "content": "x"}]):
             pass
+
+
+# --------------------------------------------------------------------------
+# Integration tests — skipped by default unless the endpoint is reachable.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_integration_ollama_v1_roundtrip():
+    """Hits local Ollama's OpenAI-compatible endpoint. Skipped if not running."""
+    provider = OpenAICompatibleProvider(
+        base_url="http://localhost:11434/v1",
+        api_key="ollama",
+        model=os.environ.get("DESKPET_OLLAMA_MODEL", "gemma4:e4b"),
+    )
+    if not await provider.health_check():
+        pytest.skip("Ollama /v1 not reachable — start ollama or set DESKPET_OLLAMA_MODEL")
+
+    tokens: list[str] = []
+    async for tok in provider.chat_stream(
+        [{"role": "user", "content": "Reply with the single word: ping"}],
+        max_tokens=16,
+    ):
+        tokens.append(tok)
+    joined = "".join(tokens).lower()
+    assert "ping" in joined
+
+
+@pytest.mark.asyncio
+async def test_integration_dashscope_roundtrip():
+    """Hits DashScope compat-mode endpoint. Skipped if DESKPET_DASHSCOPE_KEY unset."""
+    api_key = os.environ.get("DESKPET_DASHSCOPE_KEY")
+    if not api_key:
+        pytest.skip("DESKPET_DASHSCOPE_KEY not set — skipping live cloud test")
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key=api_key,
+        model=os.environ.get("DESKPET_DASHSCOPE_MODEL", "qwen3.6-plus"),
+    )
+    if not await provider.health_check():
+        pytest.skip("DashScope /models 非 200 — 可能是密钥无效或网络问题")
+
+    tokens: list[str] = []
+    async for tok in provider.chat_stream(
+        [{"role": "user", "content": "请用一个字回答：好"}],
+        max_tokens=8,
+    ):
+        tokens.append(tok)
+    assert len("".join(tokens)) >= 1
