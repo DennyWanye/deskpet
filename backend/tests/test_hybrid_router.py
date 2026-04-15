@@ -136,3 +136,113 @@ async def test_router_health_uses_cache_within_ttl(monkeypatch):
     assert await router.health_check() is True
     assert await router.health_check() is True
     assert local.health_calls == 1  # cached on second call
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — chat_stream routing logic
+# ---------------------------------------------------------------------------
+
+async def _collect(agen):
+    return [x async for x in agen]
+
+
+@pytest.mark.asyncio
+async def test_chat_local_first_uses_local_when_healthy():
+    local = _FakeProvider(health=True, chat_chunks=["hi", " local"])
+    cloud = _FakeProvider(health=True, chat_chunks=["should not be called"])
+    router = HybridRouter(local=local, cloud=cloud)
+    out = await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    assert out == ["hi", " local"]
+    assert cloud.chat_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_falls_back_to_cloud_when_local_unhealthy():
+    local = _FakeProvider(health=False)
+    cloud = _FakeProvider(health=True, chat_chunks=["from", " cloud"])
+    router = HybridRouter(local=local, cloud=cloud)
+    out = await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    assert out == ["from", " cloud"]
+    assert local.chat_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_force_cloud_skips_local_entirely():
+    local = _FakeProvider(health=True, chat_chunks=["local"])
+    cloud = _FakeProvider(health=True, chat_chunks=["cloud"])
+    router = HybridRouter(local=local, cloud=cloud)
+    out = await _collect(router.chat_stream(
+        [{"role": "user", "content": "x"}], force_cloud=True))
+    assert out == ["cloud"]
+    assert local.chat_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_force_cloud_raises_when_cloud_unconfigured():
+    router = HybridRouter(local=_FakeProvider(health=True), cloud=None)
+    with pytest.raises(LLMUnavailableError):
+        await _collect(router.chat_stream(
+            [{"role": "user", "content": "x"}], force_cloud=True))
+
+
+@pytest.mark.asyncio
+async def test_chat_raises_when_all_providers_dead():
+    router = HybridRouter(
+        local=_FakeProvider(health=False),
+        cloud=_FakeProvider(health=False),
+    )
+    with pytest.raises(LLMUnavailableError):
+        await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+
+
+@pytest.mark.asyncio
+async def test_circuit_opens_after_three_chat_failures(monkeypatch):
+    fake_now = [1000.0]
+    monkeypatch.setattr("router.hybrid_router._now", lambda: fake_now[0])
+    local = _FakeProvider(health=True, chat_raises=RuntimeError("boom"))
+    cloud = _FakeProvider(health=True, chat_chunks=["c"])
+    router = HybridRouter(local=local, cloud=cloud)
+    for _ in range(3):
+        await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    # 4th call: local circuit OPEN, must skip local entirely
+    await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    assert local.chat_calls == 3  # not incremented on 4th call
+
+
+@pytest.mark.asyncio
+async def test_circuit_recovers_on_half_open_success(monkeypatch):
+    fake_now = [1000.0]
+    monkeypatch.setattr("router.hybrid_router._now", lambda: fake_now[0])
+    # Local fails 3x then recovers
+    local = _FlakeyProvider(fail_first_n=3, then_chunks=["recovered"])
+    cloud = _FakeProvider(health=True, chat_chunks=["c"])
+    router = HybridRouter(local=local, cloud=cloud)
+    for _ in range(3):
+        await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    # 30s later → HALF_OPEN
+    fake_now[0] += 31.0
+    out = await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    assert out == ["recovered"]
+    # circuit closed again → next call also goes local
+    out2 = await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    assert out2 == ["recovered"]
+    assert cloud.chat_calls == 3  # all 3 OPEN-period calls fell back to cloud
+
+
+class _FlakeyProvider:
+    """Fails first N chat calls, then yields then_chunks."""
+    def __init__(self, *, fail_first_n: int, then_chunks: list[str]):
+        self._fail = fail_first_n
+        self._chunks = then_chunks
+        self.chat_calls = 0
+
+    async def health_check(self) -> bool:
+        return True
+
+    async def chat_stream(self, messages, *, temperature=0.7, max_tokens=2048):
+        self.chat_calls += 1
+        if self._fail > 0:
+            self._fail -= 1
+            raise RuntimeError("flakey boom")
+        for c in self._chunks:
+            yield c

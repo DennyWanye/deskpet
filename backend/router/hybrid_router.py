@@ -122,9 +122,69 @@ class HybridRouter:
         *,
         temperature: float = 0.7,
         max_tokens: int = 2048,
+        force_cloud: bool = False,
     ) -> AsyncIterator[str]:
-        raise NotImplementedError("filled in Task 5")
-        yield  # pragma: no cover  (make it an async generator)
+        if self._strategy != RoutingStrategy.LOCAL_FIRST:
+            raise NotImplementedError(
+                f"strategy {self._strategy} not implemented in P2-1-S2"
+            )
+
+        if force_cloud:
+            async for tok in self._stream_cloud(messages, temperature, max_tokens):
+                yield tok
+            return
+
+        # local_first
+        if self._local is not None:
+            local_state = self._local_state
+            if local_state.circuit_state_now() != _CircuitState.OPEN:
+                if await self._check_health(self._local, local_state):
+                    try:
+                        async for tok in self._local.chat_stream(
+                            messages, temperature=temperature, max_tokens=max_tokens
+                        ):
+                            yield tok
+                        local_state.record_chat_success()
+                        return
+                    except Exception as exc:
+                        local_state.record_chat_failure()
+                        logger.warning(
+                            "router_local_chat_failed_falling_back_cloud",
+                            error=str(exc),
+                            consecutive_failures=local_state.consecutive_failures,
+                        )
+
+        # local skipped or local failed — try cloud
+        async for tok in self._stream_cloud(messages, temperature, max_tokens):
+            yield tok
+
+    async def _stream_cloud(
+        self, messages: list[dict[str, str]], temperature: float, max_tokens: int
+    ) -> AsyncIterator[str]:
+        if self._cloud is None:
+            raise LLMUnavailableError(
+                "cloud provider not configured and local unavailable"
+            )
+        cloud_state = self._cloud_state
+        if cloud_state.circuit_state_now() == _CircuitState.OPEN:
+            raise LLMUnavailableError(
+                "cloud circuit breaker OPEN, retry in <30s"
+            )
+        if not await self._check_health(self._cloud, cloud_state):
+            raise LLMUnavailableError(
+                "cloud provider health_check failed and local unavailable"
+            )
+        try:
+            async for tok in self._cloud.chat_stream(
+                messages, temperature=temperature, max_tokens=max_tokens
+            ):
+                yield tok
+            cloud_state.record_chat_success()
+        except Exception as exc:
+            cloud_state.record_chat_failure()
+            cloud_state.cache_health(False)
+            logger.error("router_cloud_chat_failed", error=str(exc))
+            raise LLMUnavailableError(f"cloud chat failed: {exc}") from exc
 
     async def _check_health(self, provider: LLMProvider, state: _ProviderState) -> bool:
         cached = state.cached_health()
