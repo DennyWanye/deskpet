@@ -21,3 +21,9 @@ temp/
 scripts/e2e/shots/
 scripts/e2e/shots_cdp/
 scripts/e2e/deskpet_window.png
+
+# Tauri signing keys (NEVER commit private keys)
+# Private key lives in ~/.tauri/ on maintainer's machine + CI secret.
+*.key
+*.key.pub
+.tauri/
