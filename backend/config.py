@@ -13,13 +13,21 @@ class BackendConfig:
     log_level: str = "INFO"
 
 @dataclass
-class LLMConfig:
-    provider: str = "openai_compatible"
+class LLMEndpointConfig:
+    """Per-endpoint config (local or cloud). Mirrors OpenAICompatibleProvider ctor."""
     model: str = "gemma4:e4b"
     base_url: str = "http://localhost:11434/v1"
     api_key: str = "ollama"
     temperature: float = 0.7
     max_tokens: int = 2048
+
+
+@dataclass
+class LLMRoutingConfig:
+    strategy: str = "local_first"
+    daily_budget_cny: float = 10.0
+    local: LLMEndpointConfig = field(default_factory=LLMEndpointConfig)
+    cloud: LLMEndpointConfig | None = None
 
 @dataclass
 class ASRConfig:
@@ -48,7 +56,7 @@ class MemoryConfig:
 @dataclass
 class AppConfig:
     backend: BackendConfig = field(default_factory=BackendConfig)
-    llm: LLMConfig = field(default_factory=LLMConfig)
+    llm: LLMRoutingConfig = field(default_factory=LLMRoutingConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     vad: VADConfig = field(default_factory=VADConfig)
@@ -82,7 +90,15 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     if "backend" in raw:
         config.backend = _load_section(BackendConfig, raw["backend"])
     if "llm" in raw:
-        config.llm = _load_section(LLMConfig, raw["llm"])
+        raw_llm = raw["llm"]
+        raw_local = raw_llm.pop("local", None)
+        raw_cloud = raw_llm.pop("cloud", None)
+        routing = _load_section(LLMRoutingConfig, raw_llm)
+        if raw_local is not None:
+            routing.local = _load_section(LLMEndpointConfig, raw_local)
+        if raw_cloud is not None:
+            routing.cloud = _load_section(LLMEndpointConfig, raw_cloud)
+        config.llm = routing
     if "asr" in raw:
         config.asr = _load_section(ASRConfig, raw["asr"])
     if "tts" in raw:

@@ -6,12 +6,22 @@ port = 8100
 log_level = "INFO"
 
 [llm]
-provider = "openai_compatible"
+strategy = "local_first"
+daily_budget_cny = 10.0
+
+[llm.local]
 model = "gemma4:e4b"
 base_url = "http://localhost:11434/v1"
 api_key = "ollama"
 temperature = 0.7
 max_tokens = 2048
+
+# [llm.cloud]
+# model = "qwen3.6-plus"
+# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# api_key = ""  # TODO(P2-1-S3): move to Windows Credential Manager
+# temperature = 0.7
+# max_tokens = 2048
 
 [asr]
 provider = "faster-whisper"
