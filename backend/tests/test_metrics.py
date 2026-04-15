@@ -13,10 +13,11 @@ def test_render_returns_prometheus_format():
 
 
 def test_observe_records_to_histogram():
-    llm_ttft_seconds.labels(provider="local", model="gemma4:e4b").observe(0.123)
+    # Use a label combo unlikely to be used by other tests so count==1 holds.
+    llm_ttft_seconds.labels(provider="test_local", model="test-metric").observe(0.123)
     body, _ = render()
     # Prometheus label ordering can vary; accept either.
     assert (
-        b'llm_ttft_seconds_count{model="gemma4:e4b",provider="local"} 1.0' in body
-        or b'llm_ttft_seconds_count{provider="local",model="gemma4:e4b"} 1.0' in body
+        b'llm_ttft_seconds_count{model="test-metric",provider="test_local"} 1.0' in body
+        or b'llm_ttft_seconds_count{provider="test_local",model="test-metric"} 1.0' in body
     )
