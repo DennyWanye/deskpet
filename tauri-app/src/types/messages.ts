@@ -97,6 +97,43 @@ export interface MemoryExportResponse {
   };
 }
 
+// --- P2-1-S3 settings / provider test ----------------------------------------
+
+/** Outgoing: SettingsPanel「测试连接」button. Candidate creds travel on the
+ * already-authenticated control channel; nothing is persisted backend-side. */
+export interface ProviderTestConnectionRequest {
+  type: "provider_test_connection";
+  payload: { base_url: string; api_key: string; model: string };
+}
+
+/** Incoming: backend reply to the request above. */
+export interface ProviderTestConnectionResult {
+  type: "provider_test_connection_result";
+  payload: {
+    ok: boolean;
+    tested_url?: string;
+    /** Present when ok=false; short human-readable reason. */
+    error?: string;
+  };
+}
+
+/**
+ * P2-1-S3 <-> P2-1-S8 cross-slice contract: the shape SettingsPanel's
+ * 今日使用 section consumes. S3 ships a stub `fetchDailyBudget`; S8 replaces
+ * it with the real control-WS roundtrip.
+ *
+ * Fields are snake_case to match the eventual backend payload verbatim —
+ * no translation layer needed when S8 lands.
+ */
+export interface DailyBudgetStatus {
+  spent_today_cny: number;
+  daily_budget_cny: number;
+  remaining_cny: number;
+  /** 0..100. Precomputed by the backend so the UI doesn't have to guard
+   * against division-by-zero or stale limit values. */
+  percent_used: number;
+}
+
 export type IncomingMessage =
   | ChatResponse
   | PongMessage
@@ -107,6 +144,7 @@ export type IncomingMessage =
   | MemoryListResponse
   | MemoryDeleteAck
   | MemoryClearAck
-  | MemoryExportResponse;
+  | MemoryExportResponse
+  | ProviderTestConnectionResult;
 
 export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | ErrorMessage;

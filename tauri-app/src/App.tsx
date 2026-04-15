@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
 import { MemoryPanel } from "./components/MemoryPanel";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { DialogBar } from "./components/DialogBar";
 import { ChatHistoryPanel } from "./components/ChatHistoryPanel";
 import { UserBubble } from "./components/UserBubble";
@@ -93,6 +94,9 @@ function App() {
 
   // S14 — memory management panel toggle.
   const [memoryOpen, setMemoryOpen] = useState(false);
+
+  // P2-1-S3 — settings panel toggle (cloud account / strategy / daily budget).
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // VN 底栏 —— 最新用户输入（驱动 UserBubble 淡出计时）+ 历史面板开关。
   const [latestUserInput, setLatestUserInput] = useState<string | null>(null);
@@ -431,6 +435,23 @@ function App() {
         >
           🗂
         </button>
+        {/* Settings panel toggle (P2-1-S3) */}
+        <button
+          data-testid="settings-toggle"
+          onClick={() => setSettingsOpen(true)}
+          title="设置"
+          style={{
+            fontSize: "10px",
+            background: "rgba(0,0,0,0.5)",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            padding: "2px 6px",
+            cursor: "pointer",
+          }}
+        >
+          ⚙
+        </button>
         {/* Autostart toggle — only render when the plugin is reachable. */}
         {autostart.ready && (
           <button
@@ -522,6 +543,14 @@ function App() {
         onClose={() => setMemoryOpen(false)}
         sessionId="default"
         getChannel={getControlChannel}
+      />
+
+      {/* P2-1-S3 settings overlay (cloud / strategy / daily budget) */}
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        getChannel={getControlChannel}
+        lastMessage={lastMessage}
       />
 
       {/* Pulse animation for recording button */}
