@@ -48,12 +48,29 @@ from tools.get_time import get_time_tool
 from tools.clipboard import read_clipboard_tool
 from tools.reminder import list_reminders_tool
 from observability.vram import classify_tier, recommend_asr_device
+from router.hybrid_router import HybridRouter, RoutingStrategy
 
-llm = OpenAICompatibleProvider(
-    base_url=config.llm.base_url,
-    api_key=config.llm.api_key,
-    model=config.llm.model,
-    temperature=config.llm.temperature,
+local_llm = OpenAICompatibleProvider(
+    base_url=config.llm.local.base_url,
+    api_key=config.llm.local.api_key,
+    model=config.llm.local.model,
+    temperature=config.llm.local.temperature,
+)
+
+cloud_llm = None
+if config.llm.cloud is not None:
+    cloud_llm = OpenAICompatibleProvider(
+        base_url=config.llm.cloud.base_url,
+        api_key=config.llm.cloud.api_key,
+        model=config.llm.cloud.model,
+        temperature=config.llm.cloud.temperature,
+    )
+
+llm = HybridRouter(
+    local=local_llm,
+    cloud=cloud_llm,
+    strategy=RoutingStrategy(config.llm.strategy),
+    budget_check=None,  # TODO(P2-1-S8): wire BillingLedger
 )
 service_context.register("llm_engine", llm)
 
