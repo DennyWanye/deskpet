@@ -5,6 +5,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { DialogBar } from "./components/DialogBar";
 import { ChatHistoryPanel } from "./components/ChatHistoryPanel";
 import { UserBubble } from "./components/UserBubble";
+import { useBudgetToast } from "./hooks/useBudgetToast";
 import { useControlChannel } from "./hooks/useWebSocket";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
@@ -97,6 +98,18 @@ function App() {
 
   // P2-1-S3 — settings panel toggle (cloud account / strategy / daily budget).
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // P2-1-S8 — budget-exceeded toast. Auto-clears after 6s.
+  const [budgetToast, setBudgetToast] = useState<string | null>(null);
+  const showBudgetToast = useCallback((msg: string) => {
+    setBudgetToast(msg);
+  }, []);
+  useEffect(() => {
+    if (!budgetToast) return;
+    const t = setTimeout(() => setBudgetToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [budgetToast]);
+  useBudgetToast(getControlChannel, showBudgetToast);
 
   // VN 底栏 —— 最新用户输入（驱动 UserBubble 淡出计时）+ 历史面板开关。
   const [latestUserInput, setLatestUserInput] = useState<string | null>(null);
@@ -552,6 +565,29 @@ function App() {
         getChannel={getControlChannel}
         lastMessage={lastMessage}
       />
+
+      {/* P2-1-S8 budget-exceeded toast */}
+      {budgetToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            top: 16,
+            right: 16,
+            maxWidth: 320,
+            padding: "10px 14px",
+            background: "#b91c1c",
+            color: "white",
+            borderRadius: 6,
+            fontSize: 13,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+            zIndex: 2000,
+          }}
+        >
+          {budgetToast}
+        </div>
+      )}
 
       {/* Pulse animation for recording button */}
       <style>{`

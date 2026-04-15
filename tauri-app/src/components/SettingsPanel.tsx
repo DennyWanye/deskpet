@@ -12,9 +12,9 @@
  * secret) so the apiKey never touches an HTTP endpoint and never lands
  * in a network log.
  *
- * The 今日使用 section reads from `fetchDailyBudget`, a stub that returns
- * zero-usage hardcoded data. S8 will replace the stub body with a real
- * control-WS roundtrip — the type shape is frozen in types/messages.ts.
+ * The 今日使用 section reads from `fetchDailyBudget`, which round-trips
+ * through the control WS to the BillingLedger (S8). The DailyBudgetStatus
+ * contract (snake_case fields) is frozen in types/messages.ts.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -93,18 +93,31 @@ interface SettingsPanelProps {
 }
 
 /**
- * S3 stub: S8 will replace this body with a real control-WS roundtrip.
- * Kept as a module-level export so S8 can rebase by just swapping the
- * implementation — the `DailyBudgetStatus` contract is the import point.
+ * Send a `budget_status` request on the control channel and resolve with the
+ * next `budget_status` reply (or reject after `timeoutMs`).
+ *
+ * P2-1-S8: replaced S3's hardcoded stub with the real control-WS roundtrip.
+ * The DailyBudgetStatus contract (snake_case fields) is the cross-slice
+ * import point locked in spec §1.3.
  */
-export async function fetchDailyBudget(): Promise<DailyBudgetStatus> {
-  // S8 will replace with real WS call.
-  return {
-    spent_today_cny: 0,
-    daily_budget_cny: 10,
-    remaining_cny: 10,
-    percent_used: 0,
-  };
+export async function fetchDailyBudget(
+  channel: ControlChannel,
+  timeoutMs = 3000,
+): Promise<DailyBudgetStatus> {
+  return new Promise<DailyBudgetStatus>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      unsub();
+      reject(new Error("budget_status timeout"));
+    }, timeoutMs);
+    const unsub = channel.onMessage((msg: IncomingMessage) => {
+      if (msg.type === "budget_status") {
+        clearTimeout(timer);
+        unsub();
+        resolve(msg.payload);
+      }
+    });
+    channel.send({ type: "budget_status" });
+  });
 }
 
 export function SettingsPanel({
@@ -162,7 +175,9 @@ export function SettingsPanel({
         }
       }
       try {
-        const b = await fetchDailyBudget();
+        const ch = getChannel();
+        if (!ch) throw new Error("控制通道未连接");
+        const b = await fetchDailyBudget(ch);
         if (!cancelled) {
           setBudget(b);
           setBudgetError(null);
@@ -178,7 +193,7 @@ export function SettingsPanel({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, getChannel]);
 
   // Listen for provider_test_connection_result on the shared control channel.
   useEffect(() => {
@@ -277,14 +292,16 @@ export function SettingsPanel({
 
   const handleRefreshBudget = useCallback(async () => {
     try {
-      const b = await fetchDailyBudget();
+      const ch = getChannel();
+      if (!ch) throw new Error("控制通道未连接");
+      const b = await fetchDailyBudget(ch);
       setBudget(b);
       setBudgetError(null);
     } catch (e) {
       setBudget(null);
       setBudgetError(String(e));
     }
-  }, []);
+  }, [getChannel]);
 
   if (!open) return null;
 
@@ -449,7 +466,7 @@ export function SettingsPanel({
             </button>
           </div>
           <p style={hintStyle}>
-            S3: 显示占位数据（固定 ¥10 预算 + 0 消耗）；S8 接入真实账单后替换。
+            数据来自 BillingLedger（S8），按 Asia/Shanghai 时区按日累计。
           </p>
         </section>
 

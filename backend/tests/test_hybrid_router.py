@@ -194,8 +194,11 @@ async def test_chat_raises_when_all_providers_dead():
         local=_FakeProvider(health=False),
         cloud=_FakeProvider(health=False),
     )
-    with pytest.raises(LLMUnavailableError):
+    with pytest.raises(LLMUnavailableError) as ei:
         await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    # P2-1-S8 review: non-budget failures carry budget_reason=None so
+    # main.py knows to treat this as a generic degradation, not a quota toast.
+    assert ei.value.budget_reason is None
 
 
 @pytest.mark.asyncio
@@ -230,6 +233,98 @@ async def test_circuit_recovers_on_half_open_success(monkeypatch):
     out2 = await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
     assert out2 == ["recovered"]
     assert cloud.chat_calls == 3  # all 3 OPEN-period calls fell back to cloud
+
+
+# ---------------------------------------------------------------------------
+# P2-1-S8 — BudgetHook gating on cloud calls
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_budget_denies_cloud_when_local_unavailable_raises():
+    """Local dead + budget denies cloud → LLMUnavailableError mentioning budget."""
+    from router.types import BudgetContext, BudgetDecision
+
+    async def deny_cloud(ctx: BudgetContext) -> BudgetDecision:
+        if ctx.route == "cloud":
+            return BudgetDecision(allow=False, reason="budget_exceeded_test")
+        return BudgetDecision(allow=True)
+
+    router = HybridRouter(
+        local=_FakeProvider(health=False),
+        cloud=_FakeProvider(health=True, chat_chunks=["should-not-run"]),
+        budget_hook=deny_cloud,
+    )
+    with pytest.raises(LLMUnavailableError) as ei:
+        await _collect(
+            router.chat_stream([{"role": "user", "content": "q"}])
+        )
+    assert "budget" in str(ei.value).lower()
+    # P2-1-S8 review: budget_reason travels on the exception (not on a
+    # racy instance attribute) so main.py can attach it to the UI payload.
+    assert ei.value.budget_reason == "budget_exceeded_test"
+
+
+@pytest.mark.asyncio
+async def test_budget_allow_goes_through_to_cloud():
+    from router.types import BudgetContext, BudgetDecision
+
+    async def allow(ctx: BudgetContext) -> BudgetDecision:
+        return BudgetDecision(allow=True)
+
+    cloud = _FakeProvider(health=True, chat_chunks=["from", " cloud"])
+    router = HybridRouter(
+        local=_FakeProvider(health=False),
+        cloud=cloud,
+        budget_hook=allow,
+    )
+    out = await _collect(
+        router.chat_stream([{"role": "user", "content": "q"}])
+    )
+    assert out == ["from", " cloud"]
+
+
+@pytest.mark.asyncio
+async def test_budget_hook_not_called_for_local_only_path():
+    """Healthy local stream must not invoke budget_hook at all."""
+    from router.types import BudgetContext, BudgetDecision
+
+    calls: list[BudgetContext] = []
+
+    async def trace(ctx: BudgetContext) -> BudgetDecision:
+        calls.append(ctx)
+        return BudgetDecision(allow=True)
+
+    router = HybridRouter(
+        local=_FakeProvider(health=True, chat_chunks=["local"]),
+        cloud=_FakeProvider(health=True, chat_chunks=["cloud"]),
+        budget_hook=trace,
+    )
+    out = await _collect(
+        router.chat_stream([{"role": "user", "content": "q"}])
+    )
+    assert out == ["local"]
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_budget_denial_with_force_cloud_raises():
+    from router.types import BudgetContext, BudgetDecision
+
+    async def deny(ctx: BudgetContext) -> BudgetDecision:
+        return BudgetDecision(allow=False, reason="denied")
+
+    router = HybridRouter(
+        local=_FakeProvider(health=True, chat_chunks=["local"]),
+        cloud=_FakeProvider(health=True, chat_chunks=["cloud"]),
+        budget_hook=deny,
+    )
+    with pytest.raises(LLMUnavailableError):
+        await _collect(
+            router.chat_stream(
+                [{"role": "user", "content": "q"}], force_cloud=True
+            )
+        )
 
 
 class _FlakeyProvider:

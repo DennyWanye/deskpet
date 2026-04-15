@@ -5,7 +5,27 @@ export interface ControlMessage {
 
 export interface ChatResponse {
   type: "chat_response";
-  payload: { text: string };
+  payload: {
+    text: string;
+    // P2-1-S8: set by backend when BudgetHook refused the cloud call.
+    // Frontend shows a toast and keeps the fallback echo text.
+    budget_exceeded?: boolean;
+    budget_reason?: string;
+  };
+}
+
+// P2-1-S8: daily budget snapshot returned by control WS `budget_status`
+// request. SettingsPanel polls this to render the "今日使用" widget.
+export interface DailyBudgetStatus {
+  spent_today_cny: number;
+  daily_budget_cny: number;
+  remaining_cny: number;
+  percent_used: number;
+}
+
+export interface BudgetStatusMessage {
+  type: "budget_status";
+  payload: DailyBudgetStatus;
 }
 
 export interface PongMessage {
@@ -145,6 +165,7 @@ export type IncomingMessage =
   | MemoryDeleteAck
   | MemoryClearAck
   | MemoryExportResponse
-  | ProviderTestConnectionResult;
+  | ProviderTestConnectionResult
+  | BudgetStatusMessage;
 
 export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | ErrorMessage;

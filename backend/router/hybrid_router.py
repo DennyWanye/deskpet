@@ -17,7 +17,7 @@ import structlog
 
 from observability.metrics import llm_ttft_seconds
 from providers.base import LLMProvider
-from router.types import BudgetHook, allow_all_budget
+from router.types import BudgetContext, BudgetHook, allow_all_budget
 
 logger = structlog.get_logger()
 
@@ -85,7 +85,19 @@ class _ProviderState:
 
 
 class LLMUnavailableError(RuntimeError):
-    """All routes exhausted (local + cloud both failed or unconfigured)."""
+    """All routes exhausted (local + cloud both failed or unconfigured).
+
+    ``budget_reason`` is set when the failure is due to a BudgetHook denial
+    (non-None → caller should surface as a UI-visible budget exceeded toast,
+    not a generic transport failure). P2-1-S8 review: we previously tracked
+    this on a HybridRouter instance attribute, but that side-channel raced
+    between concurrent text-chat and voice-pipeline requests. Carrying it on
+    the exception itself scopes it to the raising call path.
+    """
+
+    def __init__(self, msg: str, *, budget_reason: str | None = None) -> None:
+        super().__init__(msg)
+        self.budget_reason = budget_reason
 
 
 class RoutingStrategy(str, enum.Enum):
@@ -109,14 +121,15 @@ class HybridRouter:
         local: LLMProvider | None,
         cloud: LLMProvider | None,
         strategy: RoutingStrategy = RoutingStrategy.LOCAL_FIRST,
-        budget_hook: BudgetHook | None = None,
+        budget_hook: BudgetHook = allow_all_budget,
     ) -> None:
         self._local = local
         self._cloud = cloud
         self._strategy = strategy
-        # S6 ships the type + a no-op default. S8 will replace the default
-        # with BillingLedger's real hook without changing the signature.
-        self._budget_hook: BudgetHook = budget_hook or allow_all_budget
+        # Default `allow_all_budget` preserves pre-S6 behavior (no gating).
+        # S8's BillingLedger.create_hook() swaps in real budget enforcement
+        # without changing the signature.
+        self._budget_hook: BudgetHook = budget_hook
         self._local_state = _ProviderState()
         self._cloud_state = _ProviderState()
 
@@ -204,6 +217,21 @@ class HybridRouter:
         if self._cloud is None:
             raise LLMUnavailableError(
                 "cloud provider not configured and local unavailable"
+            )
+        # P2-1-S8: gate cloud calls behind BudgetHook. Runs before circuit
+        # breaker / health check so the ledger gets the final say even when
+        # the cloud endpoint is otherwise ready to accept.
+        model = getattr(self._cloud, "model", "unknown")
+        decision = await self._budget_hook(
+            BudgetContext(route="cloud", model=model)
+        )
+        if not decision.allow:
+            logger.info(
+                "router_cloud_budget_denied", reason=decision.reason,
+            )
+            raise LLMUnavailableError(
+                f"budget denied: {decision.reason}",
+                budget_reason=decision.reason,
             )
         cloud_state = self._cloud_state
         if cloud_state.circuit_state_now() == _CircuitState.OPEN:

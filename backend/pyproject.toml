@@ -14,7 +14,12 @@ dependencies = [
     "aiosqlite>=0.22.1",
     # P2-0-S4: scripts/perf/rss_sampler.py uses psutil to watch process RSS.
     "psutil>=5.9.0",
+    # P2-1-S6: /metrics endpoint exposes TTFT Histogram.
     "prometheus-client>=0.25.0",
+    # P2-1-S8: zoneinfo needs a tz database on Windows (no system
+    # /usr/share/zoneinfo). tzdata ships the IANA data as a wheel. Harmless
+    # no-op on Linux/macOS where the system DB is used by default.
+    "tzdata>=2024.1 ; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +31,7 @@ dev = [
 
 [tool.setuptools]
 py-modules = ["config", "main"]
-packages = ["providers", "memory", "memory.migrations", "tests", "agent", "pipeline", "tools", "observability"]
+packages = ["providers", "memory", "memory.migrations", "tests", "agent", "pipeline", "tools", "observability", "router", "billing"]
 
 [tool.setuptools.package-data]
 "memory.migrations" = ["*.sql"]
