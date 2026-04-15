@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import enum
 import time
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator
 
 import structlog
 
+from observability.metrics import llm_ttft_seconds
 from providers.base import LLMProvider
+from router.types import BudgetHook, allow_all_budget
 
 logger = structlog.get_logger()
 
@@ -107,14 +109,48 @@ class HybridRouter:
         local: LLMProvider | None,
         cloud: LLMProvider | None,
         strategy: RoutingStrategy = RoutingStrategy.LOCAL_FIRST,
-        budget_check: Callable[[], bool] | None = None,
+        budget_hook: BudgetHook | None = None,
     ) -> None:
         self._local = local
         self._cloud = cloud
         self._strategy = strategy
-        self._budget_check = budget_check
+        # S6 ships the type + a no-op default. S8 will replace the default
+        # with BillingLedger's real hook without changing the signature.
+        self._budget_hook: BudgetHook = budget_hook or allow_all_budget
         self._local_state = _ProviderState()
         self._cloud_state = _ProviderState()
+
+    async def _stream_with_ttft(
+        self,
+        provider: LLMProvider,
+        provider_label: str,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        """Wrap a provider's chat_stream, observing TTFT on first yield.
+
+        We deliberately capture ``t0`` inside this generator (not before
+        the caller iterates) so the timestamp reflects the moment the
+        iterator is actually advanced.
+        """
+        t0 = _now()
+        first = True
+        async for tok in provider.chat_stream(
+            messages, temperature=temperature, max_tokens=max_tokens
+        ):
+            # Only a truthy (non-empty) chunk counts as the first token.
+            # Some providers yield an empty string as a keep-alive before
+            # the real content arrives; observing TTFT on that would
+            # record a near-zero sample and skew the histogram.
+            if first and tok:
+                llm_ttft_seconds.labels(
+                    provider=provider_label,
+                    model=getattr(provider, "model", "unknown"),
+                ).observe(_now() - t0)
+                first = False
+            yield tok
 
     async def chat_stream(
         self,
@@ -140,8 +176,12 @@ class HybridRouter:
             if local_state.circuit_state_now() != _CircuitState.OPEN:
                 if await self._check_health(self._local, local_state):
                     try:
-                        async for tok in self._local.chat_stream(
-                            messages, temperature=temperature, max_tokens=max_tokens
+                        async for tok in self._stream_with_ttft(
+                            self._local,
+                            "local",
+                            messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
                         ):
                             yield tok
                         local_state.record_chat_success()
@@ -175,8 +215,12 @@ class HybridRouter:
                 "cloud provider health_check failed and local unavailable"
             )
         try:
-            async for tok in self._cloud.chat_stream(
-                messages, temperature=temperature, max_tokens=max_tokens
+            async for tok in self._stream_with_ttft(
+                self._cloud,
+                "cloud",
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
             ):
                 yield tok
             cloud_state.record_chat_success()

@@ -259,6 +259,140 @@ def _sse_done() -> bytes:
     return b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
 
 
+# ---------------------------------------------------------------------------
+# P2-1-S6 — TTFT instrumentation
+# ---------------------------------------------------------------------------
+
+
+class _SlowProvider:
+    """LLMProvider stub that advances a shared fake clock before first yield.
+
+    Used by TTFT tests: the router captures ``t0 = _now()`` before pulling
+    the first token, then measures ``_now() - t0`` at the first yield —
+    so we need the clock to tick forward *between* those two calls, which
+    only happens if the provider's own generator advances it. Bumping the
+    clock in the test body after awaiting `_collect` is too late.
+    """
+    def __init__(self, *, clock: list[float], latency_s: float, chunks: list[str],
+                 model: str = "fake-slow", health: bool = True):
+        self._clock = clock
+        self._latency = latency_s
+        self._chunks = chunks
+        self._health = health
+        self.model = model
+
+    async def health_check(self) -> bool:
+        return self._health
+
+    async def chat_stream(self, messages, *, temperature=0.7, max_tokens=2048):
+        # Simulate provider-side latency before the first token is ready.
+        self._clock[0] += self._latency
+        for c in self._chunks:
+            yield c
+
+
+@pytest.mark.asyncio
+async def test_ttft_recorded_for_local_path(monkeypatch):
+    """First yielded token from local provider must observe llm_ttft_seconds."""
+    from observability.metrics import llm_ttft_seconds
+
+    fake_now = [1000.0]
+    monkeypatch.setattr("router.hybrid_router._now", lambda: fake_now[0])
+
+    local = _SlowProvider(clock=fake_now, latency_s=0.25,
+                          chunks=["hi"], model="fake-local-ttft")
+    router = HybridRouter(local=local, cloud=None)
+
+    hist = llm_ttft_seconds.labels(provider="local", model="fake-local-ttft")
+    before_sum = hist._sum.get()
+
+    await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+
+    after_sum = hist._sum.get()
+    # We simulated ~250ms of provider latency; observation must be > 0.
+    assert after_sum > before_sum
+
+
+@pytest.mark.asyncio
+async def test_ttft_recorded_for_cloud_path(monkeypatch):
+    """First yielded token from cloud provider must observe llm_ttft_seconds."""
+    from observability.metrics import llm_ttft_seconds
+
+    fake_now = [2000.0]
+    monkeypatch.setattr("router.hybrid_router._now", lambda: fake_now[0])
+
+    local = _FakeProvider(health=False)
+    cloud = _SlowProvider(clock=fake_now, latency_s=0.4,
+                          chunks=["c1"], model="fake-cloud-ttft")
+    router = HybridRouter(local=local, cloud=cloud)
+
+    hist = llm_ttft_seconds.labels(provider="cloud", model="fake-cloud-ttft")
+    before_sum = hist._sum.get()
+    await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+    after_sum = hist._sum.get()
+    assert after_sum > before_sum
+
+
+@pytest.mark.asyncio
+async def test_ttft_skips_empty_leading_chunks(monkeypatch):
+    """Empty leading chunks must NOT be counted as the first token.
+
+    Some OpenAI-compatible backends stream an empty delta as a keep-alive
+    before the real content. Observing TTFT on that chunk records a
+    near-zero sample and poisons the histogram. The router must wait for
+    the first truthy chunk.
+    """
+    from observability.metrics import llm_ttft_seconds
+
+    fake_now = [3000.0]
+    monkeypatch.setattr("router.hybrid_router._now", lambda: fake_now[0])
+
+    class _EmptyThenReal:
+        model = "fake-empty-then-real"
+
+        async def health_check(self) -> bool:
+            return True
+
+        async def chat_stream(self, messages, *, temperature=0.7, max_tokens=2048):
+            # Two keep-alive empties arrive instantly...
+            yield ""
+            yield ""
+            # ...then real content arrives 0.6s later.
+            fake_now[0] += 0.6
+            yield "hello"
+
+    router = HybridRouter(local=_EmptyThenReal(), cloud=None)
+
+    hist = llm_ttft_seconds.labels(provider="local", model="fake-empty-then-real")
+    before_sum = hist._sum.get()
+
+    await _collect(router.chat_stream([{"role": "user", "content": "x"}]))
+
+    # The observed delta must reflect the 0.6s simulated latency —
+    # not ~0, which is what we'd get if an empty chunk triggered
+    # the first-token observation.
+    observed = hist._sum.get() - before_sum
+    assert observed >= 0.5, f"expected >=0.5s (got {observed}); empty chunks poisoned TTFT"
+
+
+@pytest.mark.asyncio
+async def test_budget_hook_param_accepted():
+    """HybridRouter __init__ accepts ``budget_hook`` (not ``budget_check``)."""
+    from router.types import BudgetDecision
+
+    calls: list[str] = []
+
+    async def hook(ctx):
+        calls.append(f"{ctx.route}:{ctx.model}")
+        return BudgetDecision(allow=True)
+
+    local = _FakeProvider(health=True, chat_chunks=["ok"])
+    local.model = "fake-model"
+    router = HybridRouter(local=local, cloud=None, budget_hook=hook)
+    # Just constructing must not raise; behavioral wiring is S8's job.
+    assert router is not None
+
+
 @pytest.mark.asyncio
 async def test_router_with_real_providers_routes_to_local_when_healthy():
     """Both providers are real OpenAICompatibleProvider w/ MockTransport injected."""

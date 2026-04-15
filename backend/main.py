@@ -14,12 +14,13 @@ from contextlib import asynccontextmanager
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from pathlib import Path
 
 from config import load_config
 from context import ServiceContext
 from observability.crash_reports import install_crash_reporter
+from observability.metrics import render as render_metrics
 
 # Install the uncaught-exception hook as early as possible so import-time
 # failures later in this file still land in crash_reports/.
@@ -70,11 +71,12 @@ llm = HybridRouter(
     local=local_llm,
     cloud=cloud_llm,
     strategy=RoutingStrategy(config.llm.strategy),
-    # TODO(P2-1-S8): wire BillingLedger. Tighten signature to accept
-    # provider context (local|cloud + estimated tokens) so local calls
-    # bypass budget gating — local is free; only cloud should debit.
-    # See handoff p2-1-s2-hybrid-router.md §"Slice-wide review follow-ups".
-    budget_check=None,
+    # TODO(P2-1-S8): wire BillingLedger-backed BudgetHook. S6 keeps the
+    # default `allow_all_budget` no-op so local calls remain free. See
+    # docs/superpowers/specs/2026-04-15-p2-1-finale-design.md §3.
+    # (budget_hook kwarg omitted on purpose — the ctor default is
+    # `allow_all_budget`, and explicitly passing None would contradict
+    # the intent of this comment and rely on the ctor's `or` fallback.)
 )
 service_context.register("llm_engine", llm)
 
@@ -177,6 +179,13 @@ _pipelines: dict[str, "VoicePipeline"] = {}  # noqa: F821 — forward ref, set a
 # Opt-in dev mode: set DESKPET_DEV_MODE=1 to bypass shared-secret auth.
 # Defaults to strict (secret required) so prod deployments are safe.
 DEV_MODE = os.getenv("DESKPET_DEV_MODE", "0") == "1"
+if DEV_MODE:
+    # Surfaced loudly so a prod deployment accidentally booted with
+    # DESKPET_DEV_MODE=1 doesn't silently leak /metrics + WS auth.
+    logger.warning(
+        "metrics_auth_bypassed_dev_mode",
+        note="DESKPET_DEV_MODE=1 — /metrics and WS auth are OPEN. Set DESKPET_DEV_MODE=0 in production.",
+    )
 
 def _validate_secret(ws: WebSocket) -> bool:
     if DEV_MODE:
@@ -190,6 +199,28 @@ def _validate_secret(ws: WebSocket) -> bool:
 @app.get("/health")
 async def health():
     return {"status": "ok", "secret_hint": SHARED_SECRET[:4] + "..."}
+
+
+@app.get("/metrics")
+async def metrics(request: Request):
+    """Prometheus scrape endpoint (P2-1-S6).
+
+    Gated by the same shared secret that protects WS connections. In
+    DEV_MODE the gate is open so local `curl` / smoke scripts can hit it
+    without juggling headers.
+    """
+    if not DEV_MODE:
+        secret = request.headers.get("x-shared-secret", "")
+        if not secret or not secrets.compare_digest(secret, SHARED_SECRET):
+            # RFC 7235 §3.1: a 401 MUST carry WWW-Authenticate so clients
+            # know which scheme/realm to retry with. Prometheus scrapers
+            # and curl both surface the header to the operator.
+            return Response(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Bearer realm="metrics"'},
+            )
+    body, content_type = render_metrics()
+    return Response(content=body, media_type=content_type)
 
 
 # --- S14 memory management dispatch -----------------------------------------
