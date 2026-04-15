@@ -1,10 +1,31 @@
 from __future__ import annotations
 import logging
+import os
 import tomli
 from pathlib import Path
 from dataclasses import dataclass, field, fields as dc_fields
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_cloud_api_key() -> str | None:
+    """P2-1-S3: source of truth for the cloud LLM API key.
+
+    Tauri reads the user's key from the OS credential store on launch
+    and injects it as ``DESKPET_CLOUD_API_KEY``. We intentionally do NOT
+    fall back to ``config.llm.cloud.api_key`` — a plaintext value in the
+    TOML is a migration leftover that ``load_config`` already warns about.
+
+    Returning ``None`` (not ``""``) lets callers use plain truthiness to
+    decide whether the cloud provider should be constructed at all.
+
+    Lives in ``config`` (not ``main``) so tests can import it without
+    pulling the heavy provider/model dependencies through ``main.py``.
+    """
+    val = os.environ.get("DESKPET_CLOUD_API_KEY")
+    if not val:
+        return None
+    return val
 
 @dataclass
 class BackendConfig:
@@ -93,6 +114,21 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         raw_llm = raw["llm"]
         raw_local = raw_llm.pop("local", None)
         raw_cloud = raw_llm.pop("cloud", None)
+        # P2-1-S3: cloud [api_key] now lives in the OS credential store
+        # (Windows Credential Manager / Keychain / Secret Service) and is
+        # injected as DESKPET_CLOUD_API_KEY env by the Tauri wrapper. A
+        # plaintext value sitting in config.toml is a migration leftover
+        # we want to nudge the user about. Placeholder "sk-..." stays
+        # quiet — the default config ships with that value.
+        if raw_cloud is not None:
+            leaked = (raw_cloud.get("api_key") or "").strip()
+            if leaked and leaked not in {"sk-...", "your-key-here"}:
+                logger.warning(
+                    "config [llm.cloud].api_key is plaintext — IGNORED for "
+                    "provider init. Cloud API key now lives in the OS keyring "
+                    "(set via SettingsPanel → 云端账号). Remove this line "
+                    "from config.toml once migrated. (P2-1-S3)"
+                )
         # P2-1-S2: warn loudly if user is still on the pre-split [llm] schema.
         # _load_section silently drops these keys, but a missing [llm.local]
         # then quietly falls back to LLMEndpointConfig() defaults — which
