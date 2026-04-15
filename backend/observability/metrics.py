@@ -1,9 +1,14 @@
-"""Lightweight stage timing — async context manager that emits a
-structured log record on exit.
+"""Observability primitives: stage timing + Prometheus registry.
 
-Keeps dependency footprint zero (just structlog, already in deps).
-If we later want Prometheus/OTLP export, wrap these logs with a hook —
-the structured fields (stage, elapsed_ms) are already standardized.
+Two concerns live here:
+
+1. ``stage_timer`` — async context manager that emits a structured log
+   record on exit. Zero-dep (just structlog).
+2. Prometheus metrics (P2-1-S6) — ``llm_ttft_seconds`` Histogram and
+   ``render()`` for the ``/metrics`` endpoint. Centralized so every
+   module imports the same Histogram instance (otherwise each module
+   creating its own Histogram would double-register on the default
+   registry).
 """
 from __future__ import annotations
 
@@ -12,8 +17,44 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import structlog
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Histogram,
+    generate_latest,
+)
 
 _default_logger = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Prometheus registry (P2-1-S6)
+# ---------------------------------------------------------------------------
+
+# Buckets chosen for typical LLM TTFT range:
+#   local Ollama: 100ms-2s
+#   cloud (DashScope/etc): 200ms-5s
+# The +Inf bucket is implicit in prometheus_client but we include it
+# explicitly for readability.
+_TTFT_BUCKETS = (
+    0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, float("inf"),
+)
+
+llm_ttft_seconds = Histogram(
+    "llm_ttft_seconds",
+    "Time from chat_stream call to first yielded token, by provider+model",
+    labelnames=["provider", "model"],
+    buckets=_TTFT_BUCKETS,
+)
+
+
+def render() -> tuple[bytes, str]:
+    """Render current Prometheus metrics in text format.
+
+    Returns ``(body, content_type)`` — the caller (FastAPI route) passes
+    both to ``Response``. Content-type includes the protocol version
+    expected by scrapers.
+    """
+    return generate_latest(), CONTENT_TYPE_LATEST
 
 
 @asynccontextmanager
