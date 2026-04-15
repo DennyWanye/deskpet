@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 
 type Message = { role: "user" | "assistant"; text: string };
 
@@ -16,12 +16,68 @@ type Props = {
  * - ChatHistoryPanel：只看本次会话内存 messages，纯只读回溯
  *
  * 遮罩样式与 MemoryPanel 对齐以保持视觉一致。
+ *
+ * 无障碍（P2-0-S6）：
+ * - 面板打开时关闭按钮自动 focus（屏幕阅读器能立即读到对话框 label）
+ * - Tab / Shift+Tab 在可聚焦元素内循环（简易 focus trap，防止焦点跑到
+ *   背后的 chat input）
+ * - Escape 键关闭面板（等价于点 ✕）
  */
 export function ChatHistoryPanel({ open, messages, onClose }: Props) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+
+  // 面板打开时把焦点挪到关闭按钮 —— 读屏软件在此时会朗读 aria-label
+  // "本次对话历史"，然后朗读按钮本身。关闭时把焦点还给 document.body 即可，
+  // 调用方（App.tsx）负责把焦点放回原触发按钮（dialog-history-toggle）。
+  useEffect(() => {
+    if (!open) return;
+    closeBtnRef.current?.focus();
+  }, [open]);
+
+  // Escape 关闭 + Tab 循环焦点。只在 open 时挂载 listener，避免误吃键。
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      // 简易 focus trap：拦住 Tab / Shift+Tab，让焦点在面板内的可聚焦
+      // 元素间循环。对只有一个交互元素（✕ 按钮）的场景也安全 —— first
+      // 和 last 是同一个，Tab / Shift+Tab 都只是 preventDefault + 继续聚焦它。
+      const root = panelRef.current;
+      if (!root) return;
+      const focusables = root.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !root.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (active === last || !root.contains(active)) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
     <div
+      ref={panelRef}
       style={overlayStyle}
       data-testid="chat-history-panel"
       role="dialog"
@@ -31,6 +87,7 @@ export function ChatHistoryPanel({ open, messages, onClose }: Props) {
       <div style={headerStyle}>
         <strong style={{ fontSize: "14px" }}>本次对话 · {messages.length} 条</strong>
         <button
+          ref={closeBtnRef}
           data-testid="chat-history-close"
           onClick={onClose}
           style={closeBtnStyle}
