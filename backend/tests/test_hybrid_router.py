@@ -232,6 +232,97 @@ async def test_circuit_recovers_on_half_open_success(monkeypatch):
     assert cloud.chat_calls == 3  # all 3 OPEN-period calls fell back to cloud
 
 
+# ---------------------------------------------------------------------------
+# P2-1-S8 — BudgetHook gating on cloud calls
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_budget_denies_cloud_when_local_unavailable_raises():
+    """Local dead + budget denies cloud → LLMUnavailableError mentioning budget."""
+    from router.types import BudgetContext, BudgetDecision
+
+    async def deny_cloud(ctx: BudgetContext) -> BudgetDecision:
+        if ctx.route == "cloud":
+            return BudgetDecision(allow=False, reason="budget_exceeded_test")
+        return BudgetDecision(allow=True)
+
+    router = HybridRouter(
+        local=_FakeProvider(health=False),
+        cloud=_FakeProvider(health=True, chat_chunks=["should-not-run"]),
+        budget_hook=deny_cloud,
+    )
+    with pytest.raises(LLMUnavailableError) as ei:
+        await _collect(
+            router.chat_stream([{"role": "user", "content": "q"}])
+        )
+    assert "budget" in str(ei.value).lower()
+    # last_budget_reason is set so main.py can surface it to the UI.
+    assert router._last_budget_reason == "budget_exceeded_test"
+
+
+@pytest.mark.asyncio
+async def test_budget_allow_goes_through_to_cloud():
+    from router.types import BudgetContext, BudgetDecision
+
+    async def allow(ctx: BudgetContext) -> BudgetDecision:
+        return BudgetDecision(allow=True)
+
+    cloud = _FakeProvider(health=True, chat_chunks=["from", " cloud"])
+    router = HybridRouter(
+        local=_FakeProvider(health=False),
+        cloud=cloud,
+        budget_hook=allow,
+    )
+    out = await _collect(
+        router.chat_stream([{"role": "user", "content": "q"}])
+    )
+    assert out == ["from", " cloud"]
+
+
+@pytest.mark.asyncio
+async def test_budget_hook_not_called_for_local_only_path():
+    """Healthy local stream must not invoke budget_hook at all."""
+    from router.types import BudgetContext, BudgetDecision
+
+    calls: list[BudgetContext] = []
+
+    async def trace(ctx: BudgetContext) -> BudgetDecision:
+        calls.append(ctx)
+        return BudgetDecision(allow=True)
+
+    router = HybridRouter(
+        local=_FakeProvider(health=True, chat_chunks=["local"]),
+        cloud=_FakeProvider(health=True, chat_chunks=["cloud"]),
+        budget_hook=trace,
+    )
+    out = await _collect(
+        router.chat_stream([{"role": "user", "content": "q"}])
+    )
+    assert out == ["local"]
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_budget_denial_with_force_cloud_raises():
+    from router.types import BudgetContext, BudgetDecision
+
+    async def deny(ctx: BudgetContext) -> BudgetDecision:
+        return BudgetDecision(allow=False, reason="denied")
+
+    router = HybridRouter(
+        local=_FakeProvider(health=True, chat_chunks=["local"]),
+        cloud=_FakeProvider(health=True, chat_chunks=["cloud"]),
+        budget_hook=deny,
+    )
+    with pytest.raises(LLMUnavailableError):
+        await _collect(
+            router.chat_stream(
+                [{"role": "user", "content": "q"}], force_cloud=True
+            )
+        )
+
+
 class _FlakeyProvider:
     """Fails first N chat calls, then yields then_chunks."""
     def __init__(self, *, fail_first_n: int, then_chunks: list[str]):

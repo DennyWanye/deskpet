@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import enum
 import time
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator
 
 import structlog
 
 from providers.base import LLMProvider
+from router.types import BudgetContext, BudgetHook, allow_all_budget
 
 logger = structlog.get_logger()
 
@@ -107,14 +108,18 @@ class HybridRouter:
         local: LLMProvider | None,
         cloud: LLMProvider | None,
         strategy: RoutingStrategy = RoutingStrategy.LOCAL_FIRST,
-        budget_check: Callable[[], bool] | None = None,
+        budget_hook: BudgetHook = allow_all_budget,
     ) -> None:
         self._local = local
         self._cloud = cloud
         self._strategy = strategy
-        self._budget_check = budget_check
+        self._budget_hook = budget_hook
         self._local_state = _ProviderState()
         self._cloud_state = _ProviderState()
+        # P2-1-S8: last BudgetDecision.reason when we raised
+        # LLMUnavailableError due to budget denial. main.py reads this to
+        # attach `budget_exceeded` metadata to the chat_response payload.
+        self._last_budget_reason: str | None = None
 
     async def chat_stream(
         self,
@@ -164,6 +169,21 @@ class HybridRouter:
         if self._cloud is None:
             raise LLMUnavailableError(
                 "cloud provider not configured and local unavailable"
+            )
+        # P2-1-S8: gate cloud calls behind BudgetHook. Runs before circuit
+        # breaker / health check so the ledger gets the final say even when
+        # the cloud endpoint is otherwise ready to accept.
+        model = getattr(self._cloud, "model", "unknown")
+        decision = await self._budget_hook(
+            BudgetContext(route="cloud", model=model)
+        )
+        if not decision.allow:
+            logger.info(
+                "router_cloud_budget_denied", reason=decision.reason,
+            )
+            self._last_budget_reason = decision.reason
+            raise LLMUnavailableError(
+                f"budget denied: {decision.reason}"
             )
         cloud_state = self._cloud_state
         if cloud_state.circuit_state_now() == _CircuitState.OPEN:
