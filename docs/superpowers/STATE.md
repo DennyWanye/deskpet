@@ -4,9 +4,9 @@
 > this first before touching anything. Last updated at the close of each sprint
 > or at major inflection points.
 
-**Last updated:** 2026-04-15 (P2-1-S2 HybridRouter shipped; S3/S6/S7/S8 still pending)
+**Last updated:** 2026-04-15 (P2-1 S1–S8 all merged; Real Test UI E2E 6/6 passing; P2-0-S7 HANDOFF finalized)
 **Current version:** `v0.2.0` (first public beta; next `v0.2.x` will use rotated pubkey)
-**Active branch:** `master`
+**Active branch:** `master` (35 commits ahead of `origin/master` — P2-1 S3/S6/S7/S8 pending push)
 **Active tag:** `v0.2.0` at commit `718d70a`
 
 ---
@@ -32,8 +32,8 @@
 | Phase | Sprint | Status | Notes |
 |-------|--------|--------|-------|
 | 1 — MVP loop | — | ✅ complete | v0.1.0 internal milestone |
-| 2 — Polish & distribute | **P2-0** | ✅ complete | S1–S7 all shipped; v0.2.0 public |
-| 2 — Polish & distribute | **P2-1** | 🟡 in progress | S1 ✅ shipped (OpenAI-compat provider); S2 ✅ shipped (HybridRouter); S3/S6/S7/S8 pending; **S4/S5 cut 2026-04-15** (PersonaRegistry deferred to Phase 3, see roadmap §3.2) |
+| 2 — Polish & distribute | **P2-0** | ✅ complete | S1–S7 all shipped; v0.2.0 public; HANDOFF finalized 2026-04-15 |
+| 2 — Polish & distribute | **P2-1** | ✅ complete (local) | S1 ✅ OpenAI-compat provider; S2 ✅ HybridRouter; S3 ✅ API key + SettingsPanel; S6 ✅ TTFT metrics + `/metrics`; S7 ✅ Fallback E2E via MockTransport; S8 ✅ BillingLedger + BudgetHook + Asia/Shanghai rollover; **S4/S5 cut 2026-04-15** (PersonaRegistry deferred to Phase 3). All merged to local `master`; push + tag pending user call. |
 | 3 — Backend auto-launch | — | ⏳ future | Blocker follow-up: bundle Python backend |
 | 4 — v1.0 GA | — | ⏳ future | Once P2/P3 land |
 
@@ -50,12 +50,42 @@
 | S7 | `handoffs/p2s7-release-v0.2.0.md` | v0.2.0 tag + CI release |
 | S8 | `handoffs/p2s8-key-rotation.md` | Updater signing key rotated (passphrase + new pubkey) |
 
-## Active P2-1 slices
+## Completed P2-1 slices
 
 | Slice | Status | Theme |
 |-------|--------|-------|
 | S1 | ✅ merged | OpenAICompatibleProvider replaces OllamaLLM; unit + integration tests |
-| S2 | ✅ merged on `feat/p2-1-s2-hybrid-router` | HybridRouter (local_first + circuit breaker) wraps local + optional cloud OpenAICompatibleProvider; config split `[llm]` → `[llm]` + `[llm.local]` + optional `[llm.cloud]`; 19 router tests + 3 config tests |
+| S2 | ✅ merged | HybridRouter (local_first + circuit breaker) wraps local + optional cloud provider; config split `[llm]` → `[llm]` + `[llm.local]` + optional `[llm.cloud]`; 19 router tests + 3 config tests |
+| S3 | ✅ merged | API key via OS Credential Manager (keyring crate) + Tauri commands + backend `DESKPET_CLOUD_API_KEY` env handoff; `SettingsPanel` with cloud profile / strategy / daily-budget sections; WS `provider_test_connection` handler |
+| S6 | ✅ merged | Prometheus `llm_ttft_seconds` Histogram; `/metrics` endpoint with secret-or-dev-mode auth; TTFT instrumentation in `HybridRouter.chat_stream`; `scripts/ttft_cloud.py` smoke; `BudgetHook` type skeleton (allow_all default) |
+| S7 | ✅ merged | Fallback E2E pytest harness using `MockTransport` (no real cloud hits) with `max_iters` guard against hanging tests |
+| S8 | ✅ merged | `BillingLedger` (aiosqlite, `Asia/Shanghai` daily rollover, configurable tz); `budget_status` WS handler; `budget_exceeded` toast UI; `BudgetHook` implementation denying cloud when over budget; local route always free; `budget_reason` propagated via `LLMUnavailableError` (race-free) |
+
+## Real Test (UI E2E, 2026-04-15 post-merge)
+
+6/6 manual scenarios via Claude Preview MCP + live backend in
+`DESKPET_DEV_MODE=1`:
+1. Live2D render + `connected` indicator.
+2. `SettingsPanel` structure + `percent_used` renders as `0.0%`
+   (validates Bug-1 fix: backend was returning 0..1 fraction, UI
+   contract says 0..100).
+3. Empty apiKey → "测试连接" shows guard hint.
+4. Garbage apiKey → "失败: health check failed (bad key, wrong URL,
+   or unreachable)" — validates Bug-2 fix (`provider_test_connection`
+   was returning `{ok:false}` without an `error` field, so UI rendered
+   "失败: unknown").
+5. Chat input → local LLM (Gemma) streaming reply confirmed in both
+   DOM and App fiber state.
+6. Fiber-level injection of `chat_response.budget_exceeded=true` →
+   red fixed toast banner renders at top-right (z-index 2000),
+   bg `rgb(185,28,28)`, text `"今日云端预算已用尽，已降级到本地模型。
+   （daily_budget_exceeded:X/Y）"`. Minor UX: toast briefly overlaps
+   FPS/connected badges — acceptable for an alert.
+
+Both bugs were invisible to pytest (type assertions are soft
+comments) and invisible to tsc (types said 0..100 but backend wrote
+0..1). Both were caught by Real Test only. See
+`feedback_real_test.md` + `feedback_cross_layer_contract.md`.
 
 ## Pending follow-ups (not blocking P2-1)
 
@@ -111,20 +141,20 @@ Pick the 2–3 that match your task; don't read everything.
 
 ## Suggested next-session opening prompts
 
-**For the smoke test** (quick, ~10 min session):
-> "请指导我执行 v0.2.0 自更新冒烟测试。参考
-> `docs/superpowers/handoffs/p2s7-release-v0.2.0.md` 的 Post-push
-> verification plan。"
+**For pushing P2-1 to origin** (short, user-gated):
+> "本地有 35 个 commit（P2-1 S3/S6/S7/S8）还没 push。请先让我 review
+> `git log origin/master..HEAD`，确认无误后再 `git push origin master`。
+> 不要带 `--force`，如果被 non-fast-forward 拒绝就停下让我来。"
 
-**For P2-1 brainstorming** (full session):
-> "请用 superpowers 的 brainstorming skill 引导我讨论 P2-1 Sprint 的 6 个
-> 决策点。先读 `docs/superpowers/plans/2026-04-14-phase2-v6-roadmap.md` §3.2
-> 和 `docs/superpowers/STATE.md`。逐个决策点抛 1-2 个发散问题，让我回答后
-> 收敛成 spec，再写 plan。"
-
-**For v0.2.1 打点验证新密钥** (short, ~15 min — run once there's
-content worth cutting a release for):
+**For v0.2.1 打点验证新密钥** (short, ~15 min — good first move after
+P2-1 push lands, since P2-1 gives v0.2.1 real content):
 > "请帮我在 `master` 上 bump 到 v0.2.1、写一段 CHANGELOG 说明 pubkey
-> 已轮换 (v0.2.0 用户需手动重装一次)、打 tag 推上去观察 CI 能否用新密钥
-> 成功签名。参考 `docs/superpowers/handoffs/p2s8-key-rotation.md` §
-> Follow-ups。"
+> 已轮换 (v0.2.0 用户需手动重装一次) + 新增 P2-1 云端 LLM 切换 /
+> SettingsPanel / BillingLedger 等功能，打 tag 推上去观察 CI 能否用新
+> 密钥成功签名。参考 `docs/superpowers/handoffs/p2s8-key-rotation.md`
+> § Follow-ups。"
+
+**For P2-1 → P2-2 brainstorming** (full session):
+> "P2-1 收官了。请用 superpowers 的 brainstorming skill 引导我讨论
+> P2-2 Sprint 的范围。先读 `docs/superpowers/plans/2026-04-14-phase2-v6-roadmap.md`
+> 和这份 STATE.md 里的 P2-1 完成清单。"
