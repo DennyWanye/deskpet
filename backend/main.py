@@ -377,6 +377,14 @@ async def control_channel(ws: WebSocket):
                 # store the agent reads from, so redaction-on-write still holds.
                 await _handle_memory_message(ws, session_id, msg_type, raw.get("payload", {}) or {})
 
+            elif msg_type == "provider_test_connection":
+                # P2-1-S3: SettingsPanel「测试连接」button. The candidate
+                # credentials travel through the already-authenticated control
+                # channel; nothing is persisted here — the UI saves via the
+                # Tauri `set_cloud_api_key` command only on success.
+                from provider_test_connection import handle_provider_test_connection
+                await handle_provider_test_connection(ws, raw.get("payload", {}) or {})
+
             else:
                 await ws.send_json({
                     "type": "error",
