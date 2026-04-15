@@ -25,3 +25,49 @@ def test_openai_compatible_implements_protocol():
         model="gemma4:e4b",
     )
     assert isinstance(provider, LLMProvider)
+
+
+@pytest.mark.asyncio
+async def test_health_check_returns_true_on_200():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/models")
+        assert request.headers["authorization"] == "Bearer test-key"
+        return httpx.Response(200, json={"data": [{"id": "any-model"}]})
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://example.invalid/v1",
+        api_key="test-key",
+        model="x",
+    )
+    transport = httpx.MockTransport(handler)
+    # Inject the mock transport via a provider hook (see impl below).
+    provider._transport = transport
+    assert await provider.health_check() is True
+
+
+@pytest.mark.asyncio
+async def test_health_check_returns_false_on_5xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://example.invalid/v1",
+        api_key="test-key",
+        model="x",
+    )
+    provider._transport = httpx.MockTransport(handler)
+    assert await provider.health_check() is False
+
+
+@pytest.mark.asyncio
+async def test_health_check_returns_false_on_connect_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://example.invalid/v1",
+        api_key="test-key",
+        model="x",
+    )
+    provider._transport = httpx.MockTransport(handler)
+    assert await provider.health_check() is False

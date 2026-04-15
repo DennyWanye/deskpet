@@ -33,6 +33,19 @@ class OpenAICompatibleProvider:
         self.model = model
         self.temperature = temperature
         self.timeout = timeout
+        # Test-only injection point; real code leaves this None.
+        self._transport: httpx.BaseTransport | None = None
+
+    def _client(self, timeout: float) -> httpx.AsyncClient:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        return httpx.AsyncClient(
+            timeout=timeout,
+            headers=headers,
+            transport=self._transport,
+        )
 
     async def chat_stream(
         self,
@@ -44,4 +57,9 @@ class OpenAICompatibleProvider:
         raise NotImplementedError  # implemented in Task 3
 
     async def health_check(self) -> bool:
-        raise NotImplementedError  # implemented in Task 2
+        try:
+            async with self._client(timeout=5.0) as client:
+                resp = await client.get(f"{self.base_url}/models")
+                return resp.status_code == 200
+        except Exception:
+            return False
