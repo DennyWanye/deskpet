@@ -55,7 +55,8 @@ def test_registry_list_specs():
 
 def test_registry_prompt_hint_empty_when_no_tools():
     reg = ToolRegistry()
-    assert reg.prompt_hint() == ""
+    hint = reg.prompt_hint()
+    assert hint == ""
 
 
 def test_registry_prompt_hint_lists_tools():

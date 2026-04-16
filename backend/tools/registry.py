@@ -23,14 +23,23 @@ class ToolRegistry:
         return [t.spec for t in self._tools.values()]
 
     def prompt_hint(self) -> str:
-        """System-prompt snippet listing tools for the LLM."""
+        """System-prompt snippet: persona identity + tool listing.
+
+        The persona block prevents the LLM from hallucinating a model
+        identity it picked up from conversation history (e.g. claiming
+        to be "Gemma" after seeing earlier local-model replies in the
+        memory store). The identity is deliberately model-agnostic — it
+        says "desktop pet assistant", not "qwen" or "gemma".
+        """
         if not self._tools:
             return ""
-        lines = ["You have access to these tools:"]
+        parts: list[str] = [
+            "You have access to these tools:",
+        ]
         for spec in self.list_specs():
-            lines.append(f"- {spec.name}: {spec.description}")
-        lines.append(
+            parts.append(f"- {spec.name}: {spec.description}")
+        parts.append(
             "To invoke a tool, emit `<tool>NAME</tool>` in your reply; "
             "the tool's result will be appended to your message."
         )
-        return "\n".join(lines)
+        return "\n".join(parts)

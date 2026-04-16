@@ -7,6 +7,8 @@ export interface ChatResponse {
   type: "chat_response";
   payload: {
     text: string;
+    /** Which provider actually served this response: "cloud" | "local". */
+    provider?: "cloud" | "local";
     // P2-1-S8: set by backend when BudgetHook refused the cloud call.
     // Frontend shows a toast and keeps the fallback echo text.
     budget_exceeded?: boolean;

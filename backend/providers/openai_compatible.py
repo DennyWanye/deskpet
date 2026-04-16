@@ -84,6 +84,14 @@ class OpenAICompatibleProvider:
                 json=payload,
             ) as response:
                 response.raise_for_status()
+                # Log the upstream's self-reported identity on the first SSE
+                # frame. The `model`/`id`/`system_fingerprint` come straight
+                # from the server, so this is unforgeable proof of which
+                # endpoint actually answered — invaluable when debugging
+                # routing between local/cloud providers that use the same
+                # wire protocol. Debug-level: off by default, opt-in via
+                # DESKPET_LOG_LEVEL=DEBUG.
+                _dumped_server_id = False
                 async for line in response.aiter_lines():
                     if not line or not line.startswith("data:"):
                         continue
@@ -99,6 +107,16 @@ class OpenAICompatibleProvider:
                             "openai_compat_bad_sse_frame", raw=data_str
                         )
                         continue
+                    if not _dumped_server_id:
+                        logger.debug(
+                            "provider_response_identity",
+                            url=f"{self.base_url}/chat/completions",
+                            configured_model=self.model,
+                            server_model=data.get("model"),
+                            server_id=data.get("id"),
+                            system_fingerprint=data.get("system_fingerprint"),
+                        )
+                        _dumped_server_id = True
                     # P2-1-S8: the usage chunk typically arrives as the
                     # terminal frame (choices=[], usage={...}). Capture it
                     # regardless of whether choices is empty.
@@ -115,7 +133,10 @@ class OpenAICompatibleProvider:
 
     async def health_check(self) -> bool:
         try:
-            async with self._client(timeout=5.0) as client:
+            # 15s timeout: Sealos scale-to-zero cold start can exceed 5s,
+            # causing health_check to return False and cloud_first to
+            # silently fall back to local for the next 30s (cache TTL).
+            async with self._client(timeout=15.0) as client:
                 resp = await client.get(f"{self.base_url}/models")
                 return resp.status_code == 200
         except Exception:

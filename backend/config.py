@@ -45,7 +45,7 @@ class LLMEndpointConfig:
 
 @dataclass
 class LLMRoutingConfig:
-    strategy: str = "local_first"
+    strategy: str = "cloud_first"
     daily_budget_cny: float = 10.0
     local: LLMEndpointConfig = field(default_factory=LLMEndpointConfig)
     cloud: LLMEndpointConfig | None = None

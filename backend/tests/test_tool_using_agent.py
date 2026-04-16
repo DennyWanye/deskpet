@@ -125,14 +125,15 @@ async def test_system_prompt_injected_when_tools_exist():
 
 @pytest.mark.asyncio
 async def test_no_system_prompt_when_no_tools():
+    """No tools registered → no system prompt injected."""
     base = StubAgent(["reply"])
-    reg = ToolRegistry()  # empty
+    reg = ToolRegistry()  # empty — no tools
     agent = ToolUsingAgent(base=base, registry=reg, inject_system_prompt=True)
 
     async for _ in agent.chat_stream([{"role": "user", "content": "hi"}]):
         pass
 
-    # No injection since prompt_hint() returns ""
+    # prompt_hint is empty → no system message prepended
     assert base.last_messages == [{"role": "user", "content": "hi"}]
 
 

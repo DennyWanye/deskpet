@@ -205,6 +205,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Desktop Pet Backend", version="0.2.0", lifespan=lifespan)
 
+# CORS: Tauri WebView2 runs on tauri://localhost (or https://tauri.localhost).
+# fetch() to http://127.0.0.1:8100 is cross-origin and blocked without this.
+# WebSocket connections are NOT subject to CORS, only HTTP (POST /config/cloud).
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "tauri://localhost",
+        "https://tauri.localhost",
+        "http://localhost:5173",   # Vite dev server (browser E2E testing)
+        "http://127.0.0.1:5173",
+    ],
+    allow_methods=["POST", "GET"],
+    allow_headers=["Content-Type", "X-Shared-Secret"],
+)
+
 # Track control channel connections for lip-sync forwarding
 _control_connections: dict[str, WebSocket] = {}
 # Track active voice pipelines by session so that a control-channel `interrupt`
@@ -346,7 +362,12 @@ async def update_cloud_config(body: CloudConfigRequest, request: Request):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "secret_hint": SHARED_SECRET[:4] + "..."}
+    return {
+        "status": "ok",
+        "secret_hint": SHARED_SECRET[:4] + "...",
+        "strategy": llm._strategy.value,
+        "cloud_configured": llm._cloud is not None,
+    }
 
 
 @app.get("/metrics")
@@ -542,6 +563,7 @@ async def control_channel(ws: WebSocket):
                 # providers' last_usage (set by OpenAICompatibleProvider) and
                 # debit the ledger. We probe both local and cloud — whichever
                 # actually served the request left its usage on that object.
+                served_by: str | None = None
                 if not budget_exceeded:
                     for route, provider in (
                         ("cloud", llm._cloud),
@@ -552,6 +574,7 @@ async def control_channel(ws: WebSocket):
                         usage = getattr(provider, "last_usage", None)
                         if not usage:
                             continue
+                        served_by = route
                         try:
                             await billing_ledger.record(
                                 provider=route,
@@ -567,6 +590,8 @@ async def control_channel(ws: WebSocket):
                         break
 
                 payload: dict = {"text": response_text}
+                if served_by:
+                    payload["provider"] = served_by
                 if budget_exceeded:
                     payload["budget_exceeded"] = True
                     if budget_reason:

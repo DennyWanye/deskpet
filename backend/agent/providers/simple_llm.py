@@ -34,12 +34,18 @@ class SimpleLLMAgent:
         *,
         session_id: str = "default",
     ) -> AsyncIterator[str]:
-        # Build effective messages: history + incoming messages
-        effective = list(messages)
+        # Build effective messages: system prompts + history + user/assistant msgs.
+        # System messages MUST come first so the persona identity overrides any
+        # stale self-identification that may linger in conversation history
+        # (e.g. a local model once claiming to be "Gemma 4").
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        non_system_msgs = [m for m in messages if m.get("role") != "system"]
         if self._memory is not None:
             history = await self._memory.get_recent(session_id, self._history_limit)
             history_msgs = [{"role": t.role, "content": t.content} for t in history]
-            effective = history_msgs + effective
+            effective = system_msgs + history_msgs + non_system_msgs
+        else:
+            effective = list(messages)
 
         # Stream tokens, capture full response for persistence
         full_response = ""

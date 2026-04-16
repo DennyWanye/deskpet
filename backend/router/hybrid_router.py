@@ -9,6 +9,7 @@ Design references:
 """
 from __future__ import annotations
 
+import asyncio
 import enum
 import time
 from typing import AsyncIterator
@@ -24,6 +25,7 @@ logger = structlog.get_logger()
 _HEALTH_TTL_SECONDS = 30.0
 _CIRCUIT_OPEN_AFTER_FAILURES = 3
 _CIRCUIT_OPEN_DURATION_SECONDS = 30.0
+_CLOUD_FIRST_RETRY_DELAY_SECONDS = 3.0
 
 
 def _now() -> float:
@@ -75,6 +77,10 @@ class _ProviderState:
     def cache_health(self, value: bool) -> None:
         self._health_value = value
         self._health_at = _now()
+
+    def invalidate_health_cache(self) -> None:
+        """Force the next _check_health to re-probe the provider."""
+        self._health_at = None
 
     def cached_health(self) -> bool | None:
         if self._health_at is None:
@@ -259,25 +265,48 @@ class HybridRouter:
                         "router_cloud_budget_denied_falling_back_local",
                         reason=decision.reason,
                     )
-                elif await self._check_health(self._cloud, cloud_state):
-                    try:
-                        async for tok in self._stream_with_ttft(
-                            self._cloud,
-                            "cloud",
-                            messages,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
+                else:
+                    # Try cloud up to 2 times. The first attempt absorbs
+                    # Sealos-style scale-to-zero cold starts (503); the
+                    # retry after a short delay usually succeeds once the
+                    # pod is warm.  Health-check failure on the first
+                    # attempt also triggers the retry (the cold pod may
+                    # not respond to /models within the timeout).
+                    for attempt in range(2):
+                        if attempt > 0:
+                            # Invalidate stale health cache from the
+                            # failed first attempt so the retry re-probes.
+                            cloud_state.invalidate_health_cache()
+                            await asyncio.sleep(
+                                _CLOUD_FIRST_RETRY_DELAY_SECONDS
+                            )
+                            logger.info(
+                                "router_cloud_first_retrying",
+                                attempt=attempt + 1,
+                            )
+                        if not await self._check_health(
+                            self._cloud, cloud_state
                         ):
-                            yield tok
-                        cloud_state.record_chat_success()
-                        return
-                    except Exception as exc:
-                        cloud_state.record_chat_failure()
-                        logger.warning(
-                            "router_cloud_chat_failed_falling_back_local",
-                            error=str(exc),
-                            consecutive_failures=cloud_state.consecutive_failures,
-                        )
+                            continue
+                        try:
+                            async for tok in self._stream_with_ttft(
+                                self._cloud,
+                                "cloud",
+                                messages,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                            ):
+                                yield tok
+                            cloud_state.record_chat_success()
+                            return
+                        except Exception as exc:
+                            cloud_state.record_chat_failure()
+                            logger.warning(
+                                "router_cloud_chat_failed",
+                                error=str(exc),
+                                attempt=attempt + 1,
+                                consecutive_failures=cloud_state.consecutive_failures,
+                            )
 
         # cloud skipped / budget-denied / failed — try local
         if self._local is not None:

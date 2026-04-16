@@ -33,6 +33,9 @@ function App() {
 
   const [fps, setFps] = useState(0);
   const [chatText, setChatText] = useState("");
+  // Track whether the backend is routing through cloud or local.
+  // "cloud" | "local" | null (unknown)
+  const [routeKind, setRouteKind] = useState<"cloud" | "local" | null>(null);
   // Shared secret — fetched from Tauri backend command after it has read the
   // SHARED_SECRET line from the spawned Python process. Empty string while
   // polling; once populated, the WebSocket hooks reconnect with proper auth.
@@ -93,6 +96,11 @@ function App() {
   const { state, lastMessage, sendChat, sendInterrupt, getChannel: getControlChannel } =
     useControlChannel(8100, secret);
 
+  // Reset route kind when disconnected.
+  useEffect(() => {
+    if (state !== "connected") setRouteKind(null);
+  }, [state]);
+
   // S14 — memory management panel toggle.
   const [memoryOpen, setMemoryOpen] = useState(false);
 
@@ -147,6 +155,10 @@ function App() {
           ...prev,
           { role: "assistant", text: lastMessage.payload.text },
         ]);
+        // Update route indicator based on which provider actually served.
+        if (lastMessage.payload.provider) {
+          setRouteKind(lastMessage.payload.provider);
+        }
         break;
       case "emotion_change":
         // Push named expression to Live2D. Unknown names silently no-op.
@@ -540,13 +552,22 @@ function App() {
         <span
           style={{
             fontSize: "10px",
-            color: state === "connected" ? "lime" : "orange",
+            color:
+              state !== "connected"
+                ? "orange"
+                : routeKind === "cloud"
+                  ? "#60a5fa"
+                  : routeKind === "local"
+                    ? "lime"
+                    : "#9ca3af",
             backgroundColor: "rgba(0,0,0,0.5)",
             padding: "2px 6px",
             borderRadius: "4px",
           }}
         >
-          {state}
+          {state === "connected" && routeKind
+            ? `${routeKind}`
+            : state}
         </span>
       </div>
 
@@ -565,6 +586,7 @@ function App() {
         getChannel={getControlChannel}
         lastMessage={lastMessage}
         secret={secret}
+        onConfigChanged={() => setRouteKind(null)}
       />
 
       {/* P2-1-S8 budget-exceeded toast */}

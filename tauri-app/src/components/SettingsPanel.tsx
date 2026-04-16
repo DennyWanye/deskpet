@@ -92,6 +92,7 @@ interface SettingsPanelProps {
    * avoids an extra onMessage listener that'd need manual teardown. */
   lastMessage: IncomingMessage | null;
   secret: string;
+  onConfigChanged?: () => void;
 }
 
 /**
@@ -128,6 +129,7 @@ export function SettingsPanel({
   getChannel,
   lastMessage,
   secret,
+  onConfigChanged,
 }: SettingsPanelProps) {
   // ----- Cloud account section -----------------------------------------------
   // Lazy init from localStorage so refresh 不丢用户编辑的 baseUrl/model。
@@ -298,6 +300,7 @@ export function SettingsPanel({
         setSaveError(`已保存到本地，但后端热更新失败: ${String(e)}`);
         return; // Don't close panel so user sees the error
       }
+      onConfigChanged?.();
       onClose();
     } catch (e) {
       setSaveError(String(e));
