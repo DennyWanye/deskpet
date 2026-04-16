@@ -9,6 +9,7 @@ except AttributeError:
     pass
 
 import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
@@ -17,6 +18,7 @@ import structlog
 import uvicorn
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from pathlib import Path
+from pydantic import BaseModel, field_validator, model_validator
 
 from config import load_config
 from context import ServiceContext
@@ -62,10 +64,13 @@ local_llm = OpenAICompatibleProvider(
 
 from config import resolve_cloud_api_key as _resolve_cloud_api_key  # P2-1-S3
 
+_current_cloud_api_key: str | None = None
+
 cloud_llm = None
 if config.llm.cloud is not None:
     _cloud_key = _resolve_cloud_api_key()
     if _cloud_key:
+        _current_cloud_api_key = _cloud_key
         cloud_llm = OpenAICompatibleProvider(
             base_url=config.llm.cloud.base_url,
             api_key=_cloud_key,
@@ -225,6 +230,118 @@ def _validate_secret(ws: WebSocket) -> bool:
     if not secret:
         secret = ws.query_params.get("secret", "")
     return secrets.compare_digest(secret, SHARED_SECRET)
+
+
+class CloudConfigRequest(BaseModel):
+    base_url: str
+    model: str
+    api_key: str | None = None   # absent or empty = keep current key
+    strategy: str | None = None  # absent = keep current strategy
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, v: str) -> str:
+        if not re.match(r'^https?://[^\s]+$', v):
+            raise ValueError("base_url must start with http:// or https:// and contain no whitespace")
+        return v
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("model must not be empty")
+        if "\n" in v:
+            raise ValueError("model must not contain newlines")
+        if len(v) > 128:
+            raise ValueError("model must not exceed 128 characters")
+        return v
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if not (10 <= len(v) <= 256):
+            raise ValueError("api_key length must be between 10 and 256 characters")
+        return v
+
+    @field_validator("strategy")
+    @classmethod
+    def validate_strategy(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        valid_values = {s.value for s in RoutingStrategy}
+        if v not in valid_values:
+            raise ValueError(f"strategy must be one of: {', '.join(sorted(valid_values))}")
+        return v
+
+
+@app.post("/config/cloud")
+async def update_cloud_config(body: CloudConfigRequest, request: Request):
+    """Hot-swap the cloud LLM provider at runtime (P2-1 UI slice).
+
+    Auth: same shared-secret gate as /metrics. In DEV_MODE the gate is open
+    so local smoke scripts can test without juggling headers.
+    """
+    global _current_cloud_api_key
+
+    if not DEV_MODE:
+        secret = request.headers.get("x-shared-secret", "")
+        if not secret or not secrets.compare_digest(secret, SHARED_SECRET):
+            return Response(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Bearer realm="config"'},
+            )
+
+    # Resolve the api_key: use provided key, fall back to current, or 400.
+    resolved_key: str | None = body.api_key  # already stripped by validator
+    if not resolved_key:
+        if _current_cloud_api_key:
+            resolved_key = _current_cloud_api_key
+        else:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "no api_key configured"},
+            )
+
+    # Reuse temperature from current cloud provider if available, else default.
+    current_temperature = 0.7
+    if llm._cloud is not None:
+        current_temperature = getattr(llm._cloud, "temperature", 0.7)
+
+    new_provider = OpenAICompatibleProvider(
+        base_url=body.base_url,
+        api_key=resolved_key,
+        model=body.model,
+        temperature=current_temperature,
+    )
+
+    llm.set_cloud_provider(new_provider)
+    _current_cloud_api_key = resolved_key
+
+    if body.strategy is not None:
+        llm.set_strategy(RoutingStrategy(body.strategy))
+
+    logger.info(
+        "cloud_config_updated",
+        base_url=body.base_url,
+        model=body.model,
+        # api_key intentionally NOT logged
+    )
+
+    return {
+        "ok": True,
+        "cloud_configured": True,
+        "base_url": body.base_url,
+        "model": body.model,
+        "has_api_key": True,
+        "strategy": llm._strategy.value,
+    }
 
 
 @app.get("/health")
