@@ -173,9 +173,12 @@ class HybridRouter:
         max_tokens: int = 2048,
         force_cloud: bool = False,
     ) -> AsyncIterator[str]:
-        if self._strategy != RoutingStrategy.LOCAL_FIRST:
+        if self._strategy not in (
+            RoutingStrategy.LOCAL_FIRST,
+            RoutingStrategy.CLOUD_FIRST,
+        ):
             raise NotImplementedError(
-                f"strategy {self._strategy} not implemented in P2-1-S2"
+                f"strategy {self._strategy} not implemented"
             )
 
         if force_cloud:
@@ -183,7 +186,25 @@ class HybridRouter:
                 yield tok
             return
 
-        # local_first
+        if self._strategy == RoutingStrategy.LOCAL_FIRST:
+            async for tok in self._chat_stream_local_first(
+                messages, temperature, max_tokens
+            ):
+                yield tok
+            return
+
+        # CLOUD_FIRST
+        async for tok in self._chat_stream_cloud_first(
+            messages, temperature, max_tokens
+        ):
+            yield tok
+
+    async def _chat_stream_local_first(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
         if self._local is not None:
             local_state = self._local_state
             if local_state.circuit_state_now() != _CircuitState.OPEN:
@@ -210,6 +231,85 @@ class HybridRouter:
         # local skipped or local failed — try cloud
         async for tok in self._stream_cloud(messages, temperature, max_tokens):
             yield tok
+
+    async def _chat_stream_cloud_first(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        """Mirror of local_first. Cloud is tried first; on budget-denied,
+        health failure, circuit OPEN, or stream exception we fall through
+        to local without raising. Only if local is unavailable too do we
+        raise ``LLMUnavailableError`` — carrying the cloud-side reason
+        (e.g. ``budget_reason``) so the UI can still surface it.
+        """
+        cloud_budget_reason: str | None = None
+
+        if self._cloud is not None:
+            cloud_state = self._cloud_state
+            if cloud_state.circuit_state_now() != _CircuitState.OPEN:
+                model = getattr(self._cloud, "model", "unknown")
+                decision = await self._budget_hook(
+                    BudgetContext(route="cloud", model=model)
+                )
+                if not decision.allow:
+                    cloud_budget_reason = decision.reason
+                    logger.info(
+                        "router_cloud_budget_denied_falling_back_local",
+                        reason=decision.reason,
+                    )
+                elif await self._check_health(self._cloud, cloud_state):
+                    try:
+                        async for tok in self._stream_with_ttft(
+                            self._cloud,
+                            "cloud",
+                            messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        ):
+                            yield tok
+                        cloud_state.record_chat_success()
+                        return
+                    except Exception as exc:
+                        cloud_state.record_chat_failure()
+                        logger.warning(
+                            "router_cloud_chat_failed_falling_back_local",
+                            error=str(exc),
+                            consecutive_failures=cloud_state.consecutive_failures,
+                        )
+
+        # cloud skipped / budget-denied / failed — try local
+        if self._local is not None:
+            local_state = self._local_state
+            if local_state.circuit_state_now() != _CircuitState.OPEN:
+                if await self._check_health(self._local, local_state):
+                    try:
+                        async for tok in self._stream_with_ttft(
+                            self._local,
+                            "local",
+                            messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        ):
+                            yield tok
+                        local_state.record_chat_success()
+                        return
+                    except Exception as exc:
+                        local_state.record_chat_failure()
+                        logger.warning(
+                            "router_local_chat_failed_in_cloud_first",
+                            error=str(exc),
+                            consecutive_failures=local_state.consecutive_failures,
+                        )
+
+        # Both routes exhausted. Propagate cloud budget reason if we had
+        # one so the UI toast path (budget_exceeded) still works even
+        # when local was configured but also unhealthy.
+        raise LLMUnavailableError(
+            "cloud_first: both cloud and local unavailable",
+            budget_reason=cloud_budget_reason,
+        )
 
     async def _stream_cloud(
         self, messages: list[dict[str, str]], temperature: float, max_tokens: int
@@ -281,3 +381,42 @@ class HybridRouter:
         if self._cloud is not None and await self._check_health(self._cloud, self._cloud_state):
             return True
         return False
+
+    # --- runtime hot-swap ---
+
+    def set_cloud_provider(self, provider: LLMProvider | None) -> None:
+        """Atomically replace the cloud provider and reset its circuit-breaker state.
+
+        The stale health cache and circuit state from the old provider are
+        meaningless for the new one, so ``_cloud_state`` is always reset.
+        API keys are never logged.
+        """
+        old_type = type(self._cloud).__name__ if self._cloud is not None else "None"
+        new_type = type(provider).__name__ if provider is not None else "None"
+        self._cloud = provider
+        self._cloud_state = _ProviderState()
+        logger.info(
+            "router_cloud_provider_replaced",
+            old_provider_type=old_type,
+            new_provider_type=new_type,
+        )
+
+    def set_strategy(self, strategy: RoutingStrategy) -> None:
+        """Switch the routing strategy at runtime.
+
+        Only ``LOCAL_FIRST`` and ``CLOUD_FIRST`` are implemented; passing any
+        other value raises ``NotImplementedError`` immediately so callers learn
+        early rather than at the next ``chat_stream`` call.
+        """
+        if strategy not in (RoutingStrategy.LOCAL_FIRST, RoutingStrategy.CLOUD_FIRST):
+            raise NotImplementedError(
+                f"strategy {strategy.value} is not implemented; "
+                "supported: LOCAL_FIRST, CLOUD_FIRST"
+            )
+        old_strategy = self._strategy
+        self._strategy = strategy
+        logger.info(
+            "router_strategy_changed",
+            old_strategy=old_strategy.value,
+            new_strategy=strategy.value,
+        )
