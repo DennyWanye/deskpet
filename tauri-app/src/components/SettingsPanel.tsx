@@ -23,6 +23,7 @@ import {
   hasCloudApiKey,
   setCloudApiKey,
 } from "../bindings/secrets";
+import { updateCloudConfig } from "../bindings/config";
 import type {
   DailyBudgetStatus,
   IncomingMessage,
@@ -42,7 +43,7 @@ const LS_STRATEGY = "deskpet.router.strategy";
 
 type Strategy = "local_first" | "cloud_first" | "cost_aware" | "latency_aware";
 
-const DEFAULT_STRATEGY: Strategy = "local_first";
+const DEFAULT_STRATEGY: Strategy = "cloud_first";
 const VALID_STRATEGIES: ReadonlySet<Strategy> = new Set<Strategy>([
   "local_first",
   "cloud_first",
@@ -90,6 +91,7 @@ interface SettingsPanelProps {
    * type inside an effect. Piggybacking the existing App-level state
    * avoids an extra onMessage listener that'd need manual teardown. */
   lastMessage: IncomingMessage | null;
+  secret: string;
 }
 
 /**
@@ -125,6 +127,7 @@ export function SettingsPanel({
   onClose,
   getChannel,
   lastMessage,
+  secret,
 }: SettingsPanelProps) {
   // ----- Cloud account section -----------------------------------------------
   // Lazy init from localStorage so refresh 不丢用户编辑的 baseUrl/model。
@@ -280,15 +283,28 @@ export function SettingsPanel({
         // 只是下次重开面板会回退到硬编码默认值。
         console.warn("[SettingsPanel] persist prefs failed:", e);
       }
-      // TODO(P2-1-S6/S8): strategy 真实生效仍依赖 S6 backend switching；
-      // daily_budget 仍依赖 S8 ledger。这里只是把 UI 编辑值留到下次会话。
+      // Push to running backend (hot-swap cloud provider + strategy).
+      try {
+        await updateCloudConfig(secret, {
+          base_url: baseUrl,
+          model,
+          api_key: apiKeyInput.trim() || undefined,
+          strategy,
+        });
+      } catch (e) {
+        // Non-fatal: keyring + localStorage already saved. Backend will
+        // pick up the new key on next restart via env var injection.
+        console.warn("[SettingsPanel] backend hot-swap failed:", e);
+        setSaveError(`已保存到本地，但后端热更新失败: ${String(e)}`);
+        return; // Don't close panel so user sees the error
+      }
       onClose();
     } catch (e) {
       setSaveError(String(e));
     } finally {
       setSaving(false);
     }
-  }, [apiKeyInput, baseUrl, model, strategy, onClose]);
+  }, [apiKeyInput, baseUrl, model, strategy, onClose, secret]);
 
   const handleRefreshBudget = useCallback(async () => {
     try {
@@ -497,6 +513,7 @@ const overlayStyle: React.CSSProperties = {
   background: "rgba(0,0,0,0.5)",
   display: "grid",
   placeItems: "center",
+  padding: 8,
   zIndex: 1000,
 };
 
@@ -504,9 +521,9 @@ const panelStyle: React.CSSProperties = {
   background: "white",
   padding: 18,
   borderRadius: 8,
-  minWidth: 420,
-  maxWidth: 520,
-  maxHeight: "90vh",
+  width: "min(94vw, 520px)",
+  boxSizing: "border-box",
+  maxHeight: "92vh",
   overflowY: "auto",
   color: "#111",
   boxShadow: "0 10px 30px rgba(0,0,0,0.25)",

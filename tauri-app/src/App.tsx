@@ -564,6 +564,7 @@ function App() {
         onClose={() => setSettingsOpen(false)}
         getChannel={getControlChannel}
         lastMessage={lastMessage}
+        secret={secret}
       />
 
       {/* P2-1-S8 budget-exceeded toast */}
