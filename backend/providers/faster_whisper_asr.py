@@ -48,7 +48,15 @@ class FasterWhisperASR:
     async def transcribe(self, audio_bytes: bytes) -> str:
         """
         Transcribe 16kHz int16 PCM bytes to text.
-        Auto-detects language (supports Chinese + English).
+
+        P2-2 hot-fix (2026-04-17): Chinese-only product, so we lock
+        language="zh" to eliminate the pt/es/en/fr drift Whisper does on
+        short clips. vad_filter=True adds Whisper's own VAD as a second
+        pass — Silero upstream catches speech boundaries, this filters
+        out lingering noise/echo inside the clip that silero can't see.
+        initial_prompt primes the decoder toward Mandarin conversation
+        vocabulary and substantially reduces the "Thank you / Gracias /
+        Au revoir" training-data hallucinations on short/low-energy input.
         """
         if self._model is None:
             await self.load()
@@ -57,9 +65,24 @@ class FasterWhisperASR:
 
         segments, info = self._model.transcribe(
             audio_np,
-            language=None,  # auto-detect
-            beam_size=5,
-            vad_filter=False,  # we have silero-vad upstream
+            language="zh",
+            beam_size=8,
+            best_of=5,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+            # 引导 decoder 偏向日常对话/提问/聊天/讲笑话 的词汇分布，
+            # 缓解"讲→赞 / 笑话→小话"这类中文同声调域混淆。
+            initial_prompt=(
+                "以下是用户与桌面 AI 助手的普通话对话。"
+                "场景：闲聊、提问、讲笑话、请求帮助。"
+            ),
+            # 关闭把上一段识别结果当下一段 prompt 的机制 ——
+            # 连续识别时会把早先的错误串联下去（典型"错误传染"）。
+            condition_on_previous_text=False,
+            # 关闭 temperature fallback，让输出稳定可复现。
+            temperature=0.0,
+            # 提高"无语音"判定门槛，减少把纯噪音/底噪识别成短词的幻觉。
+            no_speech_threshold=0.6,
         )
 
         text = " ".join(seg.text.strip() for seg in segments)

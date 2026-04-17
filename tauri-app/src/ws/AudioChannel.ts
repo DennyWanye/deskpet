@@ -43,7 +43,12 @@ export class AudioChannel {
 
     this.ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
-        this.binaryListeners.forEach((fn) => fn(event.data));
+        // P2-2: strip 1-byte type header (0x01=PCM, 0x02=MP3).
+        // Listeners receive pure audio data — header is internal.
+        const raw = new Uint8Array(event.data);
+        if (raw.length < 2) return; // runt frame
+        const audioData = event.data.slice(1);
+        this.binaryListeners.forEach((fn) => fn(audioData));
       } else {
         try {
           const msg: AudioMessage = JSON.parse(event.data);

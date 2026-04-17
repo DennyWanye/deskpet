@@ -59,7 +59,9 @@ model_dir = "./assets/cosyvoice2"  # kept for future CosyVoice 2 upgrade
 [vad]
 threshold = 0.5
 min_speech_ms = 250
-min_silence_ms = 500
+# P2-2 hot-fix: 500→800 to stop cutting normal pauses mid-sentence into
+# 0.6–1.2s mini-clips (Whisper's worst-case for hallucination).
+min_silence_ms = 800
 
 [memory]
 db_path = "./data/memory.db"

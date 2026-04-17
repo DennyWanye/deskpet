@@ -17,6 +17,7 @@ export function useAudioPlayer(channel: AudioChannel | null) {
   const ctxRef = useRef<AudioContext | null>(null);
   const bufferRef = useRef<Uint8Array[]>([]);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
 
   const getContext = useCallback(() => {
     if (!ctxRef.current || ctxRef.current.state === "closed") {
@@ -30,6 +31,16 @@ export function useAudioPlayer(channel: AudioChannel | null) {
     }
     return ctxRef.current;
   }, []);
+
+  // Persistent GainNode for fade-out on barge-in.
+  const getGain = useCallback(() => {
+    const ctx = getContext();
+    if (!gainRef.current) {
+      gainRef.current = ctx.createGain();
+      gainRef.current.connect(ctx.destination);
+    }
+    return gainRef.current;
+  }, [getContext]);
 
   /**
    * Warm up the AudioContext — must be called inside a user gesture (click,
@@ -93,7 +104,7 @@ export function useAudioPlayer(channel: AudioChannel | null) {
       );
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(ctx.destination);
+      source.connect(getGain());
       currentSourceRef.current = source;
 
       source.onended = () => {
@@ -132,6 +143,36 @@ export function useAudioPlayer(channel: AudioChannel | null) {
     setIsPlaying(false);
   }, []);
 
+  const bargeIn = useCallback(() => {
+    console.log("[AudioPlayer] barge-in triggered");
+    bufferRef.current = [];
+    const ctx = ctxRef.current;
+    const gain = gainRef.current;
+    if (ctx && gain && currentSourceRef.current) {
+      // 50ms fade-out to avoid pop
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.05);
+      setTimeout(() => {
+        try {
+          currentSourceRef.current?.stop();
+        } catch {
+          /* already stopped */
+        }
+        currentSourceRef.current = null;
+        setIsPlaying(false);
+        if (gain) gain.gain.value = 1.0;
+        console.log("[AudioPlayer] barge-in complete");
+      }, 60);
+    } else {
+      try {
+        currentSourceRef.current?.stop();
+      } catch {
+        /* already stopped */
+      }
+      currentSourceRef.current = null;
+      setIsPlaying(false);
+    }
+  }, []);
+
   // Subscribe to binary audio from the channel — just accumulate, don't decode.
   useEffect(() => {
     if (!channel) return;
@@ -141,5 +182,5 @@ export function useAudioPlayer(channel: AudioChannel | null) {
     return unsub;
   }, [channel]);
 
-  return { isPlaying, stop, flushAndPlay, reset, primeContext };
+  return { isPlaying, stop, flushAndPlay, reset, primeContext, bargeIn };
 }

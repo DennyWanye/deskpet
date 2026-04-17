@@ -48,7 +48,13 @@ export interface VADEvent {
 
 export interface TranscriptMessage {
   type: "transcript";
-  payload: { text: string; role: "user" | "assistant" };
+  // provider 仅在 role=assistant 时可能出现 —— 语音链路把实际服务本轮的
+  // 路由（local / cloud）捎带过来，用于驱动右上角指示灯颜色。
+  payload: {
+    text: string;
+    role: "user" | "assistant";
+    provider?: "cloud" | "local";
+  };
 }
 
 export interface LipSyncMessage {
@@ -59,6 +65,11 @@ export interface LipSyncMessage {
 export interface TTSEndMessage {
   type: "tts_end";
   payload: Record<string, never>;
+}
+
+export interface TTSBargeInMessage {
+  type: "tts_barge_in";
+  payload: { reason: "vad_speech_detected" };
 }
 
 // --- Emotion / action events (S1) ---
@@ -170,4 +181,4 @@ export type IncomingMessage =
   | ProviderTestConnectionResult
   | BudgetStatusMessage;
 
-export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | ErrorMessage;
+export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | TTSBargeInMessage | ErrorMessage;

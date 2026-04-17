@@ -9,6 +9,7 @@ import structlog
 from fastapi import WebSocket
 
 from observability.metrics import stage_timer
+from pipeline.barge_in_filter import BargeInFilter
 from pipeline.tag_parser import StreamingTagParser, TagEvent
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ class VoicePipeline:
         self._interrupted = False
         self._processing = False
         self._current_task: asyncio.Task | None = None
+        self._barge_in_filter = BargeInFilter()
 
     def interrupt(self) -> None:
         """User barge-in — stop current TTS generation."""
@@ -105,7 +107,14 @@ class VoicePipeline:
                     "payload": {"status": "speech_start"},
                 })
                 if self._processing:
-                    self.interrupt()
+                    speech_ms = self.vad.current_speech_duration_ms()
+                    if self._barge_in_filter.should_allow(speech_ms):
+                        await audio_ws.send_json({
+                            "type": "tts_barge_in",
+                            "payload": {"reason": "vad_speech_detected"},
+                        })
+                        self._barge_in_filter.on_interrupted()
+                        self.interrupt()
 
             elif event["event"] == "speech_end":
                 speech_audio = event["audio"]
@@ -183,21 +192,55 @@ class VoicePipeline:
             if self._interrupted or not response_text.strip():
                 return
 
-            logger.info("llm_response", text=response_text[:100])
+            # 路由指示灯（前端右上角）只在收到 chat_response / transcript
+            # 携带的 provider 字段时切换颜色。纯语音用户永远不会走 control
+            # 通道的 chat_response 分支，所以这里模仿 main.py 的做法，从
+            # agent 底层 llm 的 _cloud / _local last_usage 推断本轮实际服务
+            # 的路由，并把它捎在 transcript 里发给前端。
+            served_by: str | None = None
+            # agent 可能是 ToolUsingAgent(base=SimpleLLMAgent(llm=...)) 的嵌套，
+            # 实际 llm 在最内层；顺着 _llm / _base 走到第一个有 _cloud/_local 的
+            # 对象为止。最多 8 层防环。
+            probe = self.agent
+            llm = None
+            for _ in range(8):
+                if hasattr(probe, "_cloud") or hasattr(probe, "_local"):
+                    llm = probe
+                    break
+                nxt = getattr(probe, "_llm", None) or getattr(probe, "_base", None)
+                if nxt is None or nxt is probe:
+                    break
+                probe = nxt
+            if llm is not None:
+                for route in ("cloud", "local"):
+                    provider = getattr(llm, f"_{route}", None)
+                    if provider is None:
+                        continue
+                    if getattr(provider, "last_usage", None):
+                        served_by = route
+                        break
+
+            logger.info("llm_response", text=response_text[:100], served_by=served_by)
+            transcript_payload: dict = {"text": response_text, "role": "assistant"}
+            if served_by:
+                transcript_payload["provider"] = served_by
             await audio_ws.send_json({
                 "type": "transcript",
-                "payload": {"text": response_text, "role": "assistant"},
+                "payload": transcript_payload,
             })
 
             # Step 3: TTS (streaming synthesis + streaming send)
             chunk_index = 0
+            self._barge_in_filter.on_tts_start()
             async with stage_timer("tts", session_id=self.session_id, chars=len(response_text)):
                 async for audio_chunk in self.tts.synthesize_stream(response_text):
                     if self._interrupted:
                         logger.info("tts_interrupted")
                         break
-                    # Send audio data (binary frame)
-                    await audio_ws.send_bytes(audio_chunk)
+                    # Binary frame: 1-byte type header + audio data.
+                    # 0x02 = MP3 (M1). M2 will switch to 0x01 = PCM.
+                    frame = b"\x02" + audio_chunk
+                    await audio_ws.send_bytes(frame)
                     # Send lip-sync params to control channel
                     if self.control_ws:
                         try:
@@ -211,6 +254,7 @@ class VoicePipeline:
                         except Exception:
                             pass  # control channel may have disconnected
                     chunk_index += 1
+            self._barge_in_filter.on_tts_end()
 
             # TTS end marker
             await audio_ws.send_json({
