@@ -169,6 +169,7 @@ function App() {
     flushAndPlay,
     reset: resetPlaybackBuffer,
     primeContext,
+    bargeIn,
   } = useAudioPlayer(getChannel());
 
   // Handle control channel messages (text chat + emotion/action drive)
@@ -223,6 +224,16 @@ function App() {
             text: audioMessage.payload.text,
           },
         ]);
+        // 语音链路只经由 audio 通道，不走 control 通道的 chat_response ——
+        // 这里复用 assistant transcript 上捎带的 provider 字段来刷新路由
+        // 指示灯的颜色（green=local / blue=cloud），否则纯语音用户会一直
+        // 停在灰色 "connected"。
+        if (
+          audioMessage.payload.role === "assistant" &&
+          audioMessage.payload.provider
+        ) {
+          setRouteKind(audioMessage.payload.provider);
+        }
         break;
 
       case "tts_end":
@@ -231,8 +242,15 @@ function App() {
         setMouthOpenY(0);
         setVadStatus("listening");
         break;
+
+      case "tts_barge_in":
+        // P2-2: backend VAD detected user speech during TTS — stop playback.
+        console.log("[App] TTS barge-in — stopping playback");
+        bargeIn();
+        setMouthOpenY(0);
+        break;
     }
-  }, [audioMessage, isPlaying, stopPlayback, flushAndPlay, resetPlaybackBuffer]);
+  }, [audioMessage, isPlaying, stopPlayback, flushAndPlay, resetPlaybackBuffer, bargeIn]);
 
   // Handle lip-sync from control channel
   useEffect(() => {
@@ -584,6 +602,10 @@ function App() {
                   ? "#60a5fa"
                   : routeKind === "local"
                     ? "lime"
+                    // 已连接但还不知道路由到本地/云端（首条消息前，或纯语音
+                    // 交互 transcript 里暂缺 provider 字段）—— 按"其他情况"
+                    // 的灰色处理，等首条 chat_response / 带 provider 的 transcript
+                    // 到来再切到绿色(local) / 蓝色(cloud)。
                     : "#9ca3af",
             backgroundColor: "rgba(0,0,0,0.5)",
             padding: "2px 6px",
