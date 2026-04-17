@@ -27,3 +27,15 @@ scripts/e2e/deskpet_window.png
 *.key
 *.key.pub
 .tauri/
+
+# `gh` CLI dump artifacts that occasionally land at repo root during
+# manual debugging (gh run list --json > runs.json etc). Not source.
+/jobs.json
+/runs.json
+/run.json
+/release.json
+/logs.zip
+
+# Claude Code scheduled-task runtime files / per-agent worktrees.
+.claude/scheduled_tasks.lock
+.claude/worktrees/
