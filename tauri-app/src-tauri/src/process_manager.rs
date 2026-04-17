@@ -48,13 +48,19 @@ impl BackendProcess {
     }
 
     /// Fire-and-forget teardown used by the window-destroyed handler.
-    /// Sets `shutdown_requested` so any in-flight supervisor bails.
+    /// Sets `shutdown_requested` so any in-flight supervisor bails, kills
+    /// the child if we still have a direct handle, and clears
+    /// `shared_secret` so the next `start_backend` invocation is treated
+    /// as a fresh spawn rather than a no-op idempotent return.
     pub fn kill_child(&self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
         if let Ok(mut guard) = self.child.lock() {
             if let Some(mut child) = guard.take() {
                 let _ = child.kill();
             }
+        }
+        if let Ok(mut guard) = self.shared_secret.lock() {
+            *guard = None;
         }
     }
 }
@@ -76,7 +82,13 @@ fn spawn_once(
     cmd.arg("main.py")
         .current_dir(backend_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::inherit())
+        // Windows 下 structlog 写入 piped stdout 时如果系统默认非 UTF-8
+        // （GBK/CP936）会对中文日志抛 OSError[Errno 22]，backend 立刻崩在
+        // lifespan 的 "preloading models..." 行。手动钉死 UTF-8 + 无缓冲，
+        // 这样 SHARED_SECRET 也能被及时读到。
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUNBUFFERED", "1");
 
     // Read key from keychain. Errors are logged to stderr but don't
     // block startup — if the keychain itself is busted, local-only is
@@ -104,18 +116,49 @@ fn spawn_once(
         .take()
         .ok_or_else(|| "No stdout on spawned backend".to_string())?;
 
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        match line {
-            Ok(line) if line.starts_with("SHARED_SECRET=") => {
-                let secret = line.trim_start_matches("SHARED_SECRET=").to_string();
-                return Ok((child, secret));
+    let mut reader = BufReader::new(stdout);
+    let mut secret_opt: Option<String> = None;
+    // Read until SHARED_SECRET line. Can't just `return` with the reader
+    // dropped — on Windows that closes the pipe read end, and Python's next
+    // stdout write (structlog "preloading models..." etc.) raises
+    // OSError[Errno 22] and crashes lifespan. Instead hand the reader off
+    // to a background thread that keeps draining (and discarding) stdout
+    // for the lifetime of the child.
+    let mut line_buf = String::new();
+    loop {
+        line_buf.clear();
+        match reader.read_line(&mut line_buf) {
+            Ok(0) => break, // EOF — backend exited
+            Ok(_) => {
+                let trimmed = line_buf.trim_end_matches(['\r', '\n']);
+                if trimmed.starts_with("SHARED_SECRET=") {
+                    secret_opt = Some(
+                        trimmed.trim_start_matches("SHARED_SECRET=").to_string(),
+                    );
+                    break;
+                }
             }
-            Ok(_) => continue,
             Err(e) => return Err(format!("Failed to read backend stdout: {e}")),
         }
     }
-    Err("Backend exited without printing SHARED_SECRET".into())
+
+    let secret = secret_opt
+        .ok_or_else(|| "Backend exited without printing SHARED_SECRET".to_string())?;
+
+    // Keep draining stdout in a detached thread so the pipe stays open and
+    // Python can keep logging. Exits naturally on EOF when the child dies.
+    std::thread::spawn(move || {
+        let mut sink = String::new();
+        loop {
+            sink.clear();
+            match reader.read_line(&mut sink) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+        }
+    });
+
+    Ok((child, secret))
 }
 
 /// Spawn backend — runs in async context so it won't block the UI thread.
@@ -132,10 +175,19 @@ pub async fn start_backend(
     python_path: String,
     backend_dir: String,
 ) -> Result<String, String> {
+    // 幂等：以 shared_secret 作为"已有一个活着或正在重启中的 backend"的
+    // 真实判据，而不是 state.child。原因：install_supervisor 在调 wait()
+    // 之前会把 Child 从 Mutex 里 take() 出来持有在线程栈上，所以 backend
+    // 活着的 99.99% 时间里 state.child 都是 None。只有 shared_secret 是
+    // 在"启动 / respawn 成功"时 Some，"stop / kill_child / supervisor 放弃"
+    // 时 None —— 这三条关闭路径都会显式清空它，语义一致。
+    //
+    // 效果：前端 F5 / StrictMode 重挂载里无脑 invoke start_backend 不会
+    // 再次 spawn 出一个和现任 backend 抢 8100 端口的 Python。
     {
-        let guard = state.child.lock().map_err(|e| e.to_string())?;
-        if guard.is_some() {
-            return Err("Backend already running".into());
+        let secret_guard = state.shared_secret.lock().map_err(|e| e.to_string())?;
+        if let Some(existing) = secret_guard.as_ref() {
+            return Ok(existing.clone());
         }
     }
 
@@ -208,6 +260,11 @@ fn install_supervisor(app: AppHandle, python_path: String, backend_dir: String) 
             // sliding window, give up and let the user manually retry.
             let count = state.restart_count.fetch_add(1, Ordering::SeqCst) + 1;
             if count > MAX_RESTARTS_PER_WINDOW {
+                // 清空 secret —— 之后前端再 invoke start_backend 时
+                // 幂等检查要能让它真的去 spawn 一个新 backend（手动自愈）。
+                if let Ok(mut guard) = state.shared_secret.lock() {
+                    *guard = None;
+                }
                 let _ = app.emit("backend-dead", "restart budget exhausted");
                 return;
             }
@@ -235,6 +292,11 @@ fn install_supervisor(app: AppHandle, python_path: String, backend_dir: String) 
                     }
                 }
                 Err(e) => {
+                    // 同样的道理：respawn 失败等于这一生的 backend 到此
+                    // 为止了，secret 得清掉好让后续手动重启能真的 spawn。
+                    if let Ok(mut guard) = state.shared_secret.lock() {
+                        *guard = None;
+                    }
                     let _ = app.emit("backend-dead", format!("respawn failed: {e}"));
                     return;
                 }
@@ -250,6 +312,9 @@ pub fn stop_backend(state: State<'_, BackendProcess>) -> Result<(), String> {
     if let Some(mut child) = child_guard.take() {
         child.kill().map_err(|e| e.to_string())?;
     }
+    // 让幂等检查恢复"无 backend"判断，好让之后的 start_backend 能真正
+    // spawn，而不是返回这条已经被杀死的 stale secret。
+    *state.shared_secret.lock().map_err(|e| e.to_string())? = None;
     Ok(())
 }
 

@@ -7,6 +7,11 @@ export class ControlChannel {
   private url: string;
   private secret: string;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  // disconnect() 是用户主动断开的信号。置位后 onclose 不再
+  // 调度重连 —— 否则 useEffect cleanup 断开的旧 channel
+  // （例如 secret 从空更新到真值时）会在 3s 后自己复活，
+  // 形成永远用旧 secret 的僵尸重连风暴。
+  private closing = false;
   private listeners = new Set<(msg: IncomingMessage) => void>();
   private stateListeners = new Set<(state: ConnectionState) => void>();
   private _state: ConnectionState = "disconnected";
@@ -27,6 +32,7 @@ export class ControlChannel {
 
   connect() {
     if (this.ws) return;
+    this.closing = false;
     this.setState("connecting");
     const wsUrl = `${this.url}?secret=${encodeURIComponent(this.secret)}`;
     this.ws = new WebSocket(wsUrl);
@@ -47,7 +53,9 @@ export class ControlChannel {
     this.ws.onclose = () => {
       this.ws = null;
       this.setState("disconnected");
-      this.scheduleReconnect();
+      if (!this.closing) {
+        this.scheduleReconnect();
+      }
     };
 
     this.ws.onerror = () => {
@@ -56,6 +64,7 @@ export class ControlChannel {
   }
 
   disconnect() {
+    this.closing = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

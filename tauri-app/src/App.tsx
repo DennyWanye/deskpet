@@ -41,9 +41,9 @@ function App() {
   // polling; once populated, the WebSocket hooks reconnect with proper auth.
   const [secret, setSecret] = useState("");
 
-  // Poll the Rust side for the shared secret. Extracted so the
-  // backend-restarted supervisor event can replay it without duplicating
-  // the import + retry loop.
+  // Poll the Rust side for the shared secret. Pure polling — no side
+  // effects on the backend process. Safe to replay on HMR, F5, and the
+  // backend-restarted supervisor event.
   const refreshSecret = useCallback(async () => {
     const core = await import("@tauri-apps/api/core").catch(() => null);
     if (!core) return;
@@ -61,8 +61,33 @@ function App() {
     }
   }, []);
 
+  // Bootstrap Python backend. Rust 的 start_backend 现在幂等 —— 用
+  // shared_secret 而非 state.child 做判据，所以 F5 / StrictMode / HMR
+  // 场景下重复触发只会返回现任 secret，不会抢端口 spawn 第二条 Python。
+  // 正是因为幂等，前端这里无需 useRef 守卫也无需 "先查后启" 两段式
+  // 逻辑，直接 invoke 即可。
+  // TODO(bootstrap): promote these paths out of App.tsx — read from a
+  // tauri.conf entry or auto-detect relative to backend_dir.
   useEffect(() => {
-    void refreshSecret();
+    (async () => {
+      const core = await import("@tauri-apps/api/core").catch(() => null);
+      if (!core) return;
+      try {
+        const secret = await core.invoke<string>("start_backend", {
+          pythonPath: "G:/projects/deskpet/backend/.venv/Scripts/python.exe",
+          backendDir: "G:/projects/deskpet/backend",
+        });
+        if (secret) {
+          setSecret(secret);
+          return;
+        }
+      } catch (e) {
+        console.warn("[bootstrap] start_backend:", e);
+      }
+      // spawn 失败或返回空 —— 回退到轮询，等 supervisor 最终把 secret
+      // 写进去（比如首次启动的 backend 还在加载 torch）。
+      void refreshSecret();
+    })();
   }, [refreshSecret]);
 
   // S12: react to supervisor events — on crash, clear the secret so any
