@@ -160,13 +160,11 @@ function App() {
   const { isRecording, startRecording, stopRecording } =
     useAudioRecorder(sendAudio);
 
-  // Audio player (backend MP3 → speaker)
-  // We buffer MP3 chunks and decode on tts_end — partial MP3 chunks can't be
-  // decoded independently (only the first carries the stream header).
+  // Audio player — P2-2-M2 起走 PCM16 24kHz 流式播放（jitter buffer →
+  // WebAudio 时间轴调度），不再需要等 tts_end 做整段 MP3 解码。
   const {
     isPlaying,
     stop: stopPlayback,
-    flushAndPlay,
     reset: resetPlaybackBuffer,
     primeContext,
     bargeIn,
@@ -205,9 +203,10 @@ function App() {
       case "vad_event":
         if (audioMessage.payload.status === "speech_start") {
           setVadStatus("speaking");
-          // Barge-in: stop current playback and drop any buffered TTS.
+          // 前端 VAD 在后端 BargeInFilter 之前先触发：立刻淡出在播音频
+          // + 清 jitter buffer，避免给后端 TTS 打断事件到达前还在灌声。
           if (isPlaying) {
-            stopPlayback();
+            bargeIn();
             setMouthOpenY(0);
           }
           resetPlaybackBuffer();
@@ -237,8 +236,8 @@ function App() {
         break;
 
       case "tts_end":
-        // Full MP3 has arrived — decode and play the merged blob.
-        void flushAndPlay();
+        // PCM 流式模式下每块已实时播放，tts_end 只是终态信号：关嘴 +
+        // 回到 listening。jitter buffer 的 startedRef 由 hook 内自行复位。
         setMouthOpenY(0);
         setVadStatus("listening");
         break;
@@ -250,7 +249,7 @@ function App() {
         setMouthOpenY(0);
         break;
     }
-  }, [audioMessage, isPlaying, stopPlayback, flushAndPlay, resetPlaybackBuffer, bargeIn]);
+  }, [audioMessage, isPlaying, resetPlaybackBuffer, bargeIn]);
 
   // Handle lip-sync from control channel
   useEffect(() => {
