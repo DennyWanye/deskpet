@@ -229,26 +229,33 @@ class VoicePipeline:
                 "payload": transcript_payload,
             })
 
-            # Step 3: TTS (streaming synthesis + streaming send)
+            # Step 3: TTS (PCM16 24kHz stream via ffmpeg pipe — P2-2-M2)
+            # Binary frame layout: 1-byte type header + audio data.
+            # 0x01 = PCM16 mono 24kHz (M2 现行)；0x02 = MP3 (M1 历史兼容)。
             chunk_index = 0
             self._barge_in_filter.on_tts_start()
             async with stage_timer("tts", session_id=self.session_id, chars=len(response_text)):
-                async for audio_chunk in self.tts.synthesize_stream(response_text):
+                async for pcm_chunk in self.tts.synthesize_pcm_stream(response_text):
                     if self._interrupted:
                         logger.info("tts_interrupted")
                         break
-                    # Binary frame: 1-byte type header + audio data.
-                    # 0x02 = MP3 (M1). M2 will switch to 0x01 = PCM.
-                    frame = b"\x02" + audio_chunk
+                    frame = b"\x01" + pcm_chunk
                     await audio_ws.send_bytes(frame)
-                    # Send lip-sync params to control channel
+                    # Lip-sync：直接读 PCM16 算 RMS，比 MP3 大小启发式精准
+                    # 得多。RMS 到 amplitude 的尺度 (÷8000) 按经验调，既能
+                    # 让正常语音打到 0.6-0.9，又不让轻声被吞。
                     if self.control_ws:
                         try:
+                            pcm_arr = np.frombuffer(pcm_chunk, dtype=np.int16)
+                            rms = float(
+                                np.sqrt(np.mean(pcm_arr.astype(np.float32) ** 2))
+                            )
+                            amplitude = min(1.0, rms / 8000.0)
                             await self.control_ws.send_json({
                                 "type": "lip_sync",
                                 "payload": {
                                     "chunk_index": chunk_index,
-                                    "amplitude": _estimate_amplitude_from_size(len(audio_chunk)),
+                                    "amplitude": amplitude,
                                 },
                             })
                         except Exception:
@@ -279,10 +286,6 @@ class VoicePipeline:
 
 
 def _estimate_amplitude_from_size(chunk_size: int) -> float:
-    """
-    Rough amplitude estimate based on chunk size.
-    For MP3 data we can't easily compute RMS, so we use a heuristic.
-    When CosyVoice 2 (PCM output) is integrated, this will use proper RMS.
-    """
-    # Normalize to 0.0-1.0 range based on typical chunk sizes
+    """Legacy MP3-era 幅度启发式 —— P2-2-M2 已切到 PCM RMS，保留此函数
+    仅为回旋余地（未来若再出现无法算 RMS 的格式可以复用）。"""
     return min(1.0, chunk_size / 8192)
