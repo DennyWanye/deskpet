@@ -17,6 +17,10 @@ backend/assets/
 backend/temp/
 temp/
 
+# Portable ffmpeg.exe (~80MB) for MP3->PCM pipe in voice pipeline.
+# Provisioned via scripts/setup_ffmpeg.ps1 — not source.
+backend/bin/
+
 # E2E driver screenshots — regenerated on every run, not source-of-truth
 scripts/e2e/shots/
 scripts/e2e/shots_cdp/
