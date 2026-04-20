@@ -721,6 +721,9 @@ async def audio_channel(ws: WebSocket):
         tts=service_context.tts_engine,
         control_ws=control_ws,
         session_id=session_id,
+        vad_threshold_during_tts=config.voice.vad_threshold_during_tts,
+        min_speech_ms_during_tts=config.voice.min_speech_ms_during_tts,
+        tts_cooldown_ms=config.voice.tts_cooldown_ms,
     )
     # Register so control-channel `interrupt` messages can reach us.
     _pipelines[session_id] = pipeline

@@ -41,6 +41,9 @@ class VoicePipeline:
         tts: EdgeTTSProvider,
         control_ws: WebSocket | None = None,
         session_id: str = "default",
+        vad_threshold_during_tts: float = 0.65,
+        min_speech_ms_during_tts: int = 400,
+        tts_cooldown_ms: int = 300,
     ):
         self.vad = vad
         self.asr = asr
@@ -51,7 +54,21 @@ class VoicePipeline:
         self._interrupted = False
         self._processing = False
         self._current_task: asyncio.Task | None = None
-        self._barge_in_filter = BargeInFilter()
+        self._barge_in_filter = BargeInFilter(
+            cooldown_ms=tts_cooldown_ms,
+            min_speech_during_tts_ms=min_speech_ms_during_tts,
+        )
+        # P2-2-M3: stash the "normal" threshold at init time (from [vad])
+        # so we can restore it after TTS / interrupt. The during_tts value
+        # is the raised threshold we swap in while TTS is playing — keeps
+        # speaker echo from re-triggering VAD.
+        self._vad_threshold_normal = getattr(vad, "threshold", 0.5)
+        self._vad_threshold_during_tts = vad_threshold_during_tts
+        # P2-2-M3: speech_start fires once with duration=0, so we can't gate
+        # barge-in on that single event. Instead, re-evaluate every frame
+        # while in TTS. This flag ensures we fire tts_barge_in at most once
+        # per continuous speech segment (reset on speech_start / speech_end).
+        self._barge_in_fired_for_current_speech = False
 
     def interrupt(self) -> None:
         """User barge-in — stop current TTS generation."""
@@ -106,15 +123,14 @@ class VoicePipeline:
                     "type": "vad_event",
                     "payload": {"status": "speech_start"},
                 })
-                if self._processing:
-                    speech_ms = self.vad.current_speech_duration_ms()
-                    if self._barge_in_filter.should_allow(speech_ms):
-                        await audio_ws.send_json({
-                            "type": "tts_barge_in",
-                            "payload": {"reason": "vad_speech_detected"},
-                        })
-                        self._barge_in_filter.on_interrupted()
-                        self.interrupt()
+                # New speech segment — rearm the barge-in-once guard.
+                self._barge_in_fired_for_current_speech = False
+                # NOTE: we deliberately do NOT try to barge-in here.
+                # current_speech_duration_ms() is 0 at the speech_start frame
+                # (VAD sets _speech_start_ms = _ms_counter before incrementing),
+                # so the TTS-phase gate (min_speech_ms_during_tts=400) would
+                # never open. The per-frame check below evaluates duration as
+                # it grows across subsequent frames.
 
             elif event["event"] == "speech_end":
                 speech_audio = event["audio"]
@@ -122,6 +138,11 @@ class VoicePipeline:
                     "type": "vad_event",
                     "payload": {"status": "speech_end"},
                 })
+                # Speech segment finished — rearm the barge-in guard for the
+                # next speech_start. (Also rearmed on speech_start, but cover
+                # the edge case where speech_end arrives without a matching
+                # speech_start in the same chunk.)
+                self._barge_in_fired_for_current_speech = False
                 # Cancel any prior in-flight utterance — only one should run
                 # at a time. The new task will await the old one's teardown
                 # before starting, preventing interleaved ASR/LLM/TTS output.
@@ -131,6 +152,24 @@ class VoicePipeline:
                 self._current_task = asyncio.create_task(
                     self._process_utterance(speech_audio, audio_ws, prior)
                 )
+
+        # P2-2-M3: per-frame barge-in re-evaluation. speech_start fires only
+        # once with duration=0, so min_speech_ms_during_tts would never gate
+        # anything if we only checked at speech_start events. Here we check
+        # every frame: if TTS is active AND VAD is currently in speech AND
+        # we haven't already barged in for this segment, evaluate the filter.
+        if self._processing and not self._barge_in_fired_for_current_speech:
+            speech_ms = self.vad.current_speech_duration_ms()
+            # speech_ms > 0 means the VAD is currently inside a speech segment
+            # (it returns 0 outside speech).
+            if speech_ms > 0 and self._barge_in_filter.should_allow(speech_ms):
+                await audio_ws.send_json({
+                    "type": "tts_barge_in",
+                    "payload": {"reason": "vad_speech_detected"},
+                })
+                self._barge_in_fired_for_current_speech = True
+                self._barge_in_filter.on_interrupted()
+                self.interrupt()
 
     async def _process_utterance(
         self,
@@ -234,6 +273,12 @@ class VoicePipeline:
             # 0x01 = PCM16 mono 24kHz (M2 现行)；0x02 = MP3 (M1 历史兼容)。
             chunk_index = 0
             self._barge_in_filter.on_tts_start()
+            # P2-2-M3: raise VAD threshold so speaker echo doesn't retrigger
+            # speech_start. Restore in the outer finally below.
+            try:
+                self.vad.set_threshold(self._vad_threshold_during_tts)
+            except AttributeError:
+                pass  # tests may inject a stub VAD
             async with stage_timer("tts", session_id=self.session_id, chars=len(response_text)):
                 async for pcm_chunk in self.tts.synthesize_pcm_stream(response_text):
                     if self._interrupted:
@@ -282,6 +327,12 @@ class VoicePipeline:
             except Exception:
                 pass
         finally:
+            # P2-2-M3: always restore the normal VAD threshold — regardless
+            # of whether TTS finished naturally, got interrupted, or raised.
+            try:
+                self.vad.set_threshold(self._vad_threshold_normal)
+            except AttributeError:
+                pass
             self._processing = False
 
 
