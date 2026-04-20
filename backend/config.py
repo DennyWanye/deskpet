@@ -70,6 +70,24 @@ class VADConfig:
     min_silence_ms: int = 500
 
 @dataclass
+class VoiceConfig:
+    """P2-2-M3: TTS-phase barge-in overrides.
+
+    Echo suppression is a time-domain state machine (see BargeInFilter):
+      IDLE        — speech_start → immediate barge-in allowed
+      TTS_PLAYING — speech_start must sustain >= min_speech_ms_during_tts
+                    AND VAD uses the raised threshold (vad_threshold_during_tts)
+      COOLDOWN    — for tts_cooldown_ms after TTS ends, any speech_start is
+                    ignored; prevents the pet's own audio tail from retriggering
+
+    The "normal" threshold / min_speech_ms live in [vad] — this section only
+    holds the TTS-phase overrides so pipeline can swap them dynamically.
+    """
+    vad_threshold_during_tts: float = 0.65
+    min_speech_ms_during_tts: int = 400
+    tts_cooldown_ms: int = 300
+
+@dataclass
 class MemoryConfig:
     db_path: str = "./data/memory.db"
     embedding_model: str = "bge-m3"
@@ -113,6 +131,7 @@ class AppConfig:
     asr: ASRConfig = field(default_factory=ASRConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     vad: VADConfig = field(default_factory=VADConfig)
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     billing: BillingConfig = field(default_factory=BillingConfig)
 
@@ -188,6 +207,8 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         config.tts = _load_section(TTSConfig, raw["tts"])
     if "vad" in raw:
         config.vad = _load_section(VADConfig, raw["vad"])
+    if "voice" in raw:
+        config.voice = _load_section(VoiceConfig, raw["voice"])
     if "memory" in raw:
         config.memory = _load_section(MemoryConfig, raw["memory"])
     # BillingConfig always resolved — even if [billing] is absent we want a

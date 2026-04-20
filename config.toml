@@ -64,6 +64,16 @@ min_speech_ms = 250
 # 换更低的句末感知延迟（800ms 等近 1 秒才反应，太拖）。
 min_silence_ms = 500
 
+[voice]
+# P2-2-M3: TTS-phase barge-in overrides. Normal VAD threshold / min_speech_ms
+# live in [vad] above — these apply only while TTS is actively playing, so
+# speaker echo is less likely to retrigger speech_start.
+vad_threshold_during_tts = 0.65
+min_speech_ms_during_tts = 400
+# After TTS ends, ignore speech_start for this many ms — covers the tail
+# of the audio being played out the speakers.
+tts_cooldown_ms = 300
+
 [memory]
 db_path = "./data/memory.db"
 embedding_model = "bge-m3"
