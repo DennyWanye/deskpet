@@ -14,8 +14,48 @@ import secrets
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 
+import logging
+from pathlib import Path as _Path
+
 import structlog
 import uvicorn
+
+# P2-2 debug (2026-04-20): Rust supervisor drains child stdout/stderr after
+# the SHARED_SECRET handshake, so structlog's console output vanishes once
+# the frontend is driving the backend. Mirror everything into
+# logs/backend.log via the stdlib logging root so we can tail pipeline
+# events (asr_result / vad / lip_sync) without bouncing through the
+# supervisor. structlog defaults to using stdlib logging under the hood,
+# so configuring the root handler is enough.
+_log_dir = _Path(__file__).parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_log_file = _log_dir / "backend.log"
+_file_handler = logging.FileHandler(_log_file, encoding="utf-8")
+_file_handler.setFormatter(
+    logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+)
+_stream_handler = logging.StreamHandler()
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[_stream_handler, _file_handler],
+    force=True,  # override anything uvicorn may have installed earlier
+)
+
+# structlog defaults to its own PrintLogger (stdout only). Point it at
+# stdlib logging so the FileHandler above actually receives events.
+structlog.configure(
+    processors=[
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.KeyValueRenderer(
+            key_order=["event", "level", "timestamp"],
+            sort_keys=False,
+        ),
+    ],
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from pathlib import Path
 from pydantic import BaseModel, field_validator, model_validator
