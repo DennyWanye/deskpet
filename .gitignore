@@ -43,3 +43,4 @@ scripts/e2e/deskpet_window.png
 # Claude Code scheduled-task runtime files / per-agent worktrees.
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+/logs/
