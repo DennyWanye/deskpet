@@ -59,9 +59,10 @@ model_dir = "./assets/cosyvoice2"  # kept for future CosyVoice 2 upgrade
 [vad]
 threshold = 0.5
 min_speech_ms = 250
-# P2-2 hot-fix: 500→800 to stop cutting normal pauses mid-sentence into
-# 0.6–1.2s mini-clips (Whisper's worst-case for hallucination).
-min_silence_ms = 800
+# P2-2 hot-fix (2026-04-20): 回归到 500ms —— Whisper 侧删 initial_prompt
+# + no_speech_threshold=0.4 之后，短片段不再会幻觉成"谢谢大家"，可以
+# 换更低的句末感知延迟（800ms 等近 1 秒才反应，太拖）。
+min_silence_ms = 500
 
 [memory]
 db_path = "./data/memory.db"

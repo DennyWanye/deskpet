@@ -54,9 +54,13 @@ class FasterWhisperASR:
         short clips. vad_filter=True adds Whisper's own VAD as a second
         pass — Silero upstream catches speech boundaries, this filters
         out lingering noise/echo inside the clip that silero can't see.
-        initial_prompt primes the decoder toward Mandarin conversation
-        vocabulary and substantially reduces the "Thank you / Gracias /
-        Au revoir" training-data hallucinations on short/low-energy input.
+
+        P2-2 hot-fix #2 (2026-04-20): 删掉 initial_prompt —— 实测它在
+        短/弱音频上反而把 prompt 里的"请求帮助"直接当输出吐出来。
+        Whisper 训练集中文样本充分，language="zh" 已足够；prompt 的
+        副作用大于收益。同时把 no_speech_threshold 从 0.6 降到 0.4，
+        让"谢谢大家 / Thank you for watching"这类 YouTube-流训练数据
+        幻觉直接被判为无语音返回空串。
         """
         if self._model is None:
             await self.load()
@@ -70,19 +74,15 @@ class FasterWhisperASR:
             best_of=5,
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 500},
-            # 引导 decoder 偏向日常对话/提问/聊天/讲笑话 的词汇分布，
-            # 缓解"讲→赞 / 笑话→小话"这类中文同声调域混淆。
-            initial_prompt=(
-                "以下是用户与桌面 AI 助手的普通话对话。"
-                "场景：闲聊、提问、讲笑话、请求帮助。"
-            ),
             # 关闭把上一段识别结果当下一段 prompt 的机制 ——
             # 连续识别时会把早先的错误串联下去（典型"错误传染"）。
             condition_on_previous_text=False,
             # 关闭 temperature fallback，让输出稳定可复现。
             temperature=0.0,
-            # 提高"无语音"判定门槛，减少把纯噪音/底噪识别成短词的幻觉。
-            no_speech_threshold=0.6,
+            # 降低"无语音"判定门槛 —— 0.4 足够把纯噪音/低能量短片段
+            # 直接判为无语音，不再回退到训练集高频短语 ("谢谢大家" /
+            # "Thank you for watching" 之类)。
+            no_speech_threshold=0.4,
         )
 
         text = " ".join(seg.text.strip() for seg in segments)
