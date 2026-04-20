@@ -14,41 +14,48 @@ from observability.vram import detect_vram_gb, recommend_asr_device
 
 
 @pytest.mark.asyncio
-async def test_stage_timer_success_emits_stage_complete(capsys):
+async def test_stage_timer_success_emits_stage_complete(caplog):
     """Runs clean, logs stage_complete with elapsed_ms and context.
 
-    structlog's default config writes to stdout via PrintLogger, so we
-    assert on captured stdout rather than pytest's caplog.
+    P2-2-M3 (2026-04-20): main.py now configures structlog to route
+    through stdlib logging (so logs/backend.log gets populated). That
+    means the event lands in caplog, not stdout — swap capsys→caplog.
     """
-    async with stage_timer("asr", conn="c1"):
-        await asyncio.sleep(0.01)
-    captured = capsys.readouterr().out
-    assert "stage_complete" in captured
-    assert "stage=asr" in captured
-    assert "conn=c1" in captured
-    assert "elapsed_ms=" in captured
+    import logging
+    with caplog.at_level(logging.INFO):
+        async with stage_timer("asr", conn="c1"):
+            await asyncio.sleep(0.01)
+    text = caplog.text
+    assert "stage_complete" in text
+    assert "stage='asr'" in text or "stage=asr" in text
+    assert "conn='c1'" in text or "conn=c1" in text
+    assert "elapsed_ms=" in text
 
 
 @pytest.mark.asyncio
-async def test_stage_timer_raises_but_still_emits(capsys):
+async def test_stage_timer_raises_but_still_emits(caplog):
     """Exception propagates AND stage_error is logged with error field."""
-    with pytest.raises(ValueError):
-        async with stage_timer("asr"):
-            raise ValueError("boom")
-    captured = capsys.readouterr().out
-    assert "stage_error" in captured
-    assert "boom" in captured
-    assert "stage=asr" in captured
+    import logging
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(ValueError):
+            async with stage_timer("asr"):
+                raise ValueError("boom")
+    text = caplog.text
+    assert "stage_error" in text
+    assert "boom" in text
+    assert "stage='asr'" in text or "stage=asr" in text
 
 
 @pytest.mark.asyncio
-async def test_stage_timer_context_fields_emitted(capsys):
+async def test_stage_timer_context_fields_emitted(caplog):
     """Additional kwargs pass through to the log record."""
-    async with stage_timer("tool_invoke", tool_name="get_time", session="s1"):
-        pass
-    captured = capsys.readouterr().out
-    assert "tool_name=get_time" in captured
-    assert "session=s1" in captured
+    import logging
+    with caplog.at_level(logging.INFO):
+        async with stage_timer("tool_invoke", tool_name="get_time", session="s1"):
+            pass
+    text = caplog.text
+    assert "tool_name='get_time'" in text or "tool_name=get_time" in text
+    assert "session='s1'" in text or "session=s1" in text
 
 
 # --- VRAM detection ---
