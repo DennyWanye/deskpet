@@ -4,7 +4,7 @@
 > this first before touching anything. Last updated at the close of each sprint
 > or at major inflection points.
 
-**Last updated:** 2026-04-21 (P2-2-F1 ship — Whisper 短音频 pad + hotwords; 等手测回归)
+**Last updated:** 2026-04-21 (P3-S1 ship — 模型目录收拢 + config 分离; 等本地 `mv assets models` 回归)
 **Current version:** `v0.2.0` (first public beta; next `v0.2.x` will use rotated pubkey)
 **Active branch:** `master` (P2-2 + P2-2-F1 已 push 到 origin)
 **Active tag:** `v0.2.0` at commit `718d70a`; `p2-2-verified` at `f91e264`
@@ -36,7 +36,8 @@
 | 2 — Polish & distribute | **P2-1** | ✅ complete (local) | S1 ✅ OpenAI-compat provider; S2 ✅ HybridRouter; S3 ✅ API key + SettingsPanel; S6 ✅ TTFT metrics + `/metrics`; S7 ✅ Fallback E2E via MockTransport; S8 ✅ BillingLedger + BudgetHook + Asia/Shanghai rollover; **S4/S5 cut 2026-04-15** (PersonaRegistry deferred to Phase 3). All merged to local `master`; push + tag pending user call. |
 | 2 — Polish & distribute | **P2-2** | ✅ complete | M1 ✅ VAD barge-in + always-on mic (`ea75f6e`); M2 ✅ PCM 流式播放 + RMS lip-sync (`2eeacca`/`f770305`/`1d0b548`); M3 ✅ VoiceConfig + dynamic VAD threshold + per-frame barge-in re-evaluation (`c47ba9d`/`4abe1ee`/`431bcf0`/`6f7b82a`)；真机手测通过 (`f91e264`)，tag `p2-2-verified`；256/256 pytest 全绿。 |
 | 2 — Polish & distribute | **P2-2-F1** | ✅ merged, pending手测 | Whisper 短音频准确率 follow-up: [asr].hotwords 偏置 + 短音频（<3s）前后 pad 300ms 静音。267/267 pytest 全绿。需要用户真机复测"讲个笑话"等短句命中率。`scripts/perf/asr_accuracy.py` 做离线字符级 WER 对比（样本目录 .gitignore，每人录自己的）。handoff: `p2-2-f1-whisper-short-audio.md` |
-| 3 — Backend auto-launch | — | ⏳ future | Blocker follow-up: bundle Python backend |
+| 3 — Backend auto-launch | **P3-S1** | ✅ code done, 等手测 | 模型目录收拢（`backend/paths.py` 三段解析：env → `_MEIPASS` → dev）+ `ASRConfig.model_dir` / `TTSConfig.model_dir` 字段统一；`./assets/...` 老值 load-time 自动剥离 + warn；`backend/assets/` → `backend/models/`（文件系统层 dev 手动 `mv`）；`scripts/check_no_hardcoded_assets.py` CI 守门。280/280 pytest 全绿（+13 new）。handoff: `p3-s1-model-dir-config.md` |
+| 3 — Backend auto-launch | 其余 slices | ⏳ P3-S2 ~ P3-S11 | 路线图见 `2026-04-21-phase3-roadmap.md` |
 | 4 — v1.0 GA | — | ⏳ future | Once P2/P3 land |
 
 ## Completed P2-0 slices (quick index)
