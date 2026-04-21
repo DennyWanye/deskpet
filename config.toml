@@ -50,6 +50,20 @@ provider = "faster-whisper"
 model = "large-v3-turbo"
 device = "cuda"
 compute_type = "float16"
+# P2-2-F1: 热词偏置 —— 对这些常用短语的 logit 加权，减轻短音频
+# (< 3s) 上的拼音近似幻觉（典型：讲个笑话 → 一个消化）。
+# 空列表 = 不加偏置（与旧行为一致）。配合 transcribe() 里的
+# 300ms 静音 pad 使用。
+hotwords = [
+    "讲个笑话",
+    "你好",
+    "再见",
+    "谢谢",
+    "今天天气",
+    "帮我",
+    "好的",
+    "没问题",
+]
 
 [tts]
 provider = "edge-tts"
