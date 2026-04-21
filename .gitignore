@@ -13,6 +13,8 @@ crash_reports/
 logs/
 
 # Voice pipeline model weights & runtime artifacts (GB-scale, not for git)
+# P3-S1: renamed assets/ -> models/; keep old path for local devs mid-migration.
+backend/models/
 backend/assets/
 backend/temp/
 temp/
