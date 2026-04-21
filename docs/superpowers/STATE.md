@@ -4,7 +4,7 @@
 > this first before touching anything. Last updated at the close of each sprint
 > or at major inflection points.
 
-**Last updated:** 2026-04-20 (P2-2 M1+M2 shipped + M3 code/pytest/perf-script DONE; Task 15 real-device手测 pending)
+**Last updated:** 2026-04-21 (P2-2 完整交付 — M1/M2/M3 全部 shipped + 真机手测通过 + tag `p2-2-verified`)
 **Current version:** `v0.2.0` (first public beta; next `v0.2.x` will use rotated pubkey)
 **Active branch:** `master` (35 commits ahead of `origin/master` — P2-1 S3/S6/S7/S8 pending push)
 **Active tag:** `v0.2.0` at commit `718d70a`
@@ -34,7 +34,7 @@
 | 1 — MVP loop | — | ✅ complete | v0.1.0 internal milestone |
 | 2 — Polish & distribute | **P2-0** | ✅ complete | S1–S7 all shipped; v0.2.0 public; HANDOFF finalized 2026-04-15 |
 | 2 — Polish & distribute | **P2-1** | ✅ complete (local) | S1 ✅ OpenAI-compat provider; S2 ✅ HybridRouter; S3 ✅ API key + SettingsPanel; S6 ✅ TTFT metrics + `/metrics`; S7 ✅ Fallback E2E via MockTransport; S8 ✅ BillingLedger + BudgetHook + Asia/Shanghai rollover; **S4/S5 cut 2026-04-15** (PersonaRegistry deferred to Phase 3). All merged to local `master`; push + tag pending user call. |
-| 2 — Polish & distribute | **P2-2** | 🟡 code done, 真机手测 pending | M1 ✅ VAD barge-in + always-on mic (`ea75f6e`); M2 ✅ PCM 流式播放 + RMS lip-sync (`2eeacca`/`f770305`/`1d0b548`); **M3** 🟡 VoiceConfig + dynamic VAD threshold + per-frame barge-in re-evaluation 全部落地，256/256 pytest + perf script 就绪；Task 15 耳机/扬声器真机手测待跑（见 `handoffs/p2-2-m3.md` 清单） |
+| 2 — Polish & distribute | **P2-2** | ✅ complete | M1 ✅ VAD barge-in + always-on mic (`ea75f6e`); M2 ✅ PCM 流式播放 + RMS lip-sync (`2eeacca`/`f770305`/`1d0b548`); M3 ✅ VoiceConfig + dynamic VAD threshold + per-frame barge-in re-evaluation (`c47ba9d`/`4abe1ee`/`431bcf0`/`6f7b82a`)；真机手测通过 (`f91e264`)，tag `p2-2-verified`；256/256 pytest 全绿。后续 follow-up：Whisper 短音频准确率（另开 slice） |
 | 3 — Backend auto-launch | — | ⏳ future | Blocker follow-up: bundle Python backend |
 | 4 — v1.0 GA | — | ⏳ future | Once P2/P3 land |
 
