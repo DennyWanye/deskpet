@@ -223,7 +223,7 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         # so everything downstream is a bare subfolder name paths.resolve_model_dir
         # can join onto model_root(). Loud WARNING nudges users to update
         # their config.toml.
-        legacy_prefixes = ("./assets/", "assets/", "./")
+        legacy_prefixes = ("./assets/", "assets/", "./")  # p3-s1-allow-assets: legacy migration
         original = config.tts.model_dir
         if original.startswith(legacy_prefixes):
             stripped = original
