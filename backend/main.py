@@ -61,6 +61,7 @@ from pathlib import Path
 from pydantic import BaseModel, field_validator, model_validator
 
 from config import load_config
+from paths import resolve_model_dir  # P3-S1
 from context import ServiceContext
 from observability.crash_reports import install_crash_reporter
 from observability.metrics import render as render_metrics
@@ -199,7 +200,7 @@ asr = FasterWhisperASR(
     model=config.asr.model,
     device=_asr_device,
     compute_type=_asr_compute,
-    local_dir=str(Path(__file__).parent / "assets" / "faster-whisper-large-v3-turbo"),
+    local_dir=str(resolve_model_dir(config.asr.model_dir)),  # P3-S1
     hotwords=config.asr.hotwords,  # P2-2-F1: short-phrase logit bias
 )
 service_context.register("asr_engine", asr)
@@ -208,10 +209,10 @@ service_context.register("asr_engine", asr)
 # built-in edge-tts fallback on any failure (see CosyVoice2Provider.load).
 # "edge-tts" (or anything else) goes straight to the cloud voice.
 if config.tts.provider == "cosyvoice2":
-    # model_dir is relative to the backend directory by convention.
-    _cosy_dir = Path(__file__).parent / config.tts.model_dir.lstrip("./")
+    # P3-S1: model_dir is a bare subfolder name under paths.model_root();
+    # resolve_model_dir handles dev-mode + PyInstaller + env override.
     tts = CosyVoice2Provider(
-        model_dir=str(_cosy_dir),
+        model_dir=str(resolve_model_dir(config.tts.model_dir)),
         fallback_voice=config.tts.voice,
     )
 else:
