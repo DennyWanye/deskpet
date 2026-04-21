@@ -48,6 +48,10 @@ tz = "Asia/Shanghai"
 [asr]
 provider = "faster-whisper"
 model = "large-v3-turbo"
+# P3-S1: subfolder under paths.model_root() containing the bundled
+# faster-whisper checkpoints. In dev mode resolves to backend/models/<this>;
+# under PyInstaller it resolves to <_MEIPASS>/models/<this>.
+model_dir = "faster-whisper-large-v3-turbo"
 device = "cuda"
 compute_type = "float16"
 # P2-2-F1: 热词偏置 —— 对这些常用短语的 logit 加权，减轻短音频
@@ -68,7 +72,7 @@ hotwords = [
 [tts]
 provider = "edge-tts"
 voice = "zh-CN-XiaoyiNeural"
-model_dir = "./assets/cosyvoice2"  # kept for future CosyVoice 2 upgrade
+model_dir = "cosyvoice2"  # P3-S1: subfolder under paths.model_root() (backend/models/ in dev, sys._MEIPASS/models/ frozen)
 
 [vad]
 threshold = 0.5
