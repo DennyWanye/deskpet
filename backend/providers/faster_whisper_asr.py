@@ -8,6 +8,18 @@ from faster_whisper import WhisperModel
 logger = structlog.get_logger()
 
 
+# P2-2-F1: short-audio padding constants
+_SAMPLE_RATE = 16000
+_PAD_MS = 300
+_PAD_SAMPLES = int(_SAMPLE_RATE * _PAD_MS / 1000)  # 4800 samples
+# Audio shorter than this (in samples) gets front+back silence padding.
+# Rationale: Whisper's encoder uses a fixed 30s mel-spectrogram window;
+# very short clips leave the mel mostly empty, which skews logits toward
+# high-frequency training-set words. 300ms padding gives ~30 mel frames
+# of "breathing room" without materially changing ASR latency.
+_PAD_THRESHOLD_SAMPLES = _SAMPLE_RATE * 3  # 3s
+
+
 class FasterWhisperASR:
     """
     Implements ASRProvider protocol.
@@ -21,11 +33,15 @@ class FasterWhisperASR:
         device: str = "cuda",
         compute_type: str = "float16",
         local_dir: str | None = None,
+        hotwords: list[str] | None = None,
     ):
         self.model_name = model
         self.device = device
         self.compute_type = compute_type
         self.local_dir = local_dir
+        # P2-2-F1: logit-bias hotwords. Space-joined at transcribe() time.
+        # Empty list → None (omit kwarg to avoid tokenizer edge cases).
+        self._hotwords: list[str] = list(hotwords) if hotwords else []
         self._model: WhisperModel | None = None
 
     async def load(self) -> None:
@@ -67,6 +83,17 @@ class FasterWhisperASR:
 
         audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
+        # P2-2-F1: short-audio padding. Only pad clips strictly shorter
+        # than 3s (< threshold, not <=) so standard utterances don't pay
+        # the cost. Empty audio skips padding to avoid spurious "silence
+        # only" transcripts.
+        if 0 < len(audio_np) < _PAD_THRESHOLD_SAMPLES:
+            pad = np.zeros(_PAD_SAMPLES, dtype=np.float32)
+            audio_np = np.concatenate([pad, audio_np, pad])
+
+        # P2-2-F1: hotwords bias — space-joined string; None when empty.
+        hotwords_arg = " ".join(self._hotwords) if self._hotwords else None
+
         segments, info = self._model.transcribe(
             audio_np,
             language="zh",
@@ -83,6 +110,7 @@ class FasterWhisperASR:
             # 直接判为无语音，不再回退到训练集高频短语 ("谢谢大家" /
             # "Thank you for watching" 之类)。
             no_speech_threshold=0.4,
+            hotwords=hotwords_arg,
         )
 
         text = " ".join(seg.text.strip() for seg in segments)

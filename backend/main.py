@@ -200,6 +200,7 @@ asr = FasterWhisperASR(
     device=_asr_device,
     compute_type=_asr_compute,
     local_dir=str(Path(__file__).parent / "assets" / "faster-whisper-large-v3-turbo"),
+    hotwords=config.asr.hotwords,  # P2-2-F1: short-phrase logit bias
 )
 service_context.register("asr_engine", asr)
 
