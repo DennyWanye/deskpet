@@ -62,12 +62,20 @@ class ASRConfig:
     # "一个消化" by nudging beam search away from pinyin-adjacent high-
     # frequency words.
     hotwords: list[str] = field(default_factory=list)
+    # P3-S1: subfolder under paths.model_root() containing the bundled
+    # faster-whisper model. Empty → provider falls back to HuggingFace
+    # cache / model name resolution.
+    model_dir: str = "faster-whisper-large-v3-turbo"
 
 @dataclass
 class TTSConfig:
     provider: str = "edge-tts"
     voice: str = "zh-CN-XiaoyiNeural"
-    model_dir: str = "./assets/cosyvoice2"
+    # P3-S1: bare subfolder name under paths.model_root(). Was
+    # "./assets/cosyvoice2" (relative-to-CWD, fragile under PyInstaller).
+    # load_config() still accepts the legacy "./assets/..." form and
+    # auto-strips it with a WARNING.
+    model_dir: str = "cosyvoice2"
 
 @dataclass
 class VADConfig:
@@ -211,6 +219,27 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         config.asr = _load_section(ASRConfig, raw["asr"])
     if "tts" in raw:
         config.tts = _load_section(TTSConfig, raw["tts"])
+        # P3-S1: strip legacy './assets/...' / 'assets/...' / './' prefixes
+        # so everything downstream is a bare subfolder name paths.resolve_model_dir
+        # can join onto model_root(). Loud WARNING nudges users to update
+        # their config.toml.
+        legacy_prefixes = ("./assets/", "assets/", "./")
+        original = config.tts.model_dir
+        if original.startswith(legacy_prefixes):
+            stripped = original
+            for prefix in legacy_prefixes:
+                if stripped.startswith(prefix):
+                    stripped = stripped[len(prefix):]
+                    break
+            # Collapse any accidental nested './' remainders.
+            stripped = stripped.lstrip("./")
+            logger.warning(
+                "config [tts].model_dir uses legacy relative path %r; "
+                "normalizing to bare subfolder %r (P3-S1). Please update "
+                "config.toml to avoid this warning.",
+                original, stripped,
+            )
+            config.tts.model_dir = stripped
     if "vad" in raw:
         config.vad = _load_section(VADConfig, raw["vad"])
     if "voice" in raw:
