@@ -56,6 +56,12 @@ class ASRConfig:
     model: str = "large-v3-turbo"
     device: str = "cuda"
     compute_type: str = "float16"
+    # P2-2-F1: hotwords list for faster-whisper logit bias. Joined with
+    # spaces at provider init. Empty list = no bias (current behaviour).
+    # Keeps short-audio phrases like "讲个笑话" from being misheard as
+    # "一个消化" by nudging beam search away from pinyin-adjacent high-
+    # frequency words.
+    hotwords: list[str] = field(default_factory=list)
 
 @dataclass
 class TTSConfig:
