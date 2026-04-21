@@ -3,7 +3,7 @@
 **Date**: 2026-04-21
 **Scope**: Phase 2 结束后的收官 sprint 组，目标 "用户下载 installer 双击就能用"。
 **Precedes**: `v0.5.0-phase3-rc` 之后的所有版本，直到 `v1.0.0-ga`。
-**Status**: DRAFT（待用户签字）
+**Status**: **SIGNED-OFF**（2026-04-21 用户签字）
 
 **Signed-off decisions**（2026-04-21）：
 - ✅ Scope = **0（Backend auto-launch）+ 2（模型塞进 installer, A 方案）**
@@ -260,4 +260,4 @@ Phase 3 只有一个 sprint，按依赖顺序拆 slice。估时基于 subagent-d
 2. 启动 **P3-S1 模型目录收拢 + config 分离**（第一个 slice，是所有后续 slice 的前提）
 3. 按 §6 流程：`sp-writing-plans` 产出 `docs/superpowers/plans/2026-04-XX-p3s1-model-dir-config.md` → worktree 隔离 → subagent 执行
 
-**状态：** DRAFT（待用户签字）
+**状态：** **SIGNED-OFF（2026-04-21）** —— 开始 P3-S1。
