@@ -189,6 +189,23 @@ vad = SileroVAD(
 )
 service_context.register("vad_engine", vad)
 
+# P3-S5 hotfix: the frozen PyInstaller bundle strips torch's CUDA DLLs
+# (cublas/cufft/cusparse/... ~2.9 GB) to meet the size budget. ctranslate2's
+# faster-whisper GPU path still dlopen's cublas64_12.dll at first transcribe,
+# so in frozen mode we must force CPU inference regardless of config. Dev
+# mode (running main.py directly) keeps the user's cuda setting.
+if getattr(sys, "frozen", False) and config.asr.device == "cuda":
+    logger.warning(
+        "asr_device_frozen_override",
+        from_device=config.asr.device,
+        from_compute=config.asr.compute_type,
+        to_device="cpu",
+        to_compute="int8",
+        reason="frozen bundle strips CUDA DLLs; ctranslate2 GPU path would fail",
+    )
+    config.asr.device = "cpu"
+    config.asr.compute_type = "int8"
+
 # S4: device="auto" in config.toml → pick cuda/cpu based on detected VRAM.
 # Explicit "cuda" or "cpu" is respected verbatim (user override).
 if config.asr.device == "auto":
