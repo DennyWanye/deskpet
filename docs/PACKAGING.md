@@ -1,7 +1,7 @@
 # Packaging DeskPet (Phase 3)
 
 **Status**: skeleton — filled out slice-by-slice as Phase 3 lands.
-**Last updated**: 2026-04-22 (P3-S2 CUDA precheck)
+**Last updated**: 2026-04-22 (P3-S4 PyInstaller freeze)
 
 ---
 
@@ -72,27 +72,124 @@ Provisioning: developers download model weights once (script TBD in P3-S6).
 `.gitignore` currently allows both `backend/assets/` (legacy) and
 `backend/models/` (canonical) so a mid-migration clone keeps working.
 
-## 4. PyInstaller mode (placeholder — P3-S4)
+## 4. PyInstaller 冻结产物 (P3-S4)
+
+### 构建产物布局
+
+```
+backend/dist/deskpet-backend/
+├── deskpet-backend.exe         (入口，console 模式，stdout 首行 SHARED_SECRET=)
+└── _internal/                  (PyInstaller onedir)
+    ├── python311.dll, pythonXX.pyd, ...
+    ├── torch/lib/              (CPU-only，无 CUDA 大 DLL — 见下)
+    ├── ctranslate2/            (自带 cudnn64_9.dll —— faster-whisper GPU 路径)
+    ├── silero_vad/data/        (JIT 模型，包内 data)
+    ├── faster_whisper/         (tokenizer.json 等 data)
+    ├── memory/migrations/*.sql
+    ├── tzdata/                 (IANA tz db，Windows 用)
+    └── … 其余依赖 …
+```
+
+P3-S5 会把上面这个目录挂进 Tauri 的 `resources`，最终安装后变成：
 
 ```
 DeskPet/
-├── deskpet.exe                (Tauri launcher)
-├── resources/
-│   ├── backend/
-│   │   ├── deskpet-backend.exe
-│   │   ├── _internal/          (PyInstaller onedir)
-│   │   └── models/             (pre-bundled, datas= in spec)
-│   │       ├── faster-whisper-large-v3-turbo/
-│   │       └── cosyvoice2/
-│   └── frontend/
-└── config.toml
+├── deskpet.exe                 (Tauri launcher)
+├── resources/backend/
+│   ├── deskpet-backend.exe     ← supervisor 认的就是这条路径
+│   └── _internal/
+└── resources/models/           (P3-S6 打包)
 ```
 
-At runtime the backend process has `sys._MEIPASS` set to
-`...\resources\backend\_internal`, so `resolve_model_dir` returns
-`...\resources\backend\_internal\models\<subdir>`.
+### 构建步骤
 
-Spec file details land in P3-S4.
+```powershell
+# 前置：backend venv 必须是 torch CPU-only wheel
+G:\projects\deskpet\backend\.venv\Scripts\python.exe -m pip install `
+    --index-url https://download.pytorch.org/whl/cpu `
+    torch==2.6.0 torchaudio==2.6.0
+
+# 打包 + 自检
+powershell scripts\build_backend.ps1
+python scripts\smoke_frozen_backend.py
+```
+
+`build_backend.ps1` 开头会校验 torch 版本，不是 `+cpu` 直接 fail
+fast 并给出修复命令。
+
+### Spec 设计要点
+
+**hidden imports**（`collect_submodules` + 手写补丁）：
+
+- `faster_whisper`, `ctranslate2`, `silero_vad`：自动 subpackage 全收
+- `tzdata`（zoneinfo Windows 依赖）、`prometheus_client`、`aiosqlite`
+- `uvicorn.logging` / `uvicorn.loops.auto` / `uvicorn.protocols.http.auto` /
+  `.h11_impl` / `.websockets.auto` / `.websockets_impl` / `uvicorn.lifespan.on`
+  （uvicorn 这些是运行期按字符串 `importlib` 出来的，静态分析抓不到）
+- `edge_tts`
+- **mypyc 伴生模块**：`tomli` 用 mypyc 编译，同级有个 hash 命名的
+  `<hash>__mypyc.cp311-win_amd64.pyd`，spec 里 `glob.glob` 自动发现
+  所有 `*__mypyc.*.pyd` 加进 `hiddenimports`——硬编码 hash 会在 wheel
+  重建时失效。
+
+**data files**：
+
+- `collect_data_files("silero_vad")` — JIT 模型
+- `collect_data_files("faster_whisper")` — tokenizer
+- `collect_data_files("tzdata")` — IANA tz db
+- `collect_data_files("ctranslate2")` — 内置 config
+- `("memory/migrations", "memory/migrations")` — 我们自己的 SQL 迁移
+
+**excludes**（保守）：
+
+```
+tkinter, matplotlib, IPython, notebook, jupyter, pytest, _pytest
+```
+
+**bootloader 选项**：
+
+- `console=True` — 关键，因为 supervisor 要从 stdout 读 `SHARED_SECRET=`
+- `upx=False` — UPX 会破坏 CUDA DLL 的签名校验
+- `exclude_binaries=True` + `COLLECT` — 走 onedir 而不是 onefile，
+  启动快（onefile 每次冷启要解压 ~600 MB 到 %TEMP%）
+
+### CUDA DLL 过滤器（体积救命）
+
+没过滤版 3.9 GB，过滤后 610 MB。砍掉的都是我们不用的 CUDA stack：
+
+```python
+_CUDA_DLL_PREFIXES = (
+    "torch_cuda", "cudnn", "cublas", "cufft", "cusparse", "cusolver",
+    "curand", "nvrtc", "nvjitlink", "cupti", "nvtoolsext",
+    "c10_cuda", "caffe2_nvrtc", "cudart",
+)
+a.binaries = [b for b in a.binaries if not _is_torch_cuda_bloat(b)]
+```
+
+**为什么安全**：torch 在进程里只被 `observability/vram.py::detect_vram_gb`
+调用一次，拿 `torch.cuda.is_available()` 的布尔值。该函数全程
+try/except，失败返回 0.0（→ tier 降级到 "minimal" CPU 路径）。
+faster-whisper 走 ctranslate2，那一套的 CUDA DLL 是 ctranslate2
+自带的（`_internal/ctranslate2/cudnn64_9.dll`），不依赖 torch。
+
+**tradeoff**：冻结 exe 内部 auto-tier 永远拿不到 GPU 档位
+（`minimal`），要跑 GPU ASR 得在 `config.toml` 里显式写
+`asr.device = "cuda"`，让 ctranslate2 自己找系统 CUDA。
+
+### 体积 & 启动时间基线
+
+- **bundle：** 610 MB（P3-G2 预算 3.5 GB **含** 模型；models ~900 MB
+  在 P3-S6 会挂进来，届时总量 ~1.5 GB，仍在预算内）
+- **冷启动（含全模型 preload）：** 5.2 s on NVMe SSD
+
+### 已知 runtime 假设
+
+- `DESKPET_MODEL_ROOT` 环境变量必须指向包含 `faster-whisper-large-v3-turbo/`
+  和 `cosyvoice2/` 的目录。P3-S6 之前手动设；P3-S6 之后由 launcher
+  自动指向 bundle 里的 `resources/models/`。
+- 进程要能在自己 CWD 下创建 `crash_reports/` 和 `data/billing.db`。
+  打包后 exe 的 CWD = `deskpet-backend.exe` 所在目录（Rust supervisor
+  spawn 时也这么设的）。
 
 ## 5. 硬件前置检查 (P3-S2)
 
