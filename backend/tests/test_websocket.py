@@ -4,6 +4,14 @@ from fastapi.testclient import TestClient
 from main import app, SHARED_SECRET
 
 
+def _drain_startup_status(ws) -> None:
+    """P3-S2: /ws/control sends `startup_status` as its first frame.
+    Tests that don't care about that contract drain it before asserting
+    on the next frame they actually exercise."""
+    msg = ws.receive_json()
+    assert msg["type"] == "startup_status"
+
+
 def test_health_endpoint():
     client = TestClient(app)
     resp = client.get("/health")
@@ -24,6 +32,7 @@ def test_control_ws_accepts_with_secret():
     with client.websocket_connect(
         "/ws/control", headers={"X-Shared-Secret": SHARED_SECRET}
     ) as ws:
+        _drain_startup_status(ws)
         ws.send_json({"type": "ping"})
         data = ws.receive_json()
         assert data["type"] == "pong"
@@ -34,6 +43,7 @@ def test_control_ws_accepts_with_secret_query_param():
     with client.websocket_connect(
         f"/ws/control?secret={SHARED_SECRET}"
     ) as ws:
+        _drain_startup_status(ws)
         ws.send_json({"type": "ping"})
         data = ws.receive_json()
         assert data["type"] == "pong"
@@ -44,6 +54,7 @@ def test_control_ws_echo_chat():
     with client.websocket_connect(
         "/ws/control", headers={"X-Shared-Secret": SHARED_SECRET}
     ) as ws:
+        _drain_startup_status(ws)
         ws.send_json({"type": "chat", "payload": {"text": "hello"}})
         data = ws.receive_json()
         assert data["type"] == "chat_response"
