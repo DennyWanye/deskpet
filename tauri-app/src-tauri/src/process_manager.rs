@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{command, AppHandle, Emitter, Manager, State};
 
+use crate::backend_launch::{self, BackendLaunch};
+
 /// How many times the supervisor will respawn a crashed backend before it
 /// gives up. Hitting this likely means a config bug, not a transient fault.
 const MAX_RESTARTS_PER_WINDOW: u32 = 5;
@@ -22,11 +24,11 @@ const RESTART_COOLDOWN_MS: u64 = 2_000;
 pub struct BackendProcess {
     child: Mutex<Option<Child>>,
     shared_secret: Mutex<Option<String>>,
-    /// Persisted so the supervisor can respawn with the same args the
-    /// user originally provided. Empty strings mean "no supervisor task
-    /// installed yet".
-    python_path: Mutex<Option<String>>,
-    backend_dir: Mutex<Option<String>>,
+    /// P3-S3: single source of truth for *how* to spawn the backend,
+    /// replacing the old `python_path` + `backend_dir` string pair.
+    /// Populated by `start_backend` from `backend_launch::resolve(app)`;
+    /// the supervisor reads it back to respawn with identical args.
+    launch: Mutex<Option<BackendLaunch>>,
     /// Set true by stop_backend / window-destroy. The supervisor reads
     /// this to distinguish "user asked to stop" from "process crashed".
     shutdown_requested: Arc<AtomicBool>,
@@ -40,8 +42,7 @@ impl BackendProcess {
         Self {
             child: Mutex::new(None),
             shared_secret: Mutex::new(None),
-            python_path: Mutex::new(None),
-            backend_dir: Mutex::new(None),
+            launch: Mutex::new(None),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             restart_count: Arc::new(AtomicU32::new(0)),
         }
@@ -74,14 +75,24 @@ impl BackendProcess {
 /// `DESKPET_CLOUD_API_KEY` so `backend/main.py::_resolve_cloud_api_key`
 /// can find it. When nothing is saved the backend logs "cloud disabled"
 /// and carries on local-only — that's the documented first-launch flow.
-fn spawn_once(
-    python_path: &str,
-    backend_dir: &str,
-) -> Result<(Child, String), String> {
-    let mut cmd = Command::new(python_path);
-    cmd.arg("main.py")
-        .current_dir(backend_dir)
-        .stdout(Stdio::piped())
+fn spawn_once(launch: &BackendLaunch) -> Result<(Child, String), String> {
+    let mut cmd = match launch {
+        BackendLaunch::Bundled { exe } => {
+            let mut c = Command::new(exe);
+            // cwd = exe's directory so the frozen PyInstaller onedir can
+            // find its bundled _internal/ next to it.
+            if let Some(parent) = exe.parent() {
+                c.current_dir(parent);
+            }
+            c
+        }
+        BackendLaunch::Dev { python, backend_dir } => {
+            let mut c = Command::new(python);
+            c.arg("main.py").current_dir(backend_dir);
+            c
+        }
+    };
+    cmd.stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         // Windows 下 structlog 写入 piped stdout 时如果系统默认非 UTF-8
         // （GBK/CP936）会对中文日志抛 OSError[Errno 22]，backend 立刻崩在
@@ -172,9 +183,13 @@ fn spawn_once(
 pub async fn start_backend(
     app: AppHandle,
     state: State<'_, BackendProcess>,
-    python_path: String,
-    backend_dir: String,
 ) -> Result<String, String> {
+    // P3-S3: Rust now resolves the backend path itself. Frontend no
+    // longer passes python_path / backend_dir — those hardcoded values
+    // were dev-box-only. See `backend_launch::resolve` for priority.
+    let launch = backend_launch::resolve(&app)
+        .map_err(|e| backend_launch::format_user_message(&e))?;
+
     // 幂等：以 shared_secret 作为"已有一个活着或正在重启中的 backend"的
     // 真实判据，而不是 state.child。原因：install_supervisor 在调 wait()
     // 之前会把 Child 从 Mutex 里 take() 出来持有在线程栈上，所以 backend
@@ -191,21 +206,19 @@ pub async fn start_backend(
         }
     }
 
-    // Clone the args up-front so the supervisor owns its own copies.
-    let py = python_path.clone();
-    let dir = backend_dir.clone();
+    // Clone up-front so the supervisor owns its own copy.
+    let launch_for_spawn = launch.clone();
 
     // Initial spawn runs on a blocking thread — the BufReader loop that
     // waits for SHARED_SECRET is blocking I/O.
     let (child, secret) = tauri::async_runtime::spawn_blocking(move || {
-        spawn_once(&py, &dir)
+        spawn_once(&launch_for_spawn)
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))??;
 
-    // Record args so the supervisor can respawn.
-    *state.python_path.lock().map_err(|e| e.to_string())? = Some(python_path.clone());
-    *state.backend_dir.lock().map_err(|e| e.to_string())? = Some(backend_dir.clone());
+    // Record launch so the supervisor can respawn.
+    *state.launch.lock().map_err(|e| e.to_string())? = Some(launch.clone());
     *state.shared_secret.lock().map_err(|e| e.to_string())? = Some(secret.clone());
     *state.child.lock().map_err(|e| e.to_string())? = Some(child);
     state.shutdown_requested.store(false, Ordering::SeqCst);
@@ -213,7 +226,7 @@ pub async fn start_backend(
 
     // Install the supervisor. It keeps its own Arc handles to the shared
     // atomics and the BackendProcess state (via AppHandle::state()).
-    install_supervisor(app, python_path, backend_dir);
+    install_supervisor(app, launch);
 
     Ok(secret)
 }
@@ -221,7 +234,7 @@ pub async fn start_backend(
 /// Background loop: wait for the current child to exit; if the user
 /// didn't ask for a shutdown, respawn. Emits lifecycle events so the
 /// frontend can re-fetch the secret and reconnect its WebSockets.
-fn install_supervisor(app: AppHandle, python_path: String, backend_dir: String) {
+fn install_supervisor(app: AppHandle, launch: BackendLaunch) {
     std::thread::spawn(move || {
         loop {
             // Wait for the current child to exit. We have to release the
@@ -273,7 +286,7 @@ fn install_supervisor(app: AppHandle, python_path: String, backend_dir: String) 
 
             // Respawn.
             let started = Instant::now();
-            let spawn_result = spawn_once(&python_path, &backend_dir);
+            let spawn_result = spawn_once(&launch);
             match spawn_result {
                 Ok((new_child, new_secret)) => {
                     if let Ok(mut guard) = state.shared_secret.lock() {

@@ -66,17 +66,16 @@ function App() {
   // 场景下重复触发只会返回现任 secret，不会抢端口 spawn 第二条 Python。
   // 正是因为幂等，前端这里无需 useRef 守卫也无需 "先查后启" 两段式
   // 逻辑，直接 invoke 即可。
-  // TODO(bootstrap): promote these paths out of App.tsx — read from a
-  // tauri.conf entry or auto-detect relative to backend_dir.
+  //
+  // P3-S3: backend path 不再由前端传 —— Rust 侧 backend_launch::resolve
+  // 按 bundle → env → dev-fallback 优先级自己定位，打包版走 Bundled
+  // exe，dev 走 DESKPET_DEV_ROOT。前端 invoke 无参。
   useEffect(() => {
     (async () => {
       const core = await import("@tauri-apps/api/core").catch(() => null);
       if (!core) return;
       try {
-        const secret = await core.invoke<string>("start_backend", {
-          pythonPath: "G:/projects/deskpet/backend/.venv/Scripts/python.exe",
-          backendDir: "G:/projects/deskpet/backend",
-        });
+        const secret = await core.invoke<string>("start_backend");
         if (secret) {
           setSecret(secret);
           return;
