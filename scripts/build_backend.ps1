@@ -25,6 +25,20 @@ $distDir = Join-Path $backendDir "dist"
 $buildDir = Join-Path $backendDir "build"
 Remove-Item -Recurse -Force $distDir, $buildDir -ErrorAction SilentlyContinue
 
+# P3-S4: fail fast if someone has torch+cuXXX installed — that drags in
+# ~3.5 GB of CUDA DLLs that blow past P3-G2's 3.5 GB total-size budget.
+# torch CPU-only is all we need; ctranslate2 bundles its own CUDA libs.
+$torchVer = & $pyExe -c "import torch; print(torch.__version__)" 2>$null
+if ($torchVer -and $torchVer -notmatch "\+cpu$") {
+    Write-Error @"
+Detected torch '$torchVer' — backend bundling requires the CPU-only wheel.
+Run:
+    $pyExe -m pip uninstall -y torch torchaudio
+    $pyExe -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0 torchaudio==2.6.0
+Then re-run this script.
+"@
+}
+
 Push-Location $backendDir
 try {
     Write-Host "[build_backend] running PyInstaller..."

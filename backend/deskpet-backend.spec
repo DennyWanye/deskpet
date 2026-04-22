@@ -14,7 +14,24 @@
 # ruff: noqa — PyInstaller injects builtins like `Analysis`, `PYZ`, `EXE`,
 # `COLLECT`, `block_cipher` into this file's scope.
 
+import glob
+import os
+import sysconfig
+
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+# --- 0. mypyc runtime shims ---------------------------------------------
+# `tomli` (and a few other deps) are compiled with mypyc. Mypyc emits a
+# companion top-level `<hash>__mypyc.cp311-win_amd64.pyd` module alongside
+# the package; both must be importable or `import tomli` raises
+# `ModuleNotFoundError: No module named '<hash>__mypyc'` at startup.
+# Auto-discover them so the hash is never hardcoded (it changes when the
+# upstream wheel is rebuilt).
+_site_packages = sysconfig.get_paths()["purelib"]
+_mypyc_modules = [
+    os.path.basename(p).split(".", 1)[0]
+    for p in glob.glob(os.path.join(_site_packages, "*__mypyc.*.pyd"))
+]
 
 # --- 1. Hidden imports --------------------------------------------------
 # Providers that dlopen / importlib their implementations at runtime
@@ -40,6 +57,7 @@ hiddenimports += [
     # edge-tts uses aiohttp via optional import chain
     "edge_tts",
 ]
+hiddenimports += _mypyc_modules
 
 # --- 2. Data files ------------------------------------------------------
 # (source, dest-inside-bundle) tuples. Use collect_data_files() for
@@ -76,6 +94,38 @@ a = Analysis(
     ],
     noarchive=False,
 )
+
+# --- 3b. Defensive torch CUDA DLL strip ---------------------------------
+# REQUIRED SETUP: the backend venv MUST install torch's CPU-only wheel
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
+# torch is used ONLY for VRAM detection (observability/vram.py), which
+# wraps every call in try/except and falls back to vram_gb = 0.0 (→ CPU
+# tier) when CUDA is unavailable. faster-whisper's GPU path uses
+# ctranslate2's independent CUDA DLLs under _internal/ctranslate2/.
+# If someone accidentally installs torch+cu124 (3.5 GB of CUDA DLLs under
+# torch/lib/), the filter below strips the biggest offenders at build
+# time so the bundle stays under P3-G2's 3.5 GB budget. On a CPU-only
+# install this filter is a no-op.
+_CUDA_DLL_PREFIXES = (
+    "torch_cuda", "cudnn", "cublas", "cufft", "cusparse", "cusolver",
+    "curand", "nvrtc", "nvjitlink", "cupti", "nvtoolsext",
+    # torch/__init__.py's `_load_dll_libraries` globs every *.dll in
+    # torch/lib/ and raises if any fails to load. These three depend on
+    # the big CUDA stack; dropping them lets torch import as CPU-only
+    # when CUDA deps are missing.
+    "c10_cuda", "caffe2_nvrtc", "cudart",
+)
+
+
+def _is_torch_cuda_bloat(entry):
+    dest = entry[0].replace("\\", "/").lower()
+    if not dest.startswith("torch/lib/"):
+        return False
+    name = dest.rsplit("/", 1)[-1]
+    return any(name.startswith(p) for p in _CUDA_DLL_PREFIXES)
+
+
+a.binaries = [b for b in a.binaries if not _is_torch_cuda_bloat(b)]
 
 pyz = PYZ(a.pure, a.zipped_data)
 
