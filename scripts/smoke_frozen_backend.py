@@ -4,13 +4,14 @@ Spawns `backend/dist/deskpet-backend/deskpet-backend.exe`, captures
 its SHARED_SECRET line from stdout, hits /health, and exits 0 iff
 `status == "ok"`.
 
-The frozen exe doesn't yet know where to find models (P3-S6 is what
-bundles them). We point it at the dev repo's `backend/models/` via
-`DESKPET_MODEL_ROOT` so this test exercises the real faster-whisper
-/ silero-vad / edge-tts load path — the whole point is to catch
-missing hidden imports or bad `datas` entries.
+P3-S6+S7 (2026-04-22): no more env injection. The frozen backend
+now resolves models from ``%LocalAppData%\\deskpet\\models\\`` and
+config from ``%AppData%\\deskpet\\config.toml``. Run
+``scripts/setup_user_data.ps1`` once to provision those dirs (junctions
+the repo's backend/models for dev convenience).
 
 Usage (from repo root):
+    powershell scripts/setup_user_data.ps1   # once
     python scripts/smoke_frozen_backend.py
 Exit codes:
     0 — SHARED_SECRET printed + /health == "ok"
@@ -29,7 +30,10 @@ import urllib.request
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXE = REPO_ROOT / "backend" / "dist" / "deskpet-backend" / "deskpet-backend.exe"
-MODEL_ROOT = REPO_ROOT / "backend" / "models"
+# P3-S6+S7: expected provisioned path (LocalAppData). Only used for the
+# precondition check; backend itself doesn't need this env var anymore.
+USER_MODELS = pathlib.Path(os.environ["LOCALAPPDATA"]) / "deskpet" / "models" \
+    if os.name == "nt" else pathlib.Path.home() / ".local/share/deskpet/models"
 
 BOOT_TIMEOUT_SEC = 120   # fat stack (torch + cuda init) — generous
 HEALTH_TIMEOUT_SEC = 10
@@ -43,15 +47,15 @@ def fatal(msg: str) -> None:
 def main() -> None:
     if not EXE.exists():
         fatal(f"{EXE} not built — run `powershell scripts/build_backend.ps1` first")
-    if not MODEL_ROOT.exists():
+    if not USER_MODELS.exists():
         fatal(
-            f"{MODEL_ROOT} not found. P3-S6 will bundle models; until then "
-            "the dev repo's backend/models/ must exist for the smoke test."
+            f"{USER_MODELS} missing — run `powershell scripts/setup_user_data.ps1` first "
+            "to provision the user models dir (or junction in the repo models)."
         )
 
-    env = {**os.environ, "DESKPET_MODEL_ROOT": str(MODEL_ROOT)}
+    env = {**os.environ}
     print(f"[smoke] spawning {EXE}")
-    print(f"[smoke] DESKPET_MODEL_ROOT={MODEL_ROOT}")
+    print(f"[smoke] expected model_root={USER_MODELS}")
 
     t0 = time.time()
     proc = subprocess.Popen(

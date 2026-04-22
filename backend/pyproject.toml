@@ -24,6 +24,10 @@ dependencies = [
     # data. Previously we loaded via torch.hub which requires network +
     # ~/.cache/torch/hub — both broken inside a frozen PyInstaller exe.
     "silero-vad>=5.1.2,<6",
+    # P3-S6+S7: user data / cache dir resolution (%AppData%\deskpet\,
+    # %LocalAppData%\deskpet\). platformdirs is pure Python (~20KB),
+    # PyInstaller-friendly, and handles Windows/macOS/Linux uniformly.
+    "platformdirs>=4.0",
 ]
 
 [project.optional-dependencies]

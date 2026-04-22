@@ -1,7 +1,7 @@
 # Packaging DeskPet (Phase 3)
 
 **Status**: skeleton — filled out slice-by-slice as Phase 3 lands.
-**Last updated**: 2026-04-22 (P3-S5 Tauri bundle 接线)
+**Last updated**: 2026-04-22 (P3-S6+S7 user data dirs + 模型外置)
 
 ---
 
@@ -302,6 +302,80 @@ resources，届时优先级 1 自动生效，后续 fallback 永远走不到。
 
 错误弹窗复用 P3-S2 的 `tauri-plugin-dialog` 通道（中文文案来自
 `backend_launch::format_user_message`）。
+
+## 6b. 用户数据目录 (P3-S6 + P3-S7)
+
+P3-S5 之后实测 `backend/models/` 达 **9 GB**（whisper 2.7G + cosyvoice2 5.3G），
+超过 P3-G2 的 3.5 GB installer 预算 2.5 倍。方案调整：**模型外置，首启由
+setup 脚本 junction**，installer 本体保持在 ~1.5 GB。
+
+### 目录约定
+
+| 路径 | 类型 | 内容 | 卸载 |
+|---|---|---|---|
+| `%AppData%\deskpet\config.toml` | roaming | 用户配置（bundle 默认的可编辑副本） | 保留 |
+| `%AppData%\deskpet\data\memory.db` | roaming | 对话记忆 | 保留 |
+| `%AppData%\deskpet\data\billing.db` | roaming | BillingLedger | 保留 |
+| `%AppData%\deskpet\logs\` | roaming | 日志 | 保留 |
+| `%LocalAppData%\deskpet\models\` | local | faster-whisper + cosyvoice2 | 可选清理 |
+| `%LocalAppData%\deskpet\Cache\` | local | HF cache / scratch | 随时可删 |
+
+### 解析优先级
+
+`paths.model_root()`：
+  1. `DESKPET_MODEL_ROOT` 环境变量
+  2. `%LocalAppData%\deskpet\models\`（存在即使用）
+  3. `<_MEIPASS>/models`（冻结 bundle 内置，P3-S6 后通常为空）
+  4. `backend/models/`（dev fallback）
+
+`config.resolve_config_path()`：
+  1. `DESKPET_CONFIG` 环境变量
+  2. `%AppData%\deskpet\config.toml`（不存在时从 bundle 首次拷贝）
+  3. bundle 默认（frozen exe dir / dev repo root）
+
+`memory.db_path` / `billing.db_path`：
+  - `config.toml` 里 `db_path = ""` 或缺省 → `%AppData%\deskpet\data\*.db`
+  - 相对路径 → anchor 到 `%AppData%\deskpet\`
+  - 绝对路径 → 原样使用（高级用户）
+  - billing.db 永远和 memory.db 同目录
+
+### 首启流程
+
+```
+  用户双击 installer → 安装到 Program Files\DeskPet\
+  → 用户启动 deskpet.exe
+  → Tauri spawn deskpet-backend.exe
+  → backend.main: paths.ensure_user_dirs()            # mkdir -p
+                  config.resolve_config_path()         # 触发 seed_user_config_if_missing
+                  → 若 %AppData%\deskpet\config.toml 不存在，
+                    从 <exe_dir>\config.toml 拷贝一份
+  → backend 读 %AppData% 副本，memory/billing 写 %AppData%\deskpet\data\
+```
+
+### Dev / E2E：`scripts/setup_user_data.ps1`
+
+幂等脚本，专为开发者准备：
+
+```powershell
+powershell scripts/setup_user_data.ps1
+```
+
+做三件事：
+  1. `mkdir -p` AppData / LocalAppData 下的目录树；
+  2. 若 `%AppData%\deskpet\config.toml` 缺失，从 repo 根 `config.toml` 拷贝；
+  3. 若 `%LocalAppData%\deskpet\models\` 为空且 repo 有 `backend/models/`，
+     用 `mklink /J` 做 junction（零拷贝，每个 worktree 都能复用）。
+
+`scripts/e2e_frozen_tauri.ps1` 和 `scripts/smoke_frozen_backend.py` 现在都
+先调 `setup_user_data.ps1`，然后让 backend 自己从 AppData 解析——**不再**
+注入 `DESKPET_MODEL_ROOT` / `DESKPET_CONFIG`。
+
+### Installer-side TODO（Phase 4）
+
+- 首启 GUI 下载器（当前 slice 不做）：用户没有 repo 时自动拉取 whisper /
+  cosyvoice 到 `%LocalAppData%\deskpet\models\`。
+- WiX 卸载脚本：清 `Program Files\DeskPet\`，保留 `%AppData%\deskpet\`
+  （对话历史 + 预算），可选清 `%LocalAppData%\deskpet\models\`。
 
 ## 7. Troubleshooting (skeleton)
 
