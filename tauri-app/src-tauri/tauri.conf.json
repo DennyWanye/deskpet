@@ -45,6 +45,9 @@
       "webviewInstallMode": {
         "type": "embedBootstrapper"
       }
+    },
+    "resources": {
+      "../../backend/dist/deskpet-backend": "backend"
     }
   },
   "plugins": {
