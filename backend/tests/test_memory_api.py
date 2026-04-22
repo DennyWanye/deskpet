@@ -149,6 +149,7 @@ def test_memory_list_roundtrip_over_ws(tmp_path: Path):
         with client.websocket_connect(
             f"/ws/control?secret={SHARED_SECRET}&session_id=s_ws"
         ) as ws:
+            ws.receive_json()  # P3-S2: drain startup_status
             ws.send_json({"type": "memory_list", "payload": {}})
             msg = ws.receive_json()
         assert msg["type"] == "memory_list_response"
@@ -176,6 +177,7 @@ def test_memory_delete_over_ws(tmp_path: Path):
         with client.websocket_connect(
             f"/ws/control?secret={SHARED_SECRET}&session_id=s_del"
         ) as ws:
+            ws.receive_json()  # P3-S2: drain startup_status
             ws.send_json({"type": "memory_delete", "payload": {"id": victim.id}})
             msg = ws.receive_json()
         assert msg["type"] == "memory_delete_ack"
@@ -197,6 +199,7 @@ def test_memory_delete_rejects_missing_id(tmp_path: Path):
         with client.websocket_connect(
             f"/ws/control?secret={SHARED_SECRET}&session_id=s_err"
         ) as ws:
+            ws.receive_json()  # P3-S2: drain startup_status
             ws.send_json({"type": "memory_delete", "payload": {}})
             msg = ws.receive_json()
         assert msg["type"] == "error"
@@ -217,6 +220,7 @@ def test_memory_clear_session_scope(tmp_path: Path):
         with client.websocket_connect(
             f"/ws/control?secret={SHARED_SECRET}&session_id=wipe"
         ) as ws:
+            ws.receive_json()  # P3-S2: drain startup_status
             ws.send_json({"type": "memory_clear", "payload": {}})
             msg = ws.receive_json()
         assert msg["type"] == "memory_clear_ack"
@@ -241,6 +245,7 @@ def test_memory_clear_all_scope(tmp_path: Path):
         with client.websocket_connect(
             f"/ws/control?secret={SHARED_SECRET}&session_id=whatever"
         ) as ws:
+            ws.receive_json()  # P3-S2: drain startup_status
             ws.send_json({"type": "memory_clear", "payload": {"scope": "all"}})
             msg = ws.receive_json()
         assert msg["type"] == "memory_clear_ack"
@@ -264,6 +269,7 @@ def test_memory_export_returns_all_sessions_and_turns(tmp_path: Path):
         with client.websocket_connect(
             f"/ws/control?secret={SHARED_SECRET}&session_id=s1"
         ) as ws:
+            ws.receive_json()  # P3-S2: drain startup_status
             ws.send_json({"type": "memory_export", "payload": {}})
             msg = ws.receive_json()
         assert msg["type"] == "memory_export_response"

@@ -92,6 +92,7 @@ def test_full_chat_roundtrip_uses_fake_llm(fake_llm_agent):
         headers={"X-Shared-Secret": SHARED_SECRET},
         params={"session_id": "e2e_chat"},
     ) as ws:
+        ws.receive_json()  # P3-S2: drain startup_status
         ws.send_json({"type": "chat", "payload": {"text": "ping"}})
         msg = ws.receive_json()
 
@@ -108,6 +109,7 @@ def test_unknown_message_type_returns_error(fake_llm_agent):
     with client.websocket_connect(
         "/ws/control", headers={"X-Shared-Secret": SHARED_SECRET}
     ) as ws:
+        ws.receive_json()  # P3-S2: drain startup_status
         ws.send_json({"type": "nonsense_xyz"})
         msg = ws.receive_json()
     assert msg["type"] == "error"
@@ -141,6 +143,7 @@ def test_interrupt_dispatched_when_pipeline_present(fake_llm_agent):
         with client.websocket_connect(
             f"/ws/control?secret={SHARED_SECRET}&session_id=e2e_interrupt"
         ) as ws:
+            ws.receive_json()  # P3-S2: drain startup_status
             ws.send_json({"type": "interrupt"})
             ack = ws.receive_json()
         assert ack["type"] == "interrupt_ack"
@@ -155,6 +158,7 @@ def test_interrupt_without_pipeline_still_acks(fake_llm_agent):
     with client.websocket_connect(
         f"/ws/control?secret={SHARED_SECRET}&session_id=e2e_no_pipe"
     ) as ws:
+        ws.receive_json()  # P3-S2: drain startup_status
         ws.send_json({"type": "interrupt"})
         ack = ws.receive_json()
     assert ack["type"] == "interrupt_ack"
@@ -172,6 +176,7 @@ def test_redacting_memory_store_is_active(fake_llm_agent):
     with client.websocket_connect(
         f"/ws/control?secret={SHARED_SECRET}&session_id={session}"
     ) as ws:
+        ws.receive_json()  # P3-S2: drain startup_status
         # Turn 1: send a fake API key. The agent just echoes.
         ws.send_json(
             {
@@ -252,6 +257,7 @@ def test_control_connection_tracked_and_released(fake_llm_agent):
     with client.websocket_connect(
         f"/ws/control?secret={SHARED_SECRET}&session_id={session}"
     ) as ws:
+        ws.receive_json()  # P3-S2: drain startup_status
         ws.send_json({"type": "ping"})
         ws.receive_json()
         assert session in _control_connections

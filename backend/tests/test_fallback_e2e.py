@@ -156,6 +156,7 @@ def _send_chat_and_collect_response(
     client: TestClient, text: str, max_iters: int = 20
 ) -> dict:
     with client.websocket_connect("/ws/control?secret=&session_id=fb-test") as ws:
+        ws.receive_json()  # P3-S2: drain startup_status
         ws.send_json({"type": "chat", "payload": {"text": text}})
         seen_types: list[str] = []
         for _ in range(max_iters):

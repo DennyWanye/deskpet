@@ -65,6 +65,7 @@ from paths import resolve_model_dir  # P3-S1
 from context import ServiceContext
 from observability.crash_reports import install_crash_reporter
 from observability.metrics import render as render_metrics
+from observability.startup import registry as startup_errors  # P3-S2
 
 # Install the uncaught-exception hook as early as possible so import-time
 # failures later in this file still land in crash_reports/.
@@ -240,6 +241,10 @@ async def lifespan(app: FastAPI):
                 logger.info("loaded", engine=name)
             except Exception as exc:
                 logger.warning("failed_to_load", engine=name, error=str(exc))
+                # P3-S2: persist structured error so /health + WS startup_status
+                # can surface "degraded" state instead of silently accepting
+                # requests that will later 500.
+                startup_errors.record(name, exc)
     logger.info("startup complete")
     yield
     logger.info("shutting down")
@@ -404,11 +409,16 @@ async def update_cloud_config(body: CloudConfigRequest, request: Request):
 
 @app.get("/health")
 async def health():
+    # P3-S2: surface startup failures (esp. CUDA unavailable / model dir
+    # missing) so the Rust supervisor and future frontend banner can
+    # react instead of treating a crippled backend as "ready".
+    errors = startup_errors.snapshot()
     return {
-        "status": "ok",
+        "status": "degraded" if errors else "ok",
         "secret_hint": SHARED_SECRET[:4] + "...",
         "strategy": llm._strategy.value,
         "cloud_configured": llm._cloud is not None,
+        "startup_errors": errors,
     }
 
 
@@ -559,6 +569,16 @@ async def control_channel(ws: WebSocket):
     session_id = ws.query_params.get("session_id", "default")
     _control_connections[session_id] = ws
     logger.info("control channel connected", session_id=session_id)
+    # P3-S2: first frame after handshake reports startup-error state so the
+    # UI can render "CUDA 缺失" / "模型缺失" banners without polling /health.
+    try:
+        await ws.send_json({
+            "type": "startup_status",
+            "degraded": startup_errors.is_degraded(),
+            "errors": startup_errors.snapshot(),
+        })
+    except Exception as _e:
+        logger.warning("startup_status_send_failed", error=str(_e))
     try:
         while True:
             raw = await ws.receive_json()
