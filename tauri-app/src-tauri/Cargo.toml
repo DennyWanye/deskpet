@@ -26,6 +26,14 @@ window-vibrancy = "0.6"
 # 需要显式启用平台原生 backend (v3 不再默认启用任何 backend)。
 # 三平台 feature 互不干扰 —— 每个 cfg 只编译相关代码。
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# P3-S2: NVIDIA precheck. Uses the NVIDIA Management Library (loaded via
+# nvml.dll on Windows — bundled with every NVIDIA driver, no CUDA
+# Toolkit needed). Happy path returns GPU info; any init/query failure
+# means we pop a dialog and exit instead of spawning the backend.
+nvml-wrapper = "0.10"
+# P3-S2: blocking MessageDialog for the "no NVIDIA GPU" fatal-error
+# path. Default feature set is enough — we only need MessageDialog.
+tauri-plugin-dialog = "2"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"

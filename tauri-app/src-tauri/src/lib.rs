@@ -1,7 +1,9 @@
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 mod click_through;
 mod crash_reports;
+mod gpu_check;
 mod process_manager;
 mod secrets;
 mod webview_permissions;
@@ -16,6 +18,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // P3-S2: dialog plugin for the "no NVIDIA GPU" fatal-error path.
+        .plugin(tauri_plugin_dialog::init())
         // W5 (R17): self-update — endpoints + pubkey live in tauri.conf.json.
         // On first launch the plugin fetches latest.json; if it advertises a
         // newer version the built-in dialog prompts the user.
@@ -41,6 +45,27 @@ pub fn run() {
             secrets::has_cloud_api_key,
         ])
         .setup(|app| {
+            // P3-S2: NVIDIA precheck. Phase-3 contract is CUDA-only, so
+            // if we can't detect an NVIDIA GPU now we bail before the
+            // Python backend ever spawns (otherwise faster-whisper would
+            // crash silently during lifespan and the user would just see
+            // a broken ASR).
+            if let Err(e) = gpu_check::detect_nvidia_gpu() {
+                eprintln!("[setup] gpu_check failed: {e:?}");
+                let msg = gpu_check::format_user_message(&e);
+                app.dialog()
+                    .message(msg)
+                    .title("DeskPet — 硬件不支持")
+                    .kind(MessageDialogKind::Error)
+                    .buttons(MessageDialogButtons::Ok)
+                    .blocking_show();
+                app.handle().exit(1);
+                // Still return Ok — the exit above will terminate the
+                // process; returning Err here would just print a panic
+                // trace on top of the dialog the user already saw.
+                return Ok(());
+            }
+
             // Auto-grant microphone permission on the main WebView2 so
             // getUserMedia works inside the desktop-pet window.
             if let Some(win) = app.get_webview_window("main") {
