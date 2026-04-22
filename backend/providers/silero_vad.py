@@ -37,10 +37,16 @@ class SileroVAD:
         if self._model is not None:
             return
         logger.info("loading silero-vad v5")
-        model, _ = torch.hub.load(
-            "snakers4/silero-vad", "silero_vad", trust_repo=True
-        )
-        self._model = model.eval()
+        # P3-S4: use the PyPI `silero-vad` package instead of
+        # `torch.hub.load("snakers4/silero-vad", ...)`. The hub path
+        # needs network + a writable `~/.cache/torch/hub/` which is a
+        # non-starter inside a frozen PyInstaller exe. The PyPI package
+        # ships the JIT model (`silero_vad/data/silero_vad.jit`) as
+        # package data, so PyInstaller picks it up via
+        # `collect_data_files("silero_vad")`. Model weights are the
+        # same as the hub v5 release.
+        from silero_vad import load_silero_vad
+        self._model = load_silero_vad(onnx=False).eval()
         logger.info("silero-vad loaded")
 
     def reset(self) -> None:
