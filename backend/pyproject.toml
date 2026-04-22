@@ -20,6 +20,10 @@ dependencies = [
     # /usr/share/zoneinfo). tzdata ships the IANA data as a wheel. Harmless
     # no-op on Linux/macOS where the system DB is used by default.
     "tzdata>=2024.1 ; sys_platform == 'win32'",
+    # P3-S4: silero-vad PyPI package ships the JIT model as package
+    # data. Previously we loaded via torch.hub which requires network +
+    # ~/.cache/torch/hub — both broken inside a frozen PyInstaller exe.
+    "silero-vad>=5.1.2,<6",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +31,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
     "httpx>=0.27.0",
+    # P3-S4: PyInstaller is a build-time dep, not runtime — kept in
+    # dev extras so the frozen wheel doesn't ship the bootloader source.
+    "pyinstaller>=6.11",
+    "pyinstaller-hooks-contrib>=2024.8",
 ]
 
 [tool.setuptools]
