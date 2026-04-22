@@ -1,6 +1,7 @@
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+mod backend_launch;
 mod click_through;
 mod crash_reports;
 mod gpu_check;

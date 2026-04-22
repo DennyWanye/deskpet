@@ -133,9 +133,34 @@ for name in ("vad_engine", "asr_engine", "tts_engine"):
 1. **`GET /health`** → `status: "degraded" | "ok"` + `startup_errors[]`
 2. **`/ws/control` 握手后第一帧** → `{"type": "startup_status", "degraded": bool, "errors": [...]}`
 
-前端渲染 "缺少 NVIDIA GPU" 气泡的 UI 留给 P3-S3。
+前端渲染 "缺少 NVIDIA GPU" 气泡的 UI 留给 P3-S8 splash screen。
 
-## 6. Troubleshooting (skeleton)
+## 6. Backend 路径解析 (P3-S3)
+
+Rust supervisor 是 backend 路径的**唯一权威源**。前端 `invoke("start_backend")`
+无参，Rust 侧 `backend_launch::resolve(&app)` 按以下优先级定位：
+
+| # | 条件 | 启动形式 |
+|---|---|---|
+| 1 | `<resource_dir>/backend/deskpet-backend.exe` 存在 | `Bundled` — 直接跑冻结 exe (cwd = exe 目录) |
+| 2 | `DESKPET_BACKEND_DIR` 环境变量非空 | `Dev` — `<DESKPET_PYTHON 或 <dir>/.venv/Scripts/python.exe> main.py` |
+| 3 | 编译期注入 `DESKPET_DEV_ROOT/backend/main.py` 存在 | `Dev` — 默认 venv 解释器 |
+| 4 | 都不中 | `ResolveError::NoBackendFound{ tried }` → 中文弹窗 |
+
+**Dev 工作流**（无 env 变量）：`build.rs` 在编译时把
+`CARGO_MANIFEST_DIR/../..` 注入为 `DESKPET_DEV_ROOT`，因此
+`npm run tauri:dev` 在源码检出里开箱即用。
+
+**Dev 想指向别处**：临时设 `DESKPET_BACKEND_DIR=D:\alt\backend`，
+可选 `DESKPET_PYTHON=E:\py\python.exe` 覆盖解释器。空字符串视作 unset。
+
+**打包 release**：P3-S5 会把 `deskpet-backend.exe` 放进 bundle
+resources，届时优先级 1 自动生效，后续 fallback 永远走不到。
+
+错误弹窗复用 P3-S2 的 `tauri-plugin-dialog` 通道（中文文案来自
+`backend_launch::format_user_message`）。
+
+## 7. Troubleshooting (skeleton)
 
 - `FileNotFoundError: .../models/faster-whisper-large-v3-turbo` in dev:
   the `backend/models/` directory is missing or still named `assets/`.
