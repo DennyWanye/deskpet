@@ -190,6 +190,22 @@ pub async fn start_backend(
     let launch = backend_launch::resolve(&app)
         .map_err(|e| backend_launch::format_user_message(&e))?;
 
+    // P3-S5: log which branch resolved so e2e smoke scripts can grep
+    // the dev log to confirm Bundled vs Dev path was picked. Use stderr
+    // because tauri dev redirects both streams to the same log file.
+    match &launch {
+        BackendLaunch::Bundled { exe } => {
+            eprintln!("[backend_launch] Bundled exe={}", exe.display());
+        }
+        BackendLaunch::Dev { python, backend_dir } => {
+            eprintln!(
+                "[backend_launch] Dev python={} backend_dir={}",
+                python.display(),
+                backend_dir.display(),
+            );
+        }
+    }
+
     // 幂等：以 shared_secret 作为"已有一个活着或正在重启中的 backend"的
     // 真实判据，而不是 state.child。原因：install_supervisor 在调 wait()
     // 之前会把 Child 从 Mutex 里 take() 出来持有在线程栈上，所以 backend

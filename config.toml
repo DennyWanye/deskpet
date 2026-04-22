@@ -59,14 +59,17 @@ compute_type = "float16"
 # 空列表 = 不加偏置（与旧行为一致）。配合 transcribe() 里的
 # 300ms 静音 pad 使用。
 hotwords = [
-    "讲个笑话",
+    # 2026-04-22 修订：hotwords 必须是"短消歧词"（生僻字/专名/高混淆短词），
+    # 不能塞整句。之前把"请给我讲一个笑话"整句塞进来，导致 Whisper 在弱/短
+    # 音频上直接把 hotwords 当 transcript 吐出来（decoder 的 prefix bias
+    # 在 no-speech 边界会回退到 prompt tokens 本身）。
+    # 规则：每条 ≤4 字、只含真正易混淆的字词。
+    "笑话",
+    "散文",
+    "故事",
     "你好",
-    "再见",
     "谢谢",
-    "今天天气",
-    "帮我",
-    "好的",
-    "没问题",
+    "再见",
 ]
 
 [tts]

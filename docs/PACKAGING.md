@@ -1,7 +1,7 @@
 # Packaging DeskPet (Phase 3)
 
 **Status**: skeleton — filled out slice-by-slice as Phase 3 lands.
-**Last updated**: 2026-04-22 (P3-S4 PyInstaller freeze)
+**Last updated**: 2026-04-22 (P3-S5 Tauri bundle 接线)
 
 ---
 
@@ -190,6 +190,52 @@ faster-whisper 走 ctranslate2，那一套的 CUDA DLL 是 ctranslate2
 - 进程要能在自己 CWD 下创建 `crash_reports/` 和 `data/billing.db`。
   打包后 exe 的 CWD = `deskpet-backend.exe` 所在目录（Rust supervisor
   spawn 时也这么设的）。
+
+### 4.x Tauri bundle 接线 (P3-S5)
+
+在 `tauri-app/src-tauri/tauri.conf.json` 里：
+
+```jsonc
+"bundle": {
+  …
+  "resources": {
+    "../../backend/dist/deskpet-backend": "backend"
+  }
+}
+```
+
+- **Key** 相对 `src-tauri/` 往上两级到 repo root，指向 P3-S4 的
+  PyInstaller onedir 产物。裸目录路径（无 `/**/*`）在 Tauri 2 里
+  等价于"递归拷这个目录的全部内容"。
+- **Value** `"backend"` 是 `resource_dir` 下的子目录名，正好对齐
+  `backend_launch::resolve` 里 `root.join("backend").join("deskpet-backend.exe")`
+  的第一段。
+
+`tauri build` 时 bundler 把 2973 个文件拷进 installer；运行时
+`resource_dir().join("backend/deskpet-backend.exe")` 一击命中 Bundled
+分支。
+
+**`tauri dev` 行为**：每次 invoke 都重跑 resource copy（Tauri 2 没
+增量 copy），首跑 ~60–90s（600 MB、机械盘会更久）。对开发迭代不友
+好，但不影响正确性。未来可以加一条 `DESKPET_BUNDLED_EXE` env 短路
+优化跳过 copy；当前先不做。
+
+**不用 `externalBin` 的理由**：`bundle.externalBin` 只管单个 exe，
+不处理旁边的 `_internal/` sidecar。PyInstaller onedir 产物必须整个
+目录一起拷，所以用 `resources`。
+
+### 4.y 日志凭据
+
+`process_manager::start_backend` 在 `backend_launch::resolve` 返回
+之后打一行 stderr，让运维 / e2e 脚本能一眼看出走了哪条路径：
+
+```
+[backend_launch] Bundled exe=...\resources\backend\deskpet-backend.exe
+[backend_launch] Dev python=...\python.exe backend_dir=...\backend
+```
+
+E2E smoke `scripts/e2e_frozen_tauri.ps1` 会 grep 这行做 Bundled 分支
+的 smoke 断言。
 
 ## 5. 硬件前置检查 (P3-S2)
 

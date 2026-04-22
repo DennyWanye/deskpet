@@ -127,6 +127,33 @@ def _is_torch_cuda_bloat(entry):
 
 a.binaries = [b for b in a.binaries if not _is_torch_cuda_bloat(b)]
 
+# --- 3c. Re-bundle the minimal CUDA DLLs ctranslate2 actually needs -----
+# After the torch CUDA strip above (saves ~2.9 GB), ctranslate2's GPU
+# path dlopen's a small set of NVIDIA DLLs that torch's filter removed:
+#   cublas64_12.dll, cublasLt64_12.dll  — matrix kernels (~370 MB together)
+#   cudart64_12.dll                     — CUDA runtime shim (~600 KB)
+#   nvrtc64_120_0.dll, nvrtc-builtins64_129.dll — runtime kernel compile
+# ctranslate2 already ships cudnn64_9.dll in its own wheel.
+#
+# These DLLs come from the standalone pip packages:
+#   pip install nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 nvidia-cuda-nvrtc-cu12
+# Dropped into `_internal/ctranslate2/` alongside cudnn64_9.dll so they
+# resolve via ctranslate2's own AddDllDirectory registration.
+_NVIDIA_DLL_DIRS = [
+    os.path.join(_site_packages, "nvidia", "cublas", "bin"),
+    os.path.join(_site_packages, "nvidia", "cuda_runtime", "bin"),
+    os.path.join(_site_packages, "nvidia", "cuda_nvrtc", "bin"),
+]
+for _dir in _NVIDIA_DLL_DIRS:
+    if not os.path.isdir(_dir):
+        continue
+    for _dll in glob.glob(os.path.join(_dir, "*.dll")):
+        # Dest "ctranslate2/<name>.dll" → ends up next to cudnn64_9.dll
+        # inside the ctranslate2 search dir registered by the wheel.
+        a.binaries.append(
+            (f"ctranslate2/{os.path.basename(_dll)}", _dll, "BINARY")
+        )
+
 pyz = PYZ(a.pure, a.zipped_data)
 
 # --- 4. EXE + COLLECT ---------------------------------------------------
