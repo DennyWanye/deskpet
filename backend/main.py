@@ -73,8 +73,39 @@ install_crash_reporter()
 
 logger = structlog.get_logger()
 
-PROJECT_ROOT = Path(__file__).parent.parent
-config = load_config(PROJECT_ROOT / "config.toml")
+# P3-S5: resolve config.toml location.
+#   - dev mode: <repo>/config.toml (sibling of backend/)
+#   - frozen  : Path(__file__).parent.parent lands inside _internal/ — not
+#               what we want. Walk up from the exe dir (dist/deskpet-backend/)
+#               until we find a config.toml, then fall back to defaults.
+# DESKPET_CONFIG env var short-circuits the search for E2E / tests.
+def _find_config_toml() -> Path:
+    override = os.environ.get("DESKPET_CONFIG")
+    if override:
+        p = Path(override)
+        if p.is_file():
+            return p
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        # dist/deskpet-backend/  (exe dir)
+        # dist/                  (exe_dir.parent)
+        # backend/               (exe_dir.parent.parent)
+        # <repo>/                (exe_dir.parent.parent.parent)
+        candidates += [exe_dir / "config.toml"]
+        for up in (1, 2, 3):
+            candidates.append(exe_dir.parents[up - 1] / "config.toml")
+    else:
+        candidates.append(Path(__file__).resolve().parent.parent / "config.toml")
+    for c in candidates:
+        if c.is_file():
+            return c
+    return candidates[0]  # let load_config return defaults silently
+
+_CONFIG_PATH = _find_config_toml()
+config = load_config(_CONFIG_PATH)
+logger.info("config_loaded", path=str(_CONFIG_PATH), exists=_CONFIG_PATH.is_file())
+PROJECT_ROOT = _CONFIG_PATH.parent
 SHARED_SECRET = secrets.token_hex(16)
 
 service_context = ServiceContext()
@@ -189,22 +220,20 @@ vad = SileroVAD(
 )
 service_context.register("vad_engine", vad)
 
-# P3-S5 hotfix: the frozen PyInstaller bundle strips torch's CUDA DLLs
-# (cublas/cufft/cusparse/... ~2.9 GB) to meet the size budget. ctranslate2's
-# faster-whisper GPU path still dlopen's cublas64_12.dll at first transcribe,
-# so in frozen mode we must force CPU inference regardless of config. Dev
-# mode (running main.py directly) keeps the user's cuda setting.
-if getattr(sys, "frozen", False) and config.asr.device == "cuda":
-    logger.warning(
-        "asr_device_frozen_override",
-        from_device=config.asr.device,
-        from_compute=config.asr.compute_type,
-        to_device="cpu",
-        to_compute="int8",
-        reason="frozen bundle strips CUDA DLLs; ctranslate2 GPU path would fail",
-    )
-    config.asr.device = "cpu"
-    config.asr.compute_type = "int8"
+# P3-S5: frozen bundle ships ctranslate2 + minimal CUDA DLLs
+# (cublas/cublasLt/cudart/nvrtc, ~450 MB) under _internal/ctranslate2/.
+# Register that dir so cublas64_12.dll resolves at first transcribe.
+# ctranslate2 itself already calls AddDllDirectory on its own dir at import,
+# but that happens only when ctranslate2 is imported — we do it eagerly
+# so nothing races with torch's own DLL probe.
+if getattr(sys, "frozen", False):
+    try:
+        _ct2_dir = Path(sys._MEIPASS) / "ctranslate2"  # type: ignore[attr-defined]
+        if _ct2_dir.is_dir():
+            os.add_dll_directory(str(_ct2_dir))
+            logger.info("cuda_dll_dir_registered", path=str(_ct2_dir))
+    except Exception as e:  # pragma: no cover — best-effort
+        logger.warning("cuda_dll_dir_register_failed", error=str(e))
 
 # S4: device="auto" in config.toml → pick cuda/cpu based on detected VRAM.
 # Explicit "cuda" or "cpu" is respected verbatim (user override).
