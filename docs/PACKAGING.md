@@ -1,7 +1,7 @@
 # Packaging DeskPet (Phase 3)
 
 **Status**: skeleton — filled out slice-by-slice as Phase 3 lands.
-**Last updated**: 2026-04-21 (P3-S1 model-dir refactor)
+**Last updated**: 2026-04-22 (P3-S2 CUDA precheck)
 
 ---
 
@@ -94,7 +94,48 @@ At runtime the backend process has `sys._MEIPASS` set to
 
 Spec file details land in P3-S4.
 
-## 5. Troubleshooting (skeleton)
+## 5. 硬件前置检查 (P3-S2)
+
+DeskPet 在 Tauri `setup()` 钩子里跑一次 **NVIDIA GPU 探测**，失败就弹窗 + 退出，
+**根本不拉起 Python backend**。这样用户在不支持的机器上不会看到"能启动但 ASR
+永远 500"的假象。
+
+### 检查通过的前提
+
+1. 机器有 NVIDIA 显卡
+2. 已装最新版 NVIDIA 驱动（驱动自带 `nvml.dll`，无需 CUDA Toolkit）
+3. `nvml_wrapper::Nvml::init()` 能加载并返回 ≥1 个设备
+
+### 用户侧错误分类
+
+| Rust 枚举 | 触发 | 用户弹窗文案要点 |
+|---|---|---|
+| `NvmlInitFailed` | `nvml.dll` 缺失 / 加载失败 / NVML_Init 出错 | "请安装最新 NVIDIA 驱动并重启" |
+| `NoDevices` | NVML 能初始化但 `device_count() == 0` | "没有检测到 NVIDIA 显卡" |
+| `DeviceQueryFailed` | 查询第 0 号设备名/显存失败 | "驱动可能已损坏，请重装" |
+
+### Backend 第二道防线
+
+Rust 前置检查挡不住所有情况（如 `nvml.dll` 存在但 CUDA runtime 依赖
+`cudart64_*.dll` 不匹配），所以 backend lifespan 的 `engine.load()` 异常
+**不再吞掉**，而是走 `observability/startup.py::StartupErrorRegistry`：
+
+```python
+for name in ("vad_engine", "asr_engine", "tts_engine"):
+    try:
+        await engine.load()
+    except Exception as exc:
+        startup_errors.record(name, exc)  # 分类为 CUDA_UNAVAILABLE / MODEL_DIR_MISSING / UNKNOWN
+```
+
+结构化错误通过两条通道暴露：
+
+1. **`GET /health`** → `status: "degraded" | "ok"` + `startup_errors[]`
+2. **`/ws/control` 握手后第一帧** → `{"type": "startup_status", "degraded": bool, "errors": [...]}`
+
+前端渲染 "缺少 NVIDIA GPU" 气泡的 UI 留给 P3-S3。
+
+## 6. Troubleshooting (skeleton)
 
 - `FileNotFoundError: .../models/faster-whisper-large-v3-turbo` in dev:
   the `backend/models/` directory is missing or still named `assets/`.
