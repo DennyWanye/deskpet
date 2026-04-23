@@ -1,11 +1,14 @@
 # P3-S5 -- Tauri -> frozen backend end-to-end smoke.
+# P3-S6+S7 (2026-04-22): models + config live under user dirs. This script
+#   calls `scripts/setup_user_data.ps1` first to provision %AppData%\deskpet\
+#   and junction repo models into %LocalAppData%\deskpet\models\, then lets
+#   the backend find them via its own resolution chain (no env injection).
 #
 # Preconditions (script self-checks, errors early if missing):
 #   1. `powershell scripts/build_backend.ps1` was run;
 #      backend/dist/deskpet-backend/deskpet-backend.exe exists.
-#   2. backend/models/ contains faster-whisper-large-v3-turbo/ and cosyvoice2/.
-#      (Before P3-S6 lands, models stay outside the bundle and are located
-#      at runtime via DESKPET_MODEL_ROOT env var, set by this script.)
+#   2. backend/models/ contains faster-whisper-large-v3-turbo/ and cosyvoice2/
+#      OR %LocalAppData%\deskpet\models\ already populated.
 #   3. tauri-app/node_modules/ is installed.
 #
 # What it does:
@@ -29,7 +32,6 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 $repoRoot  = Split-Path -Parent $PSScriptRoot
 $frozenExe = Join-Path $repoRoot "backend\dist\deskpet-backend\deskpet-backend.exe"
-$modelRoot = Join-Path $repoRoot "backend\models"
 $tauriDir  = Join-Path $repoRoot "tauri-app"
 
 # P3-S5 hotfix: frozen backend's _REPO_FFMPEG path resolves to
@@ -51,13 +53,22 @@ if (-not (Test-Path $frozenExe)) {
     Write-Host "[e2e] Run first: powershell scripts/build_backend.ps1"
     exit 2
 }
-if (-not (Test-Path $modelRoot)) {
-    Write-Host "[e2e] MISSING: $modelRoot" -ForegroundColor Red
-    Write-Host "[e2e] Place faster-whisper-large-v3-turbo/ + cosyvoice2/ under backend/models/"
-    exit 2
-}
 if (-not (Test-Path (Join-Path $tauriDir "node_modules"))) {
     Write-Host "[e2e] MISSING: tauri-app/node_modules -- run npm install in tauri-app/ first" -ForegroundColor Red
+    exit 2
+}
+
+# --- 1b. Provision %AppData%\deskpet\ + junction models ---------------
+Write-Host "[e2e] running setup_user_data.ps1..."
+& powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "setup_user_data.ps1")
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[e2e] FAIL: setup_user_data.ps1 returned $LASTEXITCODE" -ForegroundColor Red
+    exit 2
+}
+$userModelsDir = Join-Path $env:LOCALAPPDATA "deskpet\models"
+if (-not (Test-Path (Join-Path $userModelsDir "faster-whisper-large-v3-turbo"))) {
+    Write-Host "[e2e] MISSING: $userModelsDir\faster-whisper-large-v3-turbo" -ForegroundColor Red
+    Write-Host "[e2e] Junction from repo failed; populate $userModelsDir manually." -ForegroundColor Red
     exit 2
 }
 
@@ -70,13 +81,11 @@ Get-Process -Name "deskpet", "deskpet-backend" -ErrorAction SilentlyContinue |
     }
 
 # --- 3. Start tauri dev in background ---------------------------------
-$env:DESKPET_MODEL_ROOT = $modelRoot
-Write-Host "[e2e] DESKPET_MODEL_ROOT=$modelRoot"
-$configToml = Join-Path $repoRoot "config.toml"
-if (Test-Path $configToml) {
-    $env:DESKPET_CONFIG = $configToml
-    Write-Host "[e2e] DESKPET_CONFIG=$configToml"
-}
+# P3-S6+S7: no more DESKPET_MODEL_ROOT / DESKPET_CONFIG injection --
+# backend now resolves these from %LocalAppData%\deskpet\models\ and
+# %AppData%\deskpet\config.toml (both provisioned in step 1b above).
+# DESKPET_FFMPEG is still needed: ffmpeg is a runtime binary dep, not
+# a data dir concern, and pydub looks it up via this env var.
 if ($env:DESKPET_FFMPEG) {
     Write-Host "[e2e] DESKPET_FFMPEG=$env:DESKPET_FFMPEG"
 } else {

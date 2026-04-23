@@ -45,6 +45,8 @@ hiddenimports += [
     "tzdata",                   # zoneinfo needs this on Windows
     "prometheus_client",
     "aiosqlite",
+    # P3-S6+S7: user data / cache / models dir resolution at startup.
+    "platformdirs",
     # uvicorn auto-loaders
     "uvicorn.logging",
     "uvicorn.loops.auto",

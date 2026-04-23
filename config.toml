@@ -96,5 +96,8 @@ min_speech_ms_during_tts = 400
 tts_cooldown_ms = 300
 
 [memory]
-db_path = "./data/memory.db"
+# P3-S7: leave db_path empty to use the OS-standard user data directory
+# (%AppData%\deskpet\data\memory.db on Windows). Set an absolute path
+# here to override; relative paths are anchored under %AppData%\deskpet\.
+db_path = ""
 embedding_model = "bge-m3"

@@ -60,7 +60,8 @@ from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from pathlib import Path
 from pydantic import BaseModel, field_validator, model_validator
 
-from config import load_config
+from config import load_config, resolve_config_path
+import paths as _paths
 from paths import resolve_model_dir  # P3-S1
 from context import ServiceContext
 from observability.crash_reports import install_crash_reporter
@@ -73,38 +74,21 @@ install_crash_reporter()
 
 logger = structlog.get_logger()
 
-# P3-S5: resolve config.toml location.
-#   - dev mode: <repo>/config.toml (sibling of backend/)
-#   - frozen  : Path(__file__).parent.parent lands inside _internal/ — not
-#               what we want. Walk up from the exe dir (dist/deskpet-backend/)
-#               until we find a config.toml, then fall back to defaults.
-# DESKPET_CONFIG env var short-circuits the search for E2E / tests.
-def _find_config_toml() -> Path:
-    override = os.environ.get("DESKPET_CONFIG")
-    if override:
-        p = Path(override)
-        if p.is_file():
-            return p
-    candidates: list[Path] = []
-    if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).resolve().parent
-        # dist/deskpet-backend/  (exe dir)
-        # dist/                  (exe_dir.parent)
-        # backend/               (exe_dir.parent.parent)
-        # <repo>/                (exe_dir.parent.parent.parent)
-        candidates += [exe_dir / "config.toml"]
-        for up in (1, 2, 3):
-            candidates.append(exe_dir.parents[up - 1] / "config.toml")
-    else:
-        candidates.append(Path(__file__).resolve().parent.parent / "config.toml")
-    for c in candidates:
-        if c.is_file():
-            return c
-    return candidates[0]  # let load_config return defaults silently
+# P3-S7: ensure user data / cache / models directories exist before any
+# subsystem tries to write into them. Also seeds <user_data>/config.toml
+# from the bundle default on first run (via resolve_config_path).
+_paths.ensure_user_dirs()
 
-_CONFIG_PATH = _find_config_toml()
+_CONFIG_PATH = resolve_config_path()
 config = load_config(_CONFIG_PATH)
-logger.info("config_loaded", path=str(_CONFIG_PATH), exists=_CONFIG_PATH.is_file())
+logger.info(
+    "config_loaded",
+    path=str(_CONFIG_PATH),
+    exists=_CONFIG_PATH.is_file(),
+    user_data_dir=str(_paths.user_data_dir()),
+    user_models_dir=str(_paths.user_models_dir()),
+    model_root=str(_paths.model_root()),
+)
 PROJECT_ROOT = _CONFIG_PATH.parent
 SHARED_SECRET = secrets.token_hex(16)
 

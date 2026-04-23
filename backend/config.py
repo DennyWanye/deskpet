@@ -1,9 +1,13 @@
 from __future__ import annotations
 import logging
 import os
+import shutil
+import sys
 import tomli
 from pathlib import Path
 from dataclasses import dataclass, field, fields as dc_fields
+
+import paths as _paths
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +107,12 @@ class VoiceConfig:
 
 @dataclass
 class MemoryConfig:
-    db_path: str = "./data/memory.db"
+    # P3-S7: empty string = "auto-resolve to <user_data_dir>/data/memory.db".
+    # Previously defaulted to "./data/memory.db" which was CWD-relative and
+    # fragile under PyInstaller (CWD = wherever Tauri launched us from).
+    # load_config() rewrites empty/relative values to the user data dir;
+    # explicit absolute paths in config.toml pass through untouched.
+    db_path: str = ""
     embedding_model: str = "bge-m3"
 
 
@@ -167,10 +176,113 @@ def _load_section(cls, raw_dict: dict):
     return cls(**{k: v for k, v in raw_dict.items() if k in known})
 
 
+def _bundle_default_config_path() -> Path | None:
+    """Return the bundle's default config.toml (seed source), or None if missing.
+
+    * Frozen (PyInstaller): ``<exe_dir>/config.toml`` (dropped there by the
+      spec via data files or alongside the bundle by Tauri's resources).
+    * Dev: ``<repo>/config.toml`` — ``backend/../config.toml``.
+    """
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        for up in (0, 1, 2, 3):
+            candidate = (exe_dir.parents[up - 1] if up else exe_dir) / "config.toml"
+            if candidate.is_file():
+                return candidate
+        return None
+    dev = Path(__file__).resolve().parent.parent / "config.toml"
+    return dev if dev.is_file() else None
+
+
+def seed_user_config_if_missing() -> Path | None:
+    """First-run: copy the bundle's config.toml into user_data_dir if the
+    user doesn't have one yet. Returns the user path on success, or None
+    if either source is missing (caller then falls through to bundle /
+    AppConfig defaults).
+    """
+    user_target = _paths.user_data_dir() / "config.toml"
+    if user_target.is_file():
+        return user_target
+    source = _bundle_default_config_path()
+    if source is None:
+        return None
+    try:
+        user_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, user_target)
+        logger.info(
+            "seeded user config.toml from bundle: %s -> %s", source, user_target,
+        )
+        return user_target
+    except OSError as e:
+        logger.warning("config seed failed (%s); falling back to bundle default", e)
+        return None
+
+
+def resolve_config_path() -> Path:
+    """Return the config.toml path the backend should load, with priority:
+
+    1. ``DESKPET_CONFIG`` env (E2E / tests / power users).
+    2. ``<user_data_dir>/config.toml`` — seeded on first run from the bundle.
+    3. Bundle default (frozen exe dir or dev repo root).
+    4. Whatever fallback we can find, even if missing — ``load_config`` will
+       silently return ``AppConfig()`` defaults in that case.
+    """
+    override = os.environ.get("DESKPET_CONFIG")
+    if override:
+        p = Path(override)
+        if p.is_file():
+            return p
+        logger.warning("DESKPET_CONFIG=%s does not exist; falling through", override)
+
+    # Try (or create) the user-data copy.
+    seeded = seed_user_config_if_missing()
+    if seeded is not None and seeded.is_file():
+        return seeded
+
+    # Fall through: bundle default.
+    bundle = _bundle_default_config_path()
+    if bundle is not None:
+        return bundle
+
+    # Last resort: a path that doesn't exist. load_config() returns
+    # AppConfig() defaults when the path is missing, which is the
+    # correct behaviour — we just won't read anything from disk.
+    return _paths.user_data_dir() / "config.toml"
+
+
+def _resolve_memory_db_path(raw: str) -> Path:
+    """Map a MemoryConfig.db_path value to an absolute Path.
+
+    * Empty string → ``<user_data_dir>/data/memory.db`` (new default).
+    * Absolute path → used verbatim.
+    * Relative path → resolved under ``<user_data_dir>/`` (so legacy
+      ``"./data/memory.db"`` in an old config still works, just now
+      pointing at AppData instead of CWD).
+    """
+    if not raw:
+        return _paths.user_data_dir() / "data" / "memory.db"
+    p = Path(raw)
+    if p.is_absolute():
+        return p
+    # Legacy relative form: anchor to user_data_dir rather than CWD.
+    # Strip leading "./" so the join doesn't produce "user_data/./data/..."
+    rel = raw.lstrip(".").lstrip("/").lstrip("\\")
+    return _paths.user_data_dir() / rel
+
+
 def load_config(path: str | Path = "config.toml") -> AppConfig:
     path = Path(path)
     if not path.exists():
-        return AppConfig()
+        # Even on a totally blank system we still want db_path resolved
+        # into user_data_dir rather than whatever CWD we happened to
+        # inherit. Build AppConfig() first then let the resolution
+        # below rewrite memory.db_path / billing.db_path.
+        config = AppConfig()
+        config.memory.db_path = str(_resolve_memory_db_path(""))
+        config.billing = BillingConfig.from_toml(
+            {}, db_dir=Path(config.memory.db_path).parent
+        )
+        return config
     with open(path, "rb") as f:
         raw = tomli.load(f)
     config = AppConfig()
@@ -246,8 +358,15 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         config.voice = _load_section(VoiceConfig, raw["voice"])
     if "memory" in raw:
         config.memory = _load_section(MemoryConfig, raw["memory"])
+    # P3-S7: always funnel memory.db_path through the AppData resolver, so
+    # empty/relative values become absolute user_data_dir paths and absolute
+    # ones pass through. This also catches the AppConfig() defaults when
+    # no [memory] section is present.
+    resolved_mem = _resolve_memory_db_path(config.memory.db_path)
+    config.memory.db_path = str(resolved_mem)
     # BillingConfig always resolved — even if [billing] is absent we want a
-    # default daily_budget_cny so main.py can construct the ledger.
-    db_dir = Path(config.memory.db_path).parent
+    # default daily_budget_cny so main.py can construct the ledger. Pin it
+    # to the same directory as memory.db so the two SQLite files stay together.
+    db_dir = resolved_mem.parent
     config.billing = BillingConfig.from_toml(raw, db_dir=db_dir)
     return config
