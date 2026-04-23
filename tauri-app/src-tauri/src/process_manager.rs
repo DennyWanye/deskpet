@@ -1,11 +1,25 @@
 use std::io::{BufRead, BufReader};
+use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{command, AppHandle, Emitter, Manager, State};
 
 use crate::backend_launch::{self, BackendLaunch};
+
+/// P3-S8: hard cap on how long we'll wait for the backend to print its
+/// SHARED_SECRET line. Cold boot on a fresh machine (torch + CUDA init +
+/// whisper load) has measured 30–45 s in P3-S4 profiling, so 90 s gives
+/// generous headroom while still failing fast when the backend is
+/// actually wedged (e.g. Python import error, missing DLL).
+const SECRET_TIMEOUT_SECS: u64 = 90;
+
+/// Backend FastAPI port. Hard-coded on both sides of the handshake;
+/// we only use this constant for the pre-spawn "is it already taken?"
+/// probe so a more useful error message reaches the user.
+const BACKEND_PORT: u16 = 8100;
 
 /// How many times the supervisor will respawn a crashed backend before it
 /// gives up. Hitting this likely means a config bug, not a transient fault.
@@ -35,6 +49,10 @@ pub struct BackendProcess {
     /// Incremented every time the supervisor respawns. Reset when the
     /// child has been up longer than RESTART_WINDOW_SECS.
     restart_count: Arc<AtomicU32>,
+    /// P3-S8: last human-readable start-up error so the frontend can
+    /// render a dialog even if the Err from start_backend already got
+    /// swallowed by a React effect retry.
+    startup_error: Mutex<Option<String>>,
 }
 
 impl BackendProcess {
@@ -45,6 +63,14 @@ impl BackendProcess {
             launch: Mutex::new(None),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             restart_count: Arc::new(AtomicU32::new(0)),
+            startup_error: Mutex::new(None),
+        }
+    }
+
+    /// P3-S8: expose latest startup failure to the frontend.
+    pub fn set_startup_error(&self, msg: Option<String>) {
+        if let Ok(mut guard) = self.startup_error.lock() {
+            *guard = msg;
         }
     }
 
@@ -75,7 +101,30 @@ impl BackendProcess {
 /// `DESKPET_CLOUD_API_KEY` so `backend/main.py::_resolve_cloud_api_key`
 /// can find it. When nothing is saved the backend logs "cloud disabled"
 /// and carries on local-only — that's the documented first-launch flow.
+/// P3-S8: quick precheck that 8100 is free. Returning Err early here
+/// swaps the generic "Backend exited without printing SHARED_SECRET"
+/// failure for the far more actionable "端口已被占用". We bind+drop on
+/// 127.0.0.1:PORT; if another process has the port we get an OS error.
+fn check_port_free(port: u16) -> Result<(), String> {
+    match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(l) => {
+            drop(l);
+            Ok(())
+        }
+        Err(e) => Err(format!(
+            "端口 {port} 已被其它程序占用（错误：{e}）。\n\
+             请关闭其它 DeskPet 实例或占用该端口的程序后重试。"
+        )),
+    }
+}
+
 fn spawn_once(launch: &BackendLaunch) -> Result<(Child, String), String> {
+    // P3-S8: port precheck. Have to do it here (not only in start_backend)
+    // because the supervisor respawn path also goes through spawn_once —
+    // if a zombie backend survived a window close, we want the friendly
+    // message on every retry, not just the initial attempt.
+    check_port_free(BACKEND_PORT)?;
+
     let mut cmd = match launch {
         BackendLaunch::Bundled { exe } => {
             let mut c = Command::new(exe);
@@ -127,47 +176,73 @@ fn spawn_once(launch: &BackendLaunch) -> Result<(Child, String), String> {
         .take()
         .ok_or_else(|| "No stdout on spawned backend".to_string())?;
 
-    let mut reader = BufReader::new(stdout);
-    let mut secret_opt: Option<String> = None;
-    // Read until SHARED_SECRET line. Can't just `return` with the reader
-    // dropped — on Windows that closes the pipe read end, and Python's next
-    // stdout write (structlog "preloading models..." etc.) raises
-    // OSError[Errno 22] and crashes lifespan. Instead hand the reader off
-    // to a background thread that keeps draining (and discarding) stdout
-    // for the lifetime of the child.
-    let mut line_buf = String::new();
-    loop {
-        line_buf.clear();
-        match reader.read_line(&mut line_buf) {
-            Ok(0) => break, // EOF — backend exited
-            Ok(_) => {
-                let trimmed = line_buf.trim_end_matches(['\r', '\n']);
-                if trimmed.starts_with("SHARED_SECRET=") {
-                    secret_opt = Some(
-                        trimmed.trim_start_matches("SHARED_SECRET=").to_string(),
-                    );
-                    break;
-                }
-            }
-            Err(e) => return Err(format!("Failed to read backend stdout: {e}")),
-        }
-    }
-
-    let secret = secret_opt
-        .ok_or_else(|| "Backend exited without printing SHARED_SECRET".to_string())?;
-
-    // Keep draining stdout in a detached thread so the pipe stays open and
-    // Python can keep logging. Exits naturally on EOF when the child dies.
+    // P3-S8: wall-clock timeout on SHARED_SECRET. The previous version
+    // read_line'd on the main thread, which blocks forever if Python hangs
+    // mid-import (we've seen this with missing CUDA DLLs). Move the reader
+    // to a worker thread and recv_timeout from a channel — the worker
+    // keeps the pipe open (crucial on Windows, see the long comment below)
+    // and we flip it into "drain silently" mode after the secret arrives.
+    //
+    // Why we must NOT drop the reader: on Windows, closing the pipe read
+    // end makes Python's next stdout write (structlog "preloading
+    // models..." etc.) raise OSError[Errno 22] and crash lifespan. The
+    // worker thread therefore owns the reader for the child's full life.
+    let reader = BufReader::new(stdout);
+    let (tx, rx) = mpsc::channel::<Result<String, String>>();
     std::thread::spawn(move || {
-        let mut sink = String::new();
+        let mut reader = reader;
+        let mut line_buf = String::new();
+        let mut secret_sent = false;
         loop {
-            sink.clear();
-            match reader.read_line(&mut sink) {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {}
+            line_buf.clear();
+            match reader.read_line(&mut line_buf) {
+                Ok(0) => {
+                    if !secret_sent {
+                        let _ = tx.send(Err(
+                            "Backend exited without printing SHARED_SECRET".into()
+                        ));
+                    }
+                    return;
+                }
+                Ok(_) => {
+                    let trimmed = line_buf.trim_end_matches(['\r', '\n']);
+                    if !secret_sent && trimmed.starts_with("SHARED_SECRET=") {
+                        let s = trimmed.trim_start_matches("SHARED_SECRET=").to_string();
+                        let _ = tx.send(Ok(s));
+                        secret_sent = true;
+                        // Keep draining silently from here on.
+                    }
+                }
+                Err(e) => {
+                    if !secret_sent {
+                        let _ = tx.send(Err(format!(
+                            "Failed to read backend stdout: {e}"
+                        )));
+                    }
+                    return;
+                }
             }
         }
     });
+
+    let secret = match rx.recv_timeout(Duration::from_secs(SECRET_TIMEOUT_SECS)) {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            let _ = child.kill();
+            return Err(e);
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let _ = child.kill();
+            return Err(format!(
+                "Backend 启动超时（{SECRET_TIMEOUT_SECS}s 内未上报 SHARED_SECRET）。\n\
+                 常见原因：CUDA / 模型加载失败。请打开日志目录排查。"
+            ));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = child.kill();
+            return Err("Backend stdout pipe disconnected before SHARED_SECRET".into());
+        }
+    };
 
     Ok((child, secret))
 }
@@ -187,8 +262,14 @@ pub async fn start_backend(
     // P3-S3: Rust now resolves the backend path itself. Frontend no
     // longer passes python_path / backend_dir — those hardcoded values
     // were dev-box-only. See `backend_launch::resolve` for priority.
-    let launch = backend_launch::resolve(&app)
-        .map_err(|e| backend_launch::format_user_message(&e))?;
+    let launch = match backend_launch::resolve(&app) {
+        Ok(l) => l,
+        Err(e) => {
+            let msg = backend_launch::format_user_message(&e);
+            state.set_startup_error(Some(msg.clone()));
+            return Err(msg);
+        }
+    };
 
     // P3-S5: log which branch resolved so e2e smoke scripts can grep
     // the dev log to confirm Bundled vs Dev path was picked. Use stderr
@@ -227,11 +308,20 @@ pub async fn start_backend(
 
     // Initial spawn runs on a blocking thread — the BufReader loop that
     // waits for SHARED_SECRET is blocking I/O.
-    let (child, secret) = tauri::async_runtime::spawn_blocking(move || {
+    let spawn_result = tauri::async_runtime::spawn_blocking(move || {
         spawn_once(&launch_for_spawn)
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))??;
+    .map_err(|e| format!("Task join error: {e}"))?;
+    let (child, secret) = match spawn_result {
+        Ok(pair) => pair,
+        Err(e) => {
+            state.set_startup_error(Some(e.clone()));
+            return Err(e);
+        }
+    };
+    // Clear any stale error from a prior failed attempt.
+    state.set_startup_error(None);
 
     // Record launch so the supervisor can respawn.
     *state.launch.lock().map_err(|e| e.to_string())? = Some(launch.clone());
@@ -371,4 +461,57 @@ pub fn get_shared_secret(state: State<'_, BackendProcess>) -> Result<String, Str
         .map_err(|e| e.to_string())?
         .clone()
         .ok_or("No secret available (backend not started?)".into())
+}
+
+/// P3-S8 — returns the last classified startup error (human-readable
+/// Chinese) or None. Frontend polls this after start_backend rejects
+/// and also on window focus so crashes surfaced via `backend-dead` can
+/// be re-displayed.
+#[command]
+pub fn get_startup_error(state: State<'_, BackendProcess>) -> Result<Option<String>, String> {
+    Ok(state.startup_error.lock().map_err(|e| e.to_string())?.clone())
+}
+
+/// P3-S8 — clear the recorded startup error once the dialog is dismissed
+/// so a successful retry doesn't re-show it.
+#[command]
+pub fn clear_startup_error(state: State<'_, BackendProcess>) -> Result<(), String> {
+    *state.startup_error.lock().map_err(|e| e.to_string())? = None;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn port_precheck_reports_bound_port() {
+        // Bind an ephemeral port, then assert check_port_free on that
+        // port fails with a user-readable Chinese message.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let err = check_port_free(port).expect_err("expected busy port to fail");
+        assert!(err.contains(&port.to_string()), "error missing port: {err}");
+        assert!(err.contains("占用"), "error not chinese: {err}");
+    }
+
+    #[test]
+    fn port_precheck_passes_on_free_port() {
+        // Pick a random high port, bind+drop to learn it's free, then
+        // re-check. Race-y in theory; in practice fine for unit tests.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(check_port_free(port).is_ok());
+    }
+
+    #[test]
+    fn startup_error_round_trip() {
+        let bp = BackendProcess::new();
+        assert!(bp.startup_error.lock().unwrap().is_none());
+        bp.set_startup_error(Some("boom".into()));
+        assert_eq!(bp.startup_error.lock().unwrap().as_deref(), Some("boom"));
+        bp.set_startup_error(None);
+        assert!(bp.startup_error.lock().unwrap().is_none());
+    }
 }
