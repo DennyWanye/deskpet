@@ -4,9 +4,9 @@
 > this first before touching anything. Last updated at the close of each sprint
 > or at major inflection points.
 
-**Last updated:** 2026-04-22 (P3-S6+S7 用户数据目录 — %AppData%\deskpet\ + %LocalAppData%\deskpet\models\；smoke PASS，UI E2E 待用户本地跑)
-**Current version:** `v0.2.0` (first public beta; next `v0.2.x` will use rotated pubkey)
-**Active branch:** `master` (P2-2 + P2-2-F1 已 push 到 origin)
+**Last updated:** 2026-04-23 (P3-S8 ~ P3-S11 一次性推完；splash+错误 UI + 完全卸载 + installer runbook + v0.5.0-phase3-rc1 版本号；cargo 35/35 + pytest 317/321 + frozen smoke 4.3s；UI E2E + VM 手测待用户)
+**Current version:** `v0.5.0-phase3-rc1` (RC，未打 tag；等 VM smoke 通过再上 GitHub Release)
+**Active branch:** `p3-s8-s11-release`（pending merge 到 master）
 **Active tag:** `v0.2.0` at commit `718d70a`; `p2-2-verified` at `f91e264`
 
 ---
@@ -42,7 +42,7 @@
 | 3 — Backend auto-launch | **P3-S4** | ✅ merged `8699ba7` | PyInstaller 冻结 backend：`backend/deskpet-backend.spec` + `scripts/build_backend.ps1` + `scripts/smoke_frozen_backend.py`；silero-vad 改走 PyPI 包自带 JIT 模型（弃用 torch.hub 的网络/缓存路径，冻结兼容）；torch 切 CPU-only wheel（venv 内）配合 spec 层 CUDA DLL 白名单剥离，把 bundle 从 3.9 GB 砍到 **610 MB**（P3-G2 预算 3.5 GB 含模型）；mypyc 伴生 `*__mypyc.*.pyd` 自动发现加入 hiddenimports（tomli 用的）。smoke：boot 5.2s，/health 200，startup_errors 空，ASR/VAD/TTS 全部 preload 成功。handoff: `p3-s4-pyinstaller-backend.md` |
 | 3 — Backend auto-launch | **P3-S5** | ✅ 静态接线 + cargo 18/18, ⏳ UI E2E + merge | Tauri bundle 吸纳冻结 backend：`tauri.conf.json::bundle.resources` 加 map `"../../backend/dist/deskpet-backend": "backend"`，Tauri bundler 会把 2973 个文件递归拷进 `resource_dir/backend/`，正好对齐 P3-S3 Bundled 分支的 `root.join("backend/deskpet-backend.exe")`；`process_manager::start_backend` 在 resolve 后加一行 stderr 日志（`[backend_launch] Bundled exe=…` / `Dev python=…`）作分支凭据；新增 `scripts/e2e_frozen_tauri.ps1` 做 Tauri→/health 端到端 smoke。UI 层 E2E（点麦、讲话、TTS 回放）涉及麦克风 + 人听感，交给用户本地跑完贴截图再 merge。handoff: `p3-s5-tauri-bundle-backend.md` |
 | 3 — Backend auto-launch | **P3-S6 + P3-S7** | ✅ smoke PASS, ⏳ merge + UI E2E | 合并交付：**模型外置 + 用户数据目录**。关键转向——实测 `backend/models/` 达 9 GB，无法塞进 P3-G2 的 3.5 GB installer 预算。方案：installer 只装 ~1.5 GB 运行时，模型放 `%LocalAppData%\deskpet\models\`（dev 用 `scripts/setup_user_data.ps1` junction repo 目录）；用户数据（config/DB/logs）进 `%AppData%\deskpet\`（roaming）。`backend/paths.py` 扩展 `user_data_dir()` / `user_cache_dir()` / `user_models_dir()` / `user_log_dir()` / `ensure_user_dirs()`；`backend/config.py` 新增 `resolve_config_path()` + `seed_user_config_if_missing()` + `_resolve_memory_db_path()`；`MemoryConfig.db_path` 默认改空串（auto → AppData）；`platformdirs` 加进依赖 + spec hiddenimports；`scripts/setup_user_data.ps1` 幂等脚本（mkdir + seed config + junction models）；`scripts/e2e_frozen_tauri.ps1` + `scripts/smoke_frozen_backend.py` 去掉 env 注入。新增 19 单测（test_paths 16 + test_config_resolution 15 新条）322/322 pytest 全绿；frozen smoke boot 2.9s / bundle 1524.7 MB / /health ok。handoff: `p3-s6-s7-user-data-dirs.md` |
-| 3 — Backend auto-launch | 其余 slices | ⏳ P3-S8 ~ P3-S11 | 路线图见 `2026-04-21-phase3-roadmap.md` |
+| 3 — Backend auto-launch | **P3-S8 ~ S11** | ✅ cargo/pytest/smoke 绿, ⏳ merge + UI E2E + VM 手测 | 合并交付四个 slice：**启动时序 + 错误 UI + 卸载清理 + 发布准备**。S8：`tauri-app/src-tauri/src/paths.rs`（Rust 侧镜像 `backend/paths.py`）+ `user_data.rs`（`open_log_dir` / `open_app_data_dir` / `purge_user_data` command，含 `looks_safe_to_delete` guard + Windows junction-aware 删除）；`process_manager` 加 **8100 端口 precheck**（TcpListener 试绑定） + **SHARED_SECRET 90s 墙钟超时**（mpsc channel + `recv_timeout`）+ `startup_error` mutex/命令；`components/StartupOverlay.tsx` 中文 splash + 错误卡片（重试 / 打开日志目录 / 退出）；`App.tsx` bootstrap 加 `bootState`/`bootError`/`bootAttempt` 三态机，`backend-dead` 也走统一错误卡片。S9：SettingsPanel "危险区" section 加 "完全卸载（清除用户数据）" 按钮 + 可选模型缓存清理 + `window.confirm` 两步确认；NSIS/WiX 默认就不碰 AppData，仅文档确认。S10：`docs/P3-S10-installer-smoke-runbook.md`（全新 VM T0-T8 checklist + cold_boot.py 基线）。S11：版本号全链路 `0.5.0-phase3-rc1`（tauri.conf.json / Cargo.toml / package.json / pyproject.toml） + `docs/releases/v0.5.0-phase3-rc1.md` release notes（"仅 NVIDIA" 硬门槛 + G1..G6 状态 + 升级说明）。35/35 cargo test（新增 paths 8 + user_data 6 + process_manager 3）+ 317/321 pytest + frozen smoke boot 4.3s + /health ok + clippy clean。git tag/push defer 给用户。handoff: `p3-s8-s11-release-prep.md` |
 | 4 — v1.0 GA | — | ⏳ future | Once P2/P3 land |
 
 ## Completed P2-0 slices (quick index)

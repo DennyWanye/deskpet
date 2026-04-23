@@ -489,6 +489,9 @@ export function SettingsPanel({
           </p>
         </section>
 
+        {/* ================ 危险区 (P3-S9) ================ */}
+        <DangerZoneSection />
+
         {/* ================ Footer ================ */}
         <footer style={footerStyle}>
           {saveError && (
@@ -505,6 +508,94 @@ export function SettingsPanel({
         </footer>
       </div>
     </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// P3-S9 — Danger Zone: 完全卸载（清除用户数据）.
+//
+// `完全卸载` wipes %AppData%\deskpet\ (config / SQLite / logs). A
+// second opt-in checkbox additionally wipes %LocalAppData%\deskpet\
+// models — that's ~9 GB so we require explicit consent.
+//
+// Two-step confirm via window.confirm keeps the UI trivial while still
+// preventing single-click destruction.
+// ----------------------------------------------------------------------
+function DangerZoneSection() {
+  const [includeModels, setIncludeModels] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const handlePurge = useCallback(async () => {
+    setErr(null);
+    const scope = includeModels
+      ? "用户数据 + 本地模型缓存（%LocalAppData%\\deskpet\\models）"
+      : "用户数据（配置 / 数据库 / 日志）";
+    const confirmed = window.confirm(
+      `即将删除：${scope}\n\n` +
+        "这将清除所有聊天历史、云端账号设置、预算记录和日志，无法撤销。\n" +
+        "删除完成后 DeskPet 将自动退出。\n\n确认继续？",
+    );
+    if (!confirmed) return;
+
+    setBusy(true);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      await core.invoke("purge_user_data", { includeModels });
+      // Rust will exit the app shortly; nothing else to do here.
+    } catch (e) {
+      setErr(typeof e === "string" ? e : (e as Error)?.message ?? String(e));
+      setBusy(false);
+    }
+  }, [includeModels]);
+
+  return (
+    <section style={{ ...sectionStyle, borderTop: "1px solid #fecaca" }}>
+      <h3 style={{ ...h3Style, color: "#b91c1c" }}>危险区</h3>
+      <p style={hintStyle}>
+        "完全卸载" 会清除 <code>%AppData%\deskpet\</code> 下的配置、SQLite
+        数据库与日志。卸载安装包本身仍需在「应用和功能」里进行。
+      </p>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          fontSize: 12,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={includeModels}
+          onChange={(e) => setIncludeModels(e.target.checked)}
+          data-testid="purge-include-models"
+        />
+        <span>
+          同时删除 <code>%LocalAppData%\deskpet\models</code>（模型缓存 ~9 GB）
+        </span>
+      </label>
+      {err && (
+        <div role="alert" style={{ ...statusStyle, color: "#b91c1c" }}>
+          {err}
+        </div>
+      )}
+      <div style={btnRowStyle}>
+        <button
+          type="button"
+          data-testid="purge-user-data"
+          onClick={handlePurge}
+          disabled={busy}
+          style={{
+            ...btnStyle,
+            background: "#b91c1c",
+            color: "white",
+            borderColor: "#b91c1c",
+          }}
+        >
+          {busy ? "删除中…" : "完全卸载（清除用户数据）"}
+        </button>
+      </div>
+    </section>
   );
 }
 

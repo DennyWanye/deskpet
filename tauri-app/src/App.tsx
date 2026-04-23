@@ -5,6 +5,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { DialogBar } from "./components/DialogBar";
 import { ChatHistoryPanel } from "./components/ChatHistoryPanel";
 import { UserBubble } from "./components/UserBubble";
+import { StartupOverlay, type BootState } from "./components/StartupOverlay";
 import { useBudgetToast } from "./hooks/useBudgetToast";
 import { useControlChannel } from "./hooks/useWebSocket";
 import { useAudioChannel } from "./hooks/useAudioChannel";
@@ -41,6 +42,12 @@ function App() {
   // polling; once populated, the WebSocket hooks reconnect with proper auth.
   const [secret, setSecret] = useState("");
 
+  // P3-S8 — visible startup state so users see a spinner / actionable
+  // error instead of a silent black transparent window.
+  const [bootState, setBootState] = useState<BootState>("starting");
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [bootAttempt, setBootAttempt] = useState(0);
+
   // Poll the Rust side for the shared secret. Pure polling — no side
   // effects on the backend process. Safe to replay on HMR, F5, and the
   // backend-restarted supervisor event.
@@ -73,21 +80,82 @@ function App() {
   useEffect(() => {
     (async () => {
       const core = await import("@tauri-apps/api/core").catch(() => null);
-      if (!core) return;
+      if (!core) {
+        // Not inside Tauri (e.g. vite dev browser preview) — skip boot
+        // state machine entirely so the app still loads for UI work.
+        setBootState("ready");
+        return;
+      }
+      setBootState("starting");
+      setBootError(null);
       try {
         const secret = await core.invoke<string>("start_backend");
         if (secret) {
           setSecret(secret);
+          setBootState("ready");
           return;
         }
+        // Empty-secret success is an unexpected branch (Rust always
+        // returns Err on timeout now); fall through to error state.
+        setBootError("Backend returned an empty SHARED_SECRET");
+        setBootState("failed");
       } catch (e) {
-        console.warn("[bootstrap] start_backend:", e);
+        const msg = typeof e === "string" ? e : (e as Error)?.message ?? String(e);
+        console.warn("[bootstrap] start_backend failed:", msg);
+        // Also peek at Rust's cached error (richer if spawn_once tripped
+        // port-in-use or SHARED_SECRET timeout) — prefer that message.
+        try {
+          const cached = await core.invoke<string | null>("get_startup_error");
+          setBootError(cached || msg);
+        } catch {
+          setBootError(msg);
+        }
+        setBootState("failed");
       }
-      // spawn 失败或返回空 —— 回退到轮询，等 supervisor 最终把 secret
-      // 写进去（比如首次启动的 backend 还在加载 torch）。
-      void refreshSecret();
     })();
+  }, [bootAttempt]);
+
+  // P3-S8 — handlers bound to the startup error card buttons.
+  const handleBootRetry = useCallback(async () => {
+    const core = await import("@tauri-apps/api/core").catch(() => null);
+    if (core) {
+      try {
+        await core.invoke("clear_startup_error");
+      } catch {
+        /* ignore */
+      }
+    }
+    // Bump attempt counter so the bootstrap effect re-runs.
+    setBootAttempt((n) => n + 1);
+    // Fall back to the polling helper in case Rust's idempotent
+    // start_backend returns the stale secret of a half-dead supervisor.
+    void refreshSecret();
   }, [refreshSecret]);
+
+  const handleBootOpenLog = useCallback(async () => {
+    const core = await import("@tauri-apps/api/core").catch(() => null);
+    if (!core) return;
+    try {
+      await core.invoke("open_log_dir");
+    } catch (e) {
+      console.warn("[bootstrap] open_log_dir failed:", e);
+    }
+  }, []);
+
+  const handleBootExit = useCallback(async () => {
+    // Try the process-plugin exit helper first; if unavailable, close
+    // the current window which triggers our WindowEvent::Destroyed path.
+    const api = await import("@tauri-apps/api/window").catch(() => null);
+    if (api?.getCurrentWindow) {
+      try {
+        await api.getCurrentWindow().close();
+        return;
+      } catch {
+        /* noop */
+      }
+    }
+    window.close();
+  }, []);
 
   // S12: react to supervisor events — on crash, clear the secret so any
   // active WebSockets see a reconnect cue; on restarted, poll for the
@@ -99,6 +167,23 @@ function App() {
       void refreshSecret();
     } else if (kind === "dead") {
       console.warn("[backend] supervisor gave up — manual restart required");
+      // Re-surface as a startup error so the user gets the same dialog
+      // affordances (retry / open log dir) without having to re-invoke.
+      (async () => {
+        const core = await import("@tauri-apps/api/core").catch(() => null);
+        let msg =
+          "Backend supervisor gave up after repeated crashes. 请打开日志目录排查。";
+        if (core) {
+          try {
+            const cached = await core.invoke<string | null>("get_startup_error");
+            if (cached) msg = cached;
+          } catch {
+            /* ignore */
+          }
+        }
+        setBootError(msg);
+        setBootState("failed");
+      })();
     }
   });
 
@@ -656,6 +741,16 @@ function App() {
           {budgetToast}
         </div>
       )}
+
+      {/* P3-S8 — splash / error overlay. Renders above everything while
+          the backend is still starting or has failed to start. */}
+      <StartupOverlay
+        state={bootState}
+        errorMessage={bootError}
+        onRetry={handleBootRetry}
+        onOpenLogDir={handleBootOpenLog}
+        onExit={handleBootExit}
+      />
 
       {/* Pulse animation for recording button */}
       <style>{`

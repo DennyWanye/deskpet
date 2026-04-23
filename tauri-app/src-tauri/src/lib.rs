@@ -5,8 +5,10 @@ mod backend_launch;
 mod click_through;
 mod crash_reports;
 mod gpu_check;
+mod paths;
 mod process_manager;
 mod secrets;
+mod user_data;
 mod webview_permissions;
 
 use process_manager::BackendProcess;
@@ -38,6 +40,14 @@ pub fn run() {
             process_manager::stop_backend,
             process_manager::is_backend_running,
             process_manager::get_shared_secret,
+            // P3-S8: startup error surfacing for the frontend dialog.
+            process_manager::get_startup_error,
+            process_manager::clear_startup_error,
+            // P3-S8/S9: user-data filesystem commands (open log dir,
+            // open AppData dir, purge everything).
+            user_data::open_log_dir,
+            user_data::open_app_data_dir,
+            user_data::purge_user_data,
             // P2-1-S3: cloud LLM API key commands; UI invokes these from
             // SettingsPanel.
             secrets::set_cloud_api_key,

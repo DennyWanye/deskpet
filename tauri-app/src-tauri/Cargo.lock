@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "deskpet"
-version = "0.2.0"
+version = "0.5.0-phase3-rc1"
 dependencies = [
  "keyring",
  "nvml-wrapper",
