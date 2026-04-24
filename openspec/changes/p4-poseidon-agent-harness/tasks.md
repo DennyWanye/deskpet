@@ -131,13 +131,13 @@
 - [x] 12.16 单测：三层级联、parallel beats serial、must 不能删、budget shrink、bundle messages 顺序
 - [x] 12.17 Bench：ContextAssembler p95 < 370ms（mock path < 50ms，10 轮稳定）
 
-## 13. Context Compressor (P4-S8, 1d)
+## 13. Context Compressor (P4-S8, 1d) ✅ 已完成 (2026-04-24)
 
-- [ ] 13.1 lift Hermes `context_engine.py` 到 `backend/deskpet/agent/context_compressor.py`
-- [ ] 13.2 触发条件：当前对话 token 数 > `context_window * 0.7`
-- [ ] 13.3 滚动摘要：保留最近 K 轮，老轮用 `claude-haiku-4-5` 压缩成摘要段
-- [ ] 13.4 摘要 MUST 作为 dynamic memory_block 注入，不污染 frozen_system
-- [ ] 13.5 单测：压缩后 token 数降低 > 40% + 关键信息（人名/时间/决策）保留
+- [x] 13.1 lift Hermes `context_engine.py` 到 `backend/deskpet/agent/context_compressor.py`
+- [x] 13.2 触发条件：当前对话 token 数 > `context_window * 0.75`（spec §13.2 0.7 → 0.75 per 设计收紧，见 compressor docstring）
+- [x] 13.3 滚动摘要：保留 first_n=3 + last_n=6 非 system 消息，中段用 `claude-haiku-4-5` 压缩成单条 assistant 摘要
+- [x] 13.4 摘要 MUST 作为 dynamic assistant message 注入 first_n 之后 / last_n 之前，NOT 进 frozen system
+- [x] 13.5 单测（29 项）：阈值门、short-conversation no-op、LLM fail 回退、first/last verbatim、partition layout、reduction_ratio > 0.4 floor、key-fact transcript、multipart/tool_calls 转写、summariser 调 haiku / temp=0 / max_tokens、summary 带 `[压缩摘要]` marker
 
 ## 14. MCP Client (P4-S9, 1d)
 
