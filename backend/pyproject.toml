@@ -28,6 +28,38 @@ dependencies = [
     # %LocalAppData%\deskpet\). platformdirs is pure Python (~20KB),
     # PyInstaller-friendly, and handles Windows/macOS/Linux uniformly.
     "platformdirs>=4.0",
+    # P4-S2+S3: sqlite-vec extension for L3 vector search (virtual table
+    # messages_vec + cosine distance). Loaded into aiosqlite connection at
+    # startup; PyInstaller hook picks up the prebuilt .dll/.so.
+    "sqlite-vec>=0.1",
+    # P4-S2: BGE-M3 embedding (multilingual, 1024-dim) via FlagEmbedding.
+    # INT8 weights live in user_models_dir()/bge-m3-int8/ (~286MB).
+    "FlagEmbedding>=1.2",
+    # P4-S5: web tool suite — trafilatura extracts main article text and
+    # metadata from arbitrary HTML, much more robust than BeautifulSoup for
+    # news / blog / docs pages.
+    "trafilatura>=1.6",
+    # P4-S5: web tool suite — selectolax is a fast lxml-free HTML parser
+    # used by web_crawl for TF-based keyword scoring on titles + body.
+    "selectolax>=0.3",
+    # P4-S9: MCP client (Model Context Protocol). Lets DeskPet spawn/talk
+    # to stdio MCP servers (filesystem, weather, ...) via the official SDK.
+    "mcp>=1.0",
+    # P4-S10: skill system hot-reload. watchdog watches
+    # %APPDATA%\deskpet\skills\user\ for SKILL.md changes and debounces
+    # reload events (design.md D3 decision).
+    "watchdog>=3.0",
+    # P4-S6: LLM provider adapters. anthropic / openai / google-genai
+    # unified behind llm/base.py::LLMClient. Fallback chain lives in
+    # config.toml's [llm.fallback_chain].
+    "anthropic>=0.40",
+    "openai>=1.40",
+    # P4-S6: Google's current official SDK is `google-genai` (new API,
+    # Gemini 2.x). The older `google-generativeai>=0.8` package referenced
+    # in tasks.md is legacy and Google has told users to migrate — new code
+    # in deskpet/llm/gemini_adapter.py will target google-genai's modern API.
+    # Pinned >=1.0 (first stable release, 2025-05).
+    "google-genai>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -43,7 +75,34 @@ dev = [
 
 [tool.setuptools]
 py-modules = ["config", "main"]
-packages = ["providers", "memory", "memory.migrations", "tests", "agent", "pipeline", "tools", "observability", "router", "billing"]
+# P4-S0: new `deskpet` package tree added alongside the P3 flat layout.
+# Rationale: P3 rc1 code (agent/, memory/, tools/) keeps running unchanged
+# while Phase 4 builds out `deskpet/*` in isolation. Cutover happens at
+# P4-S12 when main.py routes are switched from legacy to deskpet.
+packages = [
+    "providers",
+    "memory",
+    "memory.migrations",
+    "tests",
+    "agent",
+    "pipeline",
+    "tools",
+    "observability",
+    "router",
+    "billing",
+    # P4-S0 new packages (backend/deskpet/**)
+    "deskpet",
+    "deskpet.agent",
+    "deskpet.agent.assembler",
+    "deskpet.agent.assembler.components",
+    "deskpet.agent.assembler.policies",
+    "deskpet.memory",
+    "deskpet.memory.migrations",
+    "deskpet.tools",
+    "deskpet.skills",
+    "deskpet.mcp",
+    "deskpet.llm",
+]
 
 [tool.setuptools.package-data]
 "memory.migrations" = ["*.sql"]

@@ -101,3 +101,144 @@ tts_cooldown_ms = 300
 # here to override; relative paths are anchored under %AppData%\deskpet\.
 db_path = ""
 embedding_model = "bge-m3"
+
+# P4-S4: L1 file memory — %APPDATA%\deskpet\data\MEMORY.md (pet-side
+# observations) and USER.md (user profile). Entries are separated by
+# `\n§\n`. When a file exceeds its size cap, lowest-salience entries are
+# evicted until back under the cap.
+[memory.l1]
+memory_md_max_kb = 50
+user_md_max_kb = 20
+separator = "\n§\n"
+
+# P4-S1: L2 session DB (SQLite + FTS5). WAL mode lets the backend and
+# optional worker process read/write concurrently; application-level
+# retry handles SQLITE_BUSY (exponential jitter, up to `retry_max` tries).
+[memory.l2]
+wal_enabled = true
+fts5_enabled = true
+retry_max = 5
+
+# P4-S2: L3 vector memory (sqlite-vec + BGE-M3). 1024-dim cosine, async
+# worker flushes embeddings every `flush_interval_s` OR every `batch_size`
+# rows (whichever first). `decay_lambda` governs daily salience decay
+# (exp(-lambda * days_since_touch)); `salience_boost_on_recall` nudges hits
+# so frequently-recalled memories stay sticky.
+[memory.l3]
+vector_dim = 1024
+embedder = "bge-m3"
+batch_size = 8
+flush_interval_s = 2
+decay_lambda = 0.02
+salience_boost_on_recall = 0.05
+
+# P4-S3: Reciprocal Rank Fusion weights for hybrid recall. Sum is not
+# required to be 1.0 — RRF fuses via rank, not raw score, so these
+# behave as relative importance knobs across the four signals.
+[memory.rrf]
+vec_weight = 0.5
+fts_weight = 0.3
+recency_weight = 0.15
+salience_weight = 0.05
+
+# P4-S6 + P4-S7: DeskPet agent loop knobs. `max_iterations` caps the
+# ReAct while-loop; `context_window_tokens` feeds the ContextAssembler
+# budget allocator. `interrupt_enabled` hooks ASR hot-words ("等一下/停")
+# to cancel an in-flight turn; `tts_pre_narration` triggers the TTS
+# pre-utterance on the first stream chunk (design.md D2 / task 12.14).
+[agent]
+max_iterations = 20
+context_window_tokens = 200000
+interrupt_enabled = true
+tts_pre_narration = true
+
+# P4-S7: ContextAssembler v1 (see openspec/changes/p4-poseidon-agent-harness
+# /specs/context-assembler/spec.md). Runs once before every agent loop:
+# classifies task_type → fans out components in parallel → budget-allocates
+# → emits a cache-friendly ContextBundle. Flip `enabled=false` for the
+# emergency rollback path (legacy full-registry + prefetch-all mode).
+[context.assembler]
+enabled = true
+policy_file = "deskpet/agent/assembler/policies/default.yaml"
+# User override lives under roaming AppData so it survives re-installs
+# and doesn't get overwritten by shipped defaults.
+user_overrides = "%APPDATA%/deskpet/policies/overrides.yaml"
+# BudgetAllocator cap = context_window_tokens * budget_ratio.
+budget_ratio = 0.6
+# TaskClassifier cascade: rule (<2ms) → embed (~15ms) → llm (≤300ms).
+classifier_mode = "rule+embed+llm"
+# ~100 hand-labelled exemplars for the embed tier (BGE-M3 cosine).
+classifier_exemplars = "deskpet/agent/assembler/policies/exemplars.jsonl"
+# D8 decision: haiku-class model for the LLM tier fallback.
+llm_classifier_model = "claude-haiku-4-5"
+# Unknown task_type (LLM hallucinates a label outside the enum) ⇒ chat.
+fallback_task_type = "chat"
+# Per-turn decisions trace for the Context Trace UI (P4-S11).
+trace_enabled = true
+
+# P4-S5: zero-cost web toolset (web_fetch / web_crawl /
+# web_extract_article / web_read_sitemap). No paid search APIs — all four
+# tools lean on httpx + trafilatura + selectolax (D5 decision).
+[tools.web]
+user_agent = "DeskPet/0.6 (+https://github.com/DennyWanye/deskpet)"
+respect_robots_txt = true
+# BFS crawl rate-limit knobs (per domain, not global).
+per_domain_max_concurrency = 2
+request_interval_ms = 500
+crawl_default_max_pages = 20
+crawl_default_max_depth = 2
+# `preferred_sources` is injected into the agent system prompt via
+# PersonaComponent / ToolComponent so the LLM knows where to crawl by
+# topic. Inline tables keep the list readable on one line each.
+preferred_sources = [
+    { domain = "stackoverflow.com", topic = "code" },
+    { domain = "docs.python.org", topic = "python" },
+    { domain = "developer.mozilla.org", topic = "web" },
+    { domain = "en.wikipedia.org", topic = "general" },
+    { domain = "zh.wikipedia.org", topic = "general-zh" },
+    { domain = "github.com", topic = "code" },
+]
+
+# P4-S9: MCP (Model Context Protocol) client config. Each [[mcp.servers]]
+# entry is spawned / connected at startup when `enabled=true`. Tools are
+# namespaced `mcp_{server}_{tool}` when injected into the ToolRegistry.
+[mcp]
+enabled = true
+
+[[mcp.servers]]
+name = "filesystem"
+command = "npx"
+# Filesystem server is scoped to the workspace dir only — NOT the full
+# profile, so agents cannot touch arbitrary user files.
+args = ["@modelcontextprotocol/server-filesystem", "%APPDATA%/deskpet/workspace"]
+transport = "stdio"
+enabled = true
+
+[[mcp.servers]]
+name = "weather"
+# Weather wrapper (open-meteo-based) ships in P4-S9; command/args left as
+# placeholders here so the schema is present — config validation in
+# task 14.2 only tries to spawn servers with `enabled=true`.
+command = ""
+args = []
+transport = "stdio"
+enabled = false
+
+# P4-S6: provider selection + global knobs shared by every adapter.
+# `main_model` is the default chat model; `classifier_model` is used by
+# the ContextAssembler LLM tier. `daily_usd_cap` is the hard budget cap
+# enforced by billing layer (80% warning IPC, 100% block).
+[llm.providers]
+main_model = "claude-sonnet-4-5"
+classifier_model = "claude-haiku-4-5"
+daily_usd_cap = 10.0
+streaming_enabled = true
+
+# P4-S6: fallback chain tried in order on adapter failure. Each entry is
+# `<provider>:<model>`. Max 2 retries across providers (task 10.6).
+[llm.fallback_chain]
+chain = [
+    "anthropic:claude-sonnet-4-5",
+    "openai:gpt-4o",
+    "gemini:gemini-1.5-pro",
+]

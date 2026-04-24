@@ -50,3 +50,20 @@ scripts/perf/asr_samples/
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 /logs/
+
+# P4-S2: BGE-M3 INT8 weights (~286MB after quantise, 2.2GB fp16 source)
+# — downloaded on first run by backend/scripts/download_bge_m3.py, not in git.
+backend/models/bge-m3-int8/
+
+# P4-S1: DB migration backups. v8_to_v9 creates state.db.bak and *.db.bak.<ts>
+# before any schema ALTER so the restore path in task 2.3 can roll back.
+*.db.bak
+state.db.bak.*
+
+# P4-S2: async embedding worker cache (intermediate BGE-M3 tensors written
+# when the flush queue is draining — regenerable from the source messages).
+backend/deskpet/memory/embedding_cache/
+
+# P4-S7: ContextAssembler trace dumps written by decisions debug mode.
+# Local-only, generated on demand via the Context Trace UI — not source.
+debug/assembler_trace_*.json
