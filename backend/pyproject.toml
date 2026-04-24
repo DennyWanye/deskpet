@@ -113,7 +113,10 @@ packages = [
 [tool.pytest.ini_options]
 # P4-S1 task 3.5: `perf` mark 默认跳过；手动 `pytest -m perf` 触发。
 # 用 strict_markers 让未注册的 mark 直接报错，减少拼写错误。
+# P4-S2 task 4.5: `model_required` mark —— 只在 BGE-M3 权重可用时跑，
+# 默认跳过（CI / 新装用户没模型）。手动 `pytest -m model_required` 触发。
 markers = [
     "perf: slow performance regression tests (10K+ rows, skipped by default)",
+    "model_required: tests that need real BGE-M3 weights on disk (skipped by default)",
 ]
-addopts = "-m 'not perf'"
+addopts = "-m 'not perf and not model_required'"

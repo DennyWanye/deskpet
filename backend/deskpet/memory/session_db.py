@@ -30,11 +30,17 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from typing import Awaitable, Callable, Optional
+
 import aiosqlite
 
 from deskpet.memory.schema import initialize_state_db
 
 log = logging.getLogger(__name__)
+
+# P4-S2 hook 类型：(message_id, content) → awaitable None。
+# MemoryManager / VectorWorker 在此接入 "消息落盘后异步跑 embedding"。
+OnMessageWritten = Callable[[int, str], Awaitable[None]]
 
 
 # SQLITE_BUSY retry 参数（3.3 要求）
@@ -74,13 +80,25 @@ def _backoff_delay_ms(attempt: int) -> float:
 class SessionDB:
     """L2 会话存储 —— aiosqlite + WAL + FTS5（+ 可选 sqlite-vec）."""
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        on_message_written: Optional[OnMessageWritten] = None,
+    ) -> None:
         self._db_path = Path(db_path)
         self._initialized = False
         self._vec_enabled = False
         # 写锁：WAL 允许并发读，但应用层保证自己的写是串行化的更稳
         # （避免 aiosqlite 同 connection 被多 task 抢）
         self._write_lock = asyncio.Lock()
+        # P4-S2: append_message 落盘后的异步回调钩子。典型使用场景是
+        # VectorWorker.enqueue —— 把新消息推进 embedding queue。
+        # 设计约束（严格）：
+        #   * 失败只 log，**不** re-raise 给 append_message 的调用方
+        #   * 不得修改 append_message 的返回值（仍是 msg_id）
+        #   * None → 老 S1 行为完全不变（零开销）
+        self._on_message_written: Optional[OnMessageWritten] = on_message_written
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -267,7 +285,23 @@ class SessionDB:
                     await db.commit()
                     return int(msg_id or 0)
 
-        return await self._with_retry(_do)
+        msg_id = await self._with_retry(_do)
+
+        # P4-S2 hook：消息已落盘，异步通知订阅者（典型：VectorWorker）。
+        # 契约：
+        #   * hook 在写锁**之外**触发——避免 hook 阻塞主写路径
+        #   * hook 抛异常只 log warn，不影响返回值
+        if self._on_message_written is not None:
+            try:
+                await self._on_message_written(msg_id, content)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "on_message_written hook failed for msg_id=%s: %s",
+                    msg_id,
+                    exc,
+                )
+
+        return msg_id
 
     async def get_messages(
         self,
