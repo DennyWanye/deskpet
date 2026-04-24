@@ -1,0 +1,61 @@
+{
+  "generated_at": 1777035772.0487423,
+  "note": "P4-S12 \u00a717.1/\u00a717.3 Phase-4 component bench",
+  "results": [
+    {
+      "label": "FileMemory.read_snapshot",
+      "n": 500,
+      "p50_ms": 0.177,
+      "p95_ms": 0.216,
+      "p99_ms": 0.259,
+      "mean_ms": 0.179,
+      "max_ms": 0.309,
+      "slo_p95_ms": 10.0,
+      "slo_pass": true
+    },
+    {
+      "label": "FileMemory.list_entries(memory)",
+      "n": 500,
+      "p50_ms": 0.101,
+      "p95_ms": 0.15,
+      "p99_ms": 0.207,
+      "mean_ms": 0.108,
+      "max_ms": 0.229,
+      "slo_p95_ms": 10.0,
+      "slo_pass": true
+    },
+    {
+      "label": "MemoryManager.recall(l1=snapshot, l2_top_k=10, l3=skip)",
+      "n": 300,
+      "p50_ms": 1.526,
+      "p95_ms": 1.701,
+      "p99_ms": 1.794,
+      "mean_ms": 1.539,
+      "max_ms": 1.88,
+      "slo_p95_ms": 30.0,
+      "slo_pass": true
+    },
+    {
+      "label": "MemoryManager.recall(l1=skip, l2_top_k=10)",
+      "n": 300,
+      "p50_ms": 1.464,
+      "p95_ms": 1.632,
+      "p99_ms": 1.818,
+      "mean_ms": 1.523,
+      "max_ms": 14.019,
+      "slo_p95_ms": 30.0,
+      "slo_pass": true
+    },
+    {
+      "label": "SkillLoader.list_skills()",
+      "n": 500,
+      "p50_ms": 0.0,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "mean_ms": 0.0,
+      "max_ms": 0.002,
+      "slo_p95_ms": 5.0,
+      "slo_pass": true
+    }
+  ]
+}

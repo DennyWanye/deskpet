@@ -5,6 +5,76 @@ All notable changes to DeskPet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0-phase4-rc1] — 2026-04-24
+
+**Phase 4 Poseidon agent harness + long-term memory — rc1 (components complete).**
+
+Ships the full P4 stack of components plus IPC surface. Backend session
+integration (wiring `ContextAssembler` / `MemoryManager` / `SkillLoader` /
+`MCPManager` into `main.py`'s per-turn flow) is scoped to a follow-up S13
+sprint — rc1 exposes each component via the control-WS but they operate
+as standalone services that the UI can exercise today via `p4_ipc.py`.
+
+### Added
+
+- **Three-layer memory (L1 / L2 / L3)**
+  - L1 `FileMemory` (MEMORY.md / USER.md) with salience eviction + atomic
+    write. 50KB/20KB caps. Frozen-snapshot pattern to keep prompt cache hot.
+  - L2 `SessionDB` schema v9 migration — adds `embedding BLOB`, `salience`,
+    `decay_last_touch`, `user_emotion`, `audio_file_path` columns plus
+    `messages_vec` virtual table using `sqlite-vec` (cosine, 1024-dim).
+  - L3 `Retriever` — hybrid RRF fusion of FTS5 / vector / recency / salience.
+  - `MemoryManager` facade: parallel per-layer recall with graceful degradation
+    (one layer failing never cancels the others).
+- **Embedding pipeline**
+  - `BGE-M3 INT8` embedder (`deskpet.memory.embedder`) with mock fallback.
+  - `VectorWorker` batches writes on a 1s interval; backfills historical turns.
+- **ContextAssembler + Context Compressor**
+  - 6-component registry with per-task `AssemblyPolicy`, `BudgetAllocator`
+    sizing sections off `context_window × budget_ratio`.
+  - `ContextCompressor` rolling-summary when transcript ≥ 0.75 × window
+    (keep first_n=3 + last_n=6). 29/29 tests.
+  - `TaskClassifier` (rule → embed → LLM fallback) surfaces `classifier_path`
+    on each decision for the trace UI.
+- **MCP client (P4-S9)**
+  - `MCPManager` with `AsyncExitStack` lifecycle, `stdio_client` / `sse_client`
+    / `streamablehttp_client` transports.
+  - Exponential-backoff reconnect, fast-fail <50ms on dead sessions, namespace
+    tools as `mcp_{server}_{tool}`. 13/13 tests.
+- **Skill system (P4-S10)**
+  - `SkillLoader` with YAML frontmatter, 1s watchdog debounce, `${args[N]}`
+    substitution, sandboxed `python -I` subprocess.
+  - Ships three built-in skills: `recall-yesterday`, `summarize-day`,
+    `weather-report`. 16/16 tests.
+- **Front-end panels (P4-S11)**
+  - `MemoryPanel` — four tabs: 对话 / L1 档案 / 向量搜索 / 技能.
+  - `ContextTracePanel` — decision timeline, classifier_path + latency +
+    total_tokens, CSS-only stacked token-breakdown bar, >=90% budget warn.
+- **Control-WS IPC surface (P4-S11)**
+  - `backend/p4_ipc.py` — 5 handlers: `skills_list`, `decisions_list`,
+    `memory_search`, `memory_l1_list`, `memory_l1_delete`. All degrade
+    gracefully when their service isn't registered yet. 22/22 tests.
+- **Phase-4 bench** — `scripts/bench_phase4.py` validates SLO:
+  - `FileMemory.read_snapshot` p95 0.22ms (SLO 10ms).
+  - `MemoryManager.recall(L1+L2)` p95 1.70ms (SLO 30ms).
+  - `SkillLoader.list_skills` p95 <1ms (SLO 5ms).
+
+### Deferred to S13 integration sprint
+
+- Wiring P4 services into `main.py` session flow (currently each component
+  works standalone; `p4_ipc.py` returns empty + `reason` until wired).
+- Full-stack SLO validation (ContextAssembler p95, first-byte p50, prompt
+  cache hit rate) — requires live LLM + integrated pipeline.
+- Cold-start ≤ 90s gate (unchanged from P3; BGE-M3 still lazy-loaded).
+- Native Tauri E2E smoke (Preview MCP only serves the Vite dev server —
+  no native window rendering in CI).
+
+### Tests
+
+- 612 passing in deskpet regression (1 timing-flaky in isolation passes).
+- 22/22 P4 IPC handlers.
+- Frontend: `tsc --noEmit` clean, `vite build` clean.
+
 ## [0.2.0] — 2026-04-15
 
 First public beta. V6 Phase 2 Sprint P2-0 wraps up.
