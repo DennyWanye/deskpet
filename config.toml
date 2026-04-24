@@ -101,3 +101,50 @@ tts_cooldown_ms = 300
 # here to override; relative paths are anchored under %AppData%\deskpet\.
 db_path = ""
 embedding_model = "bge-m3"
+
+# ─────────────────────────────────────────────────────────────────
+# P4-S6: multi-provider LLM layer (Anthropic / OpenAI / Gemini).
+#
+# The [llm] / [llm.local] / [llm.cloud] sections above are the P3
+# HybridRouter namespace (OpenAI-compatible Ollama + Qwen). The P4
+# sections below live under [llm_p4.*] (separate top-level namespace)
+# so the P3 config loader doesn't trip on unknown sub-tables.
+# When the P4 agent loop runs, it reads ONLY the sections below; the
+# P3 HybridRouter continues to own the [llm.local]/[llm.cloud] keys.
+#
+# API keys are resolved via env / keyring (see backend/llm/keys.py).
+# MUST NOT be written into this file — commits would leak them.
+# ─────────────────────────────────────────────────────────────────
+[llm_p4]
+# Default model for the main agent turn.
+main_model = "anthropic:claude-sonnet-4-5"
+# Classifier model (P4-S7 TaskClassifier LLM layer).
+classifier_model = "anthropic:claude-haiku-4-5"
+# Daily cap across ALL providers. Reaches 80% → warning IPC event,
+# 100% → all subsequent chat_with_fallback calls raise LLMBudgetExceededError.
+daily_usd_cap = 10.0
+# Fallback chain — primary first, then up to 2 backups (spec: depth MUST ≤ primary + 2).
+fallback_chain = [
+    "anthropic:claude-sonnet-4-5",
+    "openai:gpt-4o",
+    "gemini:gemini-1.5-pro",
+]
+
+[llm_p4.providers.anthropic]
+default_model = "claude-sonnet-4-5"
+timeout = 60.0
+
+[llm_p4.providers.openai]
+default_model = "gpt-4o"
+timeout = 60.0
+
+[llm_p4.providers.gemini]
+default_model = "gemini-1.5-pro"
+timeout = 60.0
+
+[agent]
+# P4-S6: agent loop guards.
+# ReAct-loop iteration ceiling — if the LLM keeps asking for tools without
+# ever emitting stop_reason=end_turn, the loop aborts after this many turns
+# and emits an error event. 20 is enough for any realistic workflow.
+max_iterations = 20
