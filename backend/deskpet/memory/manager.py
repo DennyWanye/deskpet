@@ -254,9 +254,17 @@ class MemoryManager:
             retriever = self._retriever
             if retriever is None:
                 return []
-            # S3 signature is fluid; fall back through a couple of shapes.
+            # S3's real Retriever has signature ``recall(query, top_k)``
+            # (see deskpet.memory.retriever). Test doubles in
+            # test_deskpet_memory_manager.py use ``recall(query, policy)``
+            # because they predate the final signature. Try the real
+            # keyword-arg shape first, then fall back for the fake.
             if hasattr(retriever, "recall"):
-                hits = await retriever.recall(query, {**policy, "top_k": top_k})
+                try:
+                    hits = await retriever.recall(query, top_k=top_k)
+                except TypeError:
+                    # Fake retriever in unit tests accepts (query, policy).
+                    hits = await retriever.recall(query, {**policy, "top_k": top_k})
             elif hasattr(retriever, "search"):
                 hits = await retriever.search(query, top_k=top_k)
             else:
