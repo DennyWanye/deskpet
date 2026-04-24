@@ -17,6 +17,7 @@
 - **工具系统**：拿 Hermes `tools/registry.py` 自动发现机制；拿 `claude-code-best/claude-code` 的工具分类（AgentTool / TaskCreate / TodoWrite / WebSearch / MCP）
 - **MCP 支持**：拿 `claude-code-best/claude-code/packages/mcp-client` 的协议实现
 - **Skill 系统**：兼容 `agentskills.io` 开放标准（Hermes / Claude Code 共用）
+- **智能上下文组装器（ContextAssembler）**：**原创** —— 在进 agent loop 前先识别任务类型（闲聊 / 回忆 / 任务 / 代码 / 搜索 / 规划 / 情绪），按策略**动态挑选并组合**记忆切片、工具子集、skill、persona、时间/工作区等上下文组件，再把装好的 `ContextBundle` 交给大模型
 
 **性能目标**：turn latency < 800ms p50、记忆召回 < 30ms p95、工具往返 < 50ms p50。
 
@@ -51,6 +52,7 @@
 5. **无 MCP**：不能接入 Claude Code 生态（filesystem / web / docker 等）
 6. **context 无压缩**：长对话必然炸 token 限制
 7. **无子任务 / 并行**：想让它"边放音乐边写笔记"只能串行
+8. **context 无组装**：每次对话都把全套工具 + 全套记忆塞进 prompt，既浪费 token 又稀释注意力 —— 该闲聊时不需要 `file_grep`，该查文件时不需要昨天的心情记录
 
 ### 1.2 目标
 
@@ -124,6 +126,8 @@
 | **ToolSearch**（按需加载工具） | Claude-Code-Best | `tools/ToolSearchTool` | **Pattern 参考** |
 | **Feature flag 系统** | Claude-Code-Best | `feature('FLAG_NAME')` via `bun:bundle` | **Pattern 参考**，Python 用 env var + settings.json |
 | **Prompt caching breakpoint** | Claude-Code-Best | `PROMPT_CACHE_BREAK_DETECTION` feature | **Pattern 参考** |
+| **ContextAssembler**（智能上下文组装器）| 原创 | — | **新写**（参考 CCB `feature()` flag + Hermes `skill_commands.py` 动态加载的思想，但组件化 orchestrate 是 DeskPet 独创）|
+| **TaskClassifier**（任务类型识别）| 原创 | — | **新写**（规则 + embedding 相似度 + 小 LLM 三层决策）|
 
 ---
 
@@ -143,9 +147,22 @@
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │           DeskPetAgent (lift from AIAgent)              │   │
 │  │                                                         │   │
+│  │  ┌──────────────────────────────────────────────────┐   │   │
+│  │  │  ContextAssembler  (NEW —— 事前智能组装)          │   │   │
+│  │  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐  │   │   │
+│  │  │  │TaskClassi-  │ │Component    │ │Assembly     │  │   │   │
+│  │  │  │fier         │→│Registry     │→│Policy +     │  │   │   │
+│  │  │  │(<20ms)      │ │(memory/tool │ │Budget Alloc │  │   │   │
+│  │  │  │             │ │ /skill/...) │ │             │  │   │   │
+│  │  │  └─────────────┘ └─────────────┘ └──────┬──────┘  │   │   │
+│  │  │                                          │         │   │   │
+│  │  │                                ContextBundle       │   │   │
+│  │  └──────────────────────────────────────────┼───────┘   │   │
+│  │                                             ↓             │   │
 │  │  ┌──────────────┐  ┌────────────────┐ ┌─────────────┐   │   │
 │  │  │ Agent Loop   │  │ Context Engine │ │ Budget &    │   │   │
-│  │  │ (ReAct)      │  │ (Compressor)   │ │ Interrupt   │   │   │
+│  │  │ (ReAct)      │  │ (Compressor,   │ │ Interrupt   │   │   │
+│  │  │              │  │  事后压缩)     │ │             │   │   │
 │  │  └──────┬───────┘  └────────────────┘ └─────────────┘   │   │
 │  │         │                                               │   │
 │  │  ┌──────▼───────────────────────────────────────────┐   │   │
@@ -208,17 +225,20 @@ class DeskPetAgent(AIAgent):  # 继承或直接 lift
         conversation_history: list = None,
         task_id: str = None,
     ) -> dict:
-        messages = self._build_messages(user_message, system_message, conversation_history)
+        # 1. 智能上下文组装（新增 —— 桌宠专属；见 §3.8）
+        #    事前根据任务类型挑选和组合组件，再进入 loop
+        bundle: ContextBundle = self._context_assembler.assemble(
+            user_message=user_message,
+            history=conversation_history,
+            conversation_id=task_id,
+        )
+        messages = bundle.build_messages(system_message)  # 已含 memory_block / tool schemas / skill prelude
 
-        # 1. 预取记忆（新增 —— 桌宠专属）
-        memory_context = self._memory_manager.prefetch_all(user_message)
-        if memory_context:
-            messages.insert(-1, {
-                "role": "system",
-                "content": build_memory_context_block(memory_context),  # lift from Hermes
-            })
+        # 2. （prefetch 现在由 Assembler 接管，不再独立调用）
+        #    但下一轮预热仍由 MemoryManager 保留：
+        self._memory_manager.queue_prefetch_all(user_message, hint=bundle.task_type)
 
-        # 2. 进入 agent loop（lift from Hermes）
+        # 3. 进入 agent loop（lift from Hermes）
         api_call_count = 0
         while (
             api_call_count < self.max_iterations
@@ -227,21 +247,22 @@ class DeskPetAgent(AIAgent):  # 继承或直接 lift
             if self._interrupt_requested:
                 break
 
-            # 3. Context 压缩（lift from Hermes）
+            # 4. Context 压缩（lift from Hermes，事后压缩，和 Assembler 互补）
             if self._context_engine.should_compress():
                 messages = self._context_engine.compress(messages)
 
-            # 4. LLM 调用（带 prompt caching breakpoint — 参考 claude-code-best）
+            # 5. LLM 调用（带 prompt caching breakpoint — 参考 claude-code-best）
+            #    工具 schema 用 Assembler 挑选出来的子集，不是全量
             response = self._llm_client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                tools=self._tool_registry.schemas(),
+                tools=bundle.tool_schemas,
                 extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
             )
 
             self._context_engine.update_from_response(response.usage)
 
-            # 5. 处理 tool calls（lift from Hermes）
+            # 6. 处理 tool calls（lift from Hermes）
             if response.tool_calls:
                 for tc in response.tool_calls:
                     # 桌宠适配：TTS 提前说 "让我查一下..."（新增）
@@ -253,9 +274,14 @@ class DeskPetAgent(AIAgent):  # 继承或直接 lift
 
                 api_call_count += 1
             else:
-                # 6. 最终回复 —— 同步异步记忆写入（新增）
+                # 7. 最终回复 —— 同步异步记忆写入（新增）
                 self._memory_manager.sync_all(user_message, response.content)
-                self._memory_manager.queue_prefetch_all(user_message)  # next-turn hint
+                # 给 Assembler 反馈实际调用的组件（用于策略学习）
+                self._context_assembler.feedback(
+                    bundle=bundle,
+                    used_tools=[tc.name for tc in (response.tool_calls or [])],
+                    final_response=response.content,
+                )
                 return {
                     "final_response": response.content,
                     "messages": messages,
@@ -269,10 +295,11 @@ class DeskPetAgent(AIAgent):  # 继承或直接 lift
 
 **关键适配点**（相对 Hermes 原版）：
 
-1. 插入 **memory prefetch**（第 1 步）
-2. 工具调用时可 **TTS 预语音化**（"让我查一下 ..."）→ 减感知延迟
-3. 每轮结束 **异步写记忆**（不阻塞 TTS）
-4. **中断**（第 2 步）来自 Live2D 窗口检测到用户又开口
+1. 插入 **ContextAssembler**（第 1 步）—— 事前按任务类型智能挑选组件，生成 `ContextBundle`
+2. 工具 schema 来自 `bundle.tool_schemas`（Assembler 挑的子集），而非全量 registry
+3. 工具调用时可 **TTS 预语音化**（"让我查一下 ..."）→ 减感知延迟
+4. 每轮结束 **异步写记忆** + **Assembler feedback**（不阻塞 TTS）
+5. **中断**来自 Live2D 窗口检测到用户又开口
 
 ### 3.3 记忆系统（三层）
 
@@ -539,6 +566,252 @@ class ContextEngine(ABC):
 - `@mcp/weather` —— 天气（自研或用现成）
 - （可选）`@ccd_session` —— Claude Code Session（如果主人在用）
 
+### 3.8 ContextAssembler —— 智能上下文组装器（**原创**）
+
+**定位**：agent loop **之前**的 preprocessing layer；输入 `user_message` + history，输出一个装好的 `ContextBundle`。
+
+**与 ContextEngine 的区别**：
+| | ContextAssembler | ContextEngine |
+|---|---|---|
+| 时机 | **事前**（进 loop 前一次性组装）| **事中**（prompt 膨胀后压缩）|
+| 输入 | 用户原始消息 | 当前 messages list |
+| 决策 | 挑哪些组件塞进去 | 挑哪些消息丢出来 |
+| 性能预算 | <70ms（Classifier 20ms + Assembly 50ms）| 压缩时一次性 <2s |
+| 能否跳过 | 不能 —— 每轮必过 | 能 —— 仅在阈值触发 |
+
+两者**互补**，不重叠。
+
+#### 3.8.1 核心数据流
+
+```
+user_message: "昨天你提到的那本书叫什么？"
+            │
+            ▼
+┌─────────────────────────┐
+│   TaskClassifier        │    rule match "昨天|之前|那个" → 命中 "recall"
+│   (<20ms)               │    embedding sim with task exemplars → "recall" (0.87)
+│                         │    optional tiny-LLM verify → "recall"
+└────────┬────────────────┘
+         │ task_type = "recall"
+         ▼
+┌─────────────────────────┐
+│   AssemblyPolicy        │    lookup: recall → [
+│   (yaml/py rules)       │      memory(L1=snapshot, L2=fts+recent 20, L3=vec top10),
+│                         │      tools=[memory_read, memory_search],
+│                         │      skills=[recall-yesterday if registered],
+│                         │      persona=brief,
+│                         │      time=current,
+│                         │    ]
+└────────┬────────────────┘
+         │ plan: list[ComponentRequest]
+         ▼
+┌─────────────────────────┐
+│   ComponentRegistry     │    并行调用各组件的 .provide(ctx):
+│   (parallel fan-out)    │      MemoryComponent.provide() → 120 tokens
+│                         │      ToolComponent.provide()   → 800 tokens
+│                         │      SkillComponent.provide()  → 200 tokens
+│                         │      PersonaComponent.provide() → 150 tokens
+│                         │      TimeComponent.provide()    → 30 tokens
+└────────┬────────────────┘
+         │ raw materials
+         ▼
+┌─────────────────────────┐
+│   BudgetAllocator       │    token_budget = ctx_window × 0.6
+│                         │    若超：按 component.priority 砍次要 / 截断 memory.top_k
+└────────┬────────────────┘
+         │
+         ▼
+      ContextBundle:
+        ├── frozen:  system_prompt + persona + time  ← 走 prompt cache
+        ├── dynamic: memory_block + skill_prelude
+        ├── tool_schemas: [...]  ← 精选子集（非全量 registry）
+        └── meta:    task_type / decisions / cost_hint
+```
+
+#### 3.8.2 TaskClassifier（三层决策）
+
+```python
+class TaskClassifier:
+    """三级递进，先便宜后贵，直到置信度达标"""
+
+    def classify(self, user_message: str, history_tail: list) -> TaskType:
+        # 第 1 层：规则（<2ms，命中率约 40%）
+        if t := self._rule_match(user_message):
+            return t  # e.g., "/" 开头 → command, "昨天/之前/记得吗" → recall
+
+        # 第 2 层：embedding + cosine sim 到 task exemplars（<15ms，命中率约 85%）
+        q_emb = self._embedder.embed_cached(user_message)
+        t, score = self._nearest_exemplar(q_emb)
+        if score > 0.75:
+            return t
+
+        # 第 3 层：tiny-LLM 投票（<300ms，兜底；默认关闭，可开启）
+        #          用 claude-haiku 或本地 qwen-0.5b
+        if self._config.enable_llm_classifier:
+            return self._llm_classify(user_message, history_tail)
+
+        return TaskType.CHAT  # 默认兜底
+```
+
+**任务类型枚举**（初版 8 类，可扩）：
+
+| task_type | 识别信号 | 组件组合 | 工具子集 |
+|---|---|---|---|
+| `chat` | 默认 / 问候 / 情绪 | L1 snapshot + persona + recent 3 | memory_write |
+| `recall` | "昨天/之前/记得/那个" | L1 + L2 FTS + L3 vec top-10 | memory_search, memory_read |
+| `task` | "帮我/待会/提醒" | L1 + todo list + skill prelude | todo_write, todo_complete, delegate |
+| `code` | 代码块 / ".py" / 路径 | workspace digest + L3 vec (code similar) | file_read/write/glob/grep |
+| `web_search` | "搜一下/查查/新闻" | 时间 + L2 FTS (相关主题) | web_search, web_fetch |
+| `plan` | "如何/步骤/怎么做" | L1 + L2 FTS top-5 | todo_write, delegate, ask_user |
+| `emotion` | 情绪词 + 标点强度 | L1 + USER.md 放大 + recent 10 | memory_write |
+| `command` | 以 `/` 开头 | skill body only | skill_invoke |
+
+#### 3.8.3 ComponentRegistry
+
+组件实现 `Component` 接口，自己声明成本和优先级：
+
+```python
+class Component(ABC):
+    name: str
+    priority: int       # 1-10, 被砍时从低到高
+    est_tokens: int     # 估算成本
+
+    @abstractmethod
+    def provide(self, ctx: AssemblyContext) -> ComponentOutput:
+        """返回 role + content + tokens 或 tool schemas。"""
+```
+
+MVP 内置 6 个组件：
+
+| Component | 数据来源 | 组装产物 |
+|---|---|---|
+| `MemoryComponent` | MemoryManager L1/L2/L3 | `<memory-context>` 块 |
+| `ToolComponent` | ToolRegistry + policy 白名单 | `tools: [schemas]` |
+| `SkillComponent` | SkillLoader 按任务匹配 | SKILL.md body 作为 prelude user message |
+| `PersonaComponent` | USER.md 摘要 + pet mood | 注入 system prompt |
+| `TimeComponent` | wall clock + 今日日历 | 短 system note |
+| `WorkspaceComponent` | 当前聚焦文件（可选）| 代码片段 + 路径 |
+
+**插件点**：用户可在 `%AppData%\deskpet\components\<name>\` 放新组件（热加载，同 Skill 机制）。
+
+#### 3.8.4 AssemblyPolicy（声明式策略）
+
+策略用 **YAML** 描述（方便用户无代码修改）：
+
+```yaml
+# deskpet/agent/policies/default.yaml
+policies:
+  recall:
+    must:   [memory, persona, time]
+    prefer: [skill:recall-yesterday]
+    tools:  [memory_read, memory_search]
+    memory:
+      l1: snapshot
+      l2: { top_k: 20, mode: fts }
+      l3: { top_k: 10, mode: vec }
+
+  code:
+    must:   [workspace, memory]
+    tools:  [file_read, file_write, file_glob, file_grep]
+    memory:
+      l1: snapshot
+      l2: { top_k: 5, mode: fts, filter: "role=assistant AND content LIKE '%```%'" }
+      l3: { top_k: 15, mode: vec }
+
+  chat:
+    must:   [memory, persona]
+    tools:  [memory_write]
+    memory:
+      l1: snapshot
+      l2: { top_k: 3, mode: recent }
+      l3: null   # 闲聊不查向量
+```
+
+**策略合成**：`default.yaml` + `user/overrides.yaml` 两层合并，用户可覆盖。
+
+#### 3.8.5 BudgetAllocator
+
+```python
+# 伪代码
+def allocate(bundle: PartialBundle, budget: int) -> ContextBundle:
+    if bundle.total_tokens <= budget:
+        return bundle.finalize()
+
+    # 超预算：按 priority 从低到高砍 / 缩
+    overrun = bundle.total_tokens - budget
+    for comp in sorted(bundle.components, key=lambda c: c.priority):
+        if comp.name == "memory":
+            comp.shrink_memory_top_k()   # L3 top_k 10→5→3
+        elif comp.name == "tool":
+            comp.prune_rare_tools()      # 按上周使用频率砍
+        elif comp.name in ("skill", "workspace"):
+            comp.drop()                  # 直接扔
+        overrun = recompute(bundle) - budget
+        if overrun <= 0:
+            break
+    return bundle.finalize()
+```
+
+#### 3.8.6 ContextBundle 数据结构
+
+```python
+@dataclass
+class ContextBundle:
+    task_type: TaskType
+    # Frozen 部分：组装结果稳定 → 参与 prompt cache
+    frozen_system: str              # system_prompt + persona + time
+    # Dynamic 部分：每轮变 → 不参与 cache
+    memory_block: str | None        # <memory-context>...</memory-context>
+    skill_prelude: list[dict]       # [{"role": "user", "content": "..."}]
+    tool_schemas: list[dict]
+    # Metadata
+    decisions: dict                 # 挑了什么、为什么，用于可观测性
+    cost_hint: dict                 # 预估 tokens / 真实 tokens 事后填
+
+    def build_messages(self, base_system: str) -> list[dict]:
+        msgs = [{"role": "system", "content": base_system + "\n\n" + self.frozen_system}]
+        msgs.extend(self.skill_prelude)
+        if self.memory_block:
+            msgs.append({"role": "system", "content": self.memory_block})
+        return msgs
+```
+
+#### 3.8.7 Prompt cache 兼容性
+
+**关键：不能因为 Assembler 的引入破坏 prompt cache**：
+- `frozen_system` 部分**每轮稳定**（只有策略变更 / 文件记忆刷新时才变）→ 走缓存
+- `memory_block` / `skill_prelude` 作为**独立 system messages** 放在 frozen 之后 → 不影响 frozen 部分的 prefix cache
+- 关键顺序（Claude prompt caching 规则）：
+  ```
+  [cacheable system (frozen)]  ← 打 breakpoint
+  [cacheable system (persona)] ← 打 breakpoint
+  [memory/skill (dynamic)]     ← 不打 breakpoint
+  [conversation history]
+  [current user message]
+  ```
+
+#### 3.8.8 可观测性
+
+每轮 `bundle.decisions` 写进 session log：
+
+```json
+{
+  "task_type": "recall",
+  "classifier_path": "rule",
+  "classifier_latency_ms": 1.2,
+  "assembly_latency_ms": 38.7,
+  "components": {
+    "memory": {"l1": true, "l2_top_k": 20, "l3_top_k": 10, "tokens": 1180},
+    "tool":   {"tools": ["memory_read", "memory_search"], "tokens": 420},
+    "persona": {"tokens": 150}
+  },
+  "budget_cut": false,
+  "total_tokens": 1750
+}
+```
+
+前端 `MemoryPanel` 下面加一个 "Context Trace" 视图显示这个结构 → 用户能看到桌宠"为什么这样想"。
+
 ---
 
 ## 4. 数据模型
@@ -576,6 +849,17 @@ threshold_percent = 0.75
 protect_first_n = 3
 protect_last_n = 6
 
+[context.assembler]
+enabled = true
+policy_file = "agent/policies/default.yaml"
+user_overrides = "%APPDATA%/deskpet/policies/overrides.yaml"
+budget_ratio = 0.6              # ContextBundle 允许占 context_window 的比例
+classifier_mode = "rule+embed"  # rule | rule+embed | rule+embed+llm
+classifier_exemplars = "agent/policies/exemplars.jsonl"
+llm_classifier_model = "claude-haiku-4-5"  # 仅当 mode 含 llm 时
+fallback_task_type = "chat"
+trace_enabled = true            # 每轮写 decisions 到 log
+
 [tools]
 enabled = ["memory", "todo", "file", "web", "delegate", "skill", "mcp"]
 disabled = []
@@ -600,8 +884,11 @@ tool_call_p50_budget_ms = 50
 
 | 指标 | 目标 | 当前（rc1） | 预算分解 |
 |---|---|---|---|
-| **首字延迟**（ASR 结束 → 首字 TTS）| **< 800ms p50** | ~2000ms | ASR end → LLM stream first token 400ms + TTS first chunk 400ms |
+| **首字延迟**（ASR 结束 → 首字 TTS）| **< 800ms p50** | ~2000ms | Assembler 70ms + LLM stream first token 330ms + TTS first chunk 400ms |
 | **记忆召回** | **< 30ms p95**（10 万条） | N/A | 向量 20ms + FTS 5ms + 融合 5ms |
+| **ContextAssembler** | **< 70ms p95** | N/A | Classifier 20ms + 并行 component.provide() 40ms + Budget alloc 10ms |
+| ├─ TaskClassifier | **< 20ms p95** | N/A | rule 2ms / embed 15ms / llm 300ms（可选） |
+| ├─ Component 并行组装 | **< 50ms p95** | N/A | MemoryComponent 30ms + ToolComponent 5ms + 其余 <5ms each |
 | **工具调用往返** | **< 50ms p50**（本地） | N/A | JSON encode 5ms + dispatch 2ms + handler 30ms + encode back 10ms |
 | **Context 压缩** | **< 2000ms**（触发时） | N/A | summarize 用 haiku 模型 |
 | **Embedding 批量** | **< 80ms/batch-8** | N/A | BGE-M3 INT8 on RTX 30-series |
@@ -628,19 +915,20 @@ tool_call_p50_budget_ms = 50
 | **P4-S3** | 向量索引（sqlite-vec） + 混合召回 | S1, S2 | 1d | 10 万条压测：p95 < 30ms |
 | **P4-S4** | Memory manager + MEMORY.md/USER.md（lift） | S1 | 1d | E2E：write → 下次 session 读到 |
 | **P4-S5** | Tool registry + 10 个内置 tool（lift） | S1 | 1d | 单测 + LLM 调用真实 tool 串起来 |
-| **P4-S6** | Agent loop（lift Hermes `run_conversation`） | S1, S4, S5 | 2d | E2E：一句 → tool → 回复 |
-| **P4-S7** | Context compressor（lift Hermes） | S6 | 1d | 长对话自动压缩不丢关键信息 |
-| **P4-S8** | MCP client（port from TS） | S5 | 2d | 接入 filesystem + brave-search |
-| **P4-S9** | Skill system（lift + 热加载） | S5 | 1d | 加一个 skill → `/skill-name` 生效 |
-| **P4-S10** | 前端 MemoryPanel + `/agent` 模式入口 | S4-S9 | 2d | UI E2E + 截图 |
-| **P4-S11** | 冷启动性能回归 + 整体 benchmark | 全部 | 1d | P3-G1 保持 ≤90s，新增指标 PASS |
+| **P4-S6** | Agent loop（lift Hermes `run_conversation`，**不含** Assembler，先用全量 registry 跑通） | S1, S4, S5 | 2d | E2E：一句 → tool → 回复 |
+| **P4-S7** | **ContextAssembler v1**（TaskClassifier rule+embed + ComponentRegistry + 6 内置组件 + BudgetAllocator + YAML policy） | S3, S4, S5, S6 | **2d** | 8 类任务分类准确率 > 85%；组装 latency p95 < 70ms；bundle trace 落 log |
+| **P4-S8** | Context compressor（lift Hermes） | S6 | 1d | 长对话自动压缩不丢关键信息 |
+| **P4-S9** | MCP client（port from TS） | S5 | 2d | 接入 filesystem + brave-search |
+| **P4-S10** | Skill system（lift + 热加载）+ Assembler SkillComponent 接线 | S5, S7 | 1d | 加一个 skill → `/skill-name` 生效，且 Assembler 在匹配任务时自动挂载 |
+| **P4-S11** | 前端 MemoryPanel + **Context Trace 视图** + `/agent` 模式入口 | S4-S10 | 2d | UI E2E + 截图；Trace 视图能看到每轮 task_type / components / tokens |
+| **P4-S12** | 冷启动性能回归 + 整体 benchmark + Assembler 策略压测 | 全部 | 1d | P3-G1 保持 ≤90s，首字延迟 <800ms p50，Assembler <70ms p95 |
 
-**总计 14 人日**，预计 3-4 周日历时间（考虑调试 + 真机测试 + OpenSpec 流程）。
+**总计 16 人日**，预计 4 周日历时间（考虑调试 + 真机测试 + OpenSpec 流程）。
 
 **里程碑**：
-- **M1**（S1-S6 完成）= MVP，agent 能跑通一句话 → 工具 → 带记忆回答
-- **M2**（S7-S9 完成）= Full feature，压缩 + MCP + Skill 全部就绪
-- **M3**（S10-S11 完成）= Ship-ready，UI + 性能验收过
+- **M1**（S1-S6 完成）= Vanilla MVP，agent 能跑通一句话 → 全量工具 → 带记忆回答（无智能组装）
+- **M2**（S7-S10 完成）= **Smart** MVP，ContextAssembler 接管 + 压缩 + MCP + Skill 全部就绪
+- **M3**（S11-S12 完成）= Ship-ready，UI（含 Context Trace）+ 性能验收过
 
 ---
 
@@ -659,6 +947,24 @@ backend/
 │   │   ├── prompt_caching.py               ← lift
 │   │   ├── error_classifier.py             ← lift
 │   │   ├── retry_utils.py                  ← lift
+│   │   ├── assembler/                      (NEW —— 智能上下文组装器，§3.8)
+│   │   │   ├── __init__.py
+│   │   │   ├── assembler.py                ← ContextAssembler 主类
+│   │   │   ├── classifier.py               ← TaskClassifier (rule/embed/llm 三层)
+│   │   │   ├── bundle.py                   ← ContextBundle dataclass
+│   │   │   ├── budget_allocator.py         ← BudgetAllocator
+│   │   │   ├── components/                 ← 内置 6 组件
+│   │   │   │   ├── base.py                 ← Component ABC
+│   │   │   │   ├── memory_component.py
+│   │   │   │   ├── tool_component.py
+│   │   │   │   ├── skill_component.py
+│   │   │   │   ├── persona_component.py
+│   │   │   │   ├── time_component.py
+│   │   │   │   └── workspace_component.py
+│   │   │   ├── policies/                   ← 声明式策略 YAML
+│   │   │   │   ├── default.yaml
+│   │   │   │   └── exemplars.jsonl         ← classifier embedding 样本
+│   │   │   └── trace.py                    ← decisions 落 log
 │   │   └── providers/                      ← 多 provider 适配
 │   │       ├── anthropic_adapter.py        ← lift
 │   │       ├── openai_adapter.py
@@ -761,6 +1067,29 @@ backend/
   - 构造参数收窄到 ~15 个
   - 保留接口兼容，方便未来再吸收 Hermes 更新
 
+### R9. ContextAssembler 分类错误导致错配组件
+- **风险**：rule 层过激进 / embed 阈值过低 → task_type 错判 → 该查记忆时没查、该给工具时没给
+- **缓解**：
+  - **三层递进 + 置信度阈值**：rule 只打明确信号；embed 阈值 >0.75 才 commit；否则降级到 `chat` 默认策略
+  - **Fallback**：分类置信度低时，策略默认"全量"（memory + 通用工具集），宁多不少
+  - **可观测性**：每轮 `classifier_path` 写 log，用户可在 MemoryPanel 里看到并手动覆盖
+  - **在线学习**：`feedback()` 记录 "分类 vs. 实际用了什么工具"，每周离线重算 exemplars 集
+
+### R10. Assembler 引入的 per-turn latency 抵消收益
+- **风险**：每轮多花 70ms 组装，用户端首字延迟显性变慢
+- **缓解**：
+  - 严格守 70ms p95 预算；超了必须在 P4-S12 回归里卡掉
+  - Classifier 第 3 层 LLM 默认关闭（300ms 级别太贵）
+  - Components 并行 fan-out（`asyncio.gather`），不是串行
+  - 允许整体 **disable**（config flag `[context.assembler].enabled=false`）退化到全量工具 + 全量 prefetch，用于紧急回滚
+
+### R11. Prompt cache 因组件变动而失效
+- **风险**：Assembler 每轮产出不同顺序 / 不同内容 → frozen 部分不稳定 → cache miss
+- **缓解**：
+  - **Frozen 部分只含稳定组件**（persona、time 粗粒度、system prompt）；动态组件（memory、skill）放在 frozen **之后**的独立 system message
+  - 打 prompt cache breakpoint 在 frozen 尾部（Claude 的 `cache_control`）
+  - 回归测试：连续 5 轮 chat 任务，观察 `cache_read_tokens / input_tokens` 比率 > 80%
+
 ---
 
 ## 9. 开放问题（需你决策）
@@ -779,6 +1108,12 @@ backend/
    - 建议：**只读共享**（子 agent 能检索但不能写），主 agent 负责回写
 7. **Embedding 不可用时的降级**：首次启动 BGE-M3 没下载好
    - 建议：纯 FTS5 记忆 + "记忆模型加载中..." 状态提示，BGE-M3 ready 后异步回填
+8. **TaskClassifier 第 3 层 LLM 默认开关**：
+   - 建议：**默认关**（省 300ms），仅在 embed 置信度 < 0.5 且 3 秒内无多轮上下文时才调用；用户可在 settings 开启"精准模式"
+9. **AssemblyPolicy 冲突时的仲裁**：用户 overrides.yaml 和 default.yaml 规则冲突时
+   - 建议：用户覆盖 > 默认；必须字段（`must`）允许追加但不允许删除核心 memory 组件（防止用户误关记忆）
+10. **Assembler feedback 是否真的做在线学习**：
+    - 建议：**v1 只记录不学习**（P4-S7 落盘 decisions + 实际工具使用），离线每周跑一次 exemplars 聚类；真正的 online adaptive policy 放 Phase 5
 
 ---
 
@@ -799,6 +1134,10 @@ backend/
 - [ ] 10 万条合成记忆压测：recall p95 < 30ms
 - [ ] 至少 3 个用户自定义 skill 工作
 - [ ] 至少 2 个 MCP server 联通（filesystem + brave-search）
+- [ ] **ContextAssembler 分类准确率** ≥ 85%（在 100 条人工标注测试集上）
+- [ ] **ContextAssembler latency p95 < 70ms**（benchmark `scripts/perf/assembler_bench.py`）
+- [ ] **Prompt cache 命中率** ≥ 80%（连续 5 轮 chat，`cache_read_tokens/input_tokens`）
+- [ ] **Context Trace UI** 能展示每轮 task_type / 挑选组件 / tokens 分布
 
 ---
 
@@ -843,6 +1182,9 @@ Copyright (c) 2026 DeskPet Contributors
 | ADR-5 | Memory 采用 "frozen snapshot" 模式 | 每次写都更新 system prompt | 保 prompt cache |
 | ADR-6 | 子 agent 只读共享主 agent 记忆 | 完全隔离 | 避免重复召回、主 agent 统一回写 |
 | ADR-7 | 无消息网关（Telegram/Slack 等） | 完整 Hermes gateway | 桌宠是 single-user 本机产品，不 scope |
+| ADR-8 | **引入 ContextAssembler 做事前组装** | 只靠 ContextEngine 事后压缩 | 事后压缩是"炸了再救"，事前组装是"一开始就只带需要的"；在 token 预算已经很大（§1.2 性能优先）的前提下，质量和可解释性收益 > 70ms 延迟成本 |
+| ADR-9 | **策略用 YAML 声明式，不写死在代码里** | Python 规则树 | 用户可无代码扩展；AssemblyPolicy 的改动不触发 re-deploy；与 Skill 系统同源设计 |
+| ADR-10 | **TaskClassifier 默认 rule+embed，不用 LLM** | 全用 LLM 分类 | LLM 分类 300ms 抵消整个 Assembler 收益；rule+embed 已能做到 >85% 准确率；LLM 只作为"精准模式"兜底 |
 
 ---
 
