@@ -106,3 +106,11 @@ packages = [
 
 [tool.setuptools.package-data]
 "memory.migrations" = ["*.sql"]
+
+[tool.pytest.ini_options]
+# P4-S5: register custom markers used by the new tool-framework perf
+# tests. Without this, pytest emits PytestUnknownMarkWarning on every
+# collection of ``@pytest.mark.perf``.
+markers = [
+    "perf: performance regression test (p95 / throughput). Allowed to be flaky on CI runners; prefer running locally before a release.",
+]
