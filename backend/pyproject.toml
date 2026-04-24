@@ -64,6 +64,10 @@ dependencies = [
     # Pinned >=1.0 (first stable release, 2025-05).
     "google-genai>=1.0",
     "keyring>=24.0",
+    # P4-S7: ContextAssembler assembly policies ship as declarative YAML
+    # under deskpet/agent/assembler/policies/default.yaml. PyYAML covers
+    # loader + user overrides merge (overrides.yaml under %APPDATA%).
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -120,6 +124,10 @@ packages = [
 # P4-S0: deskpet.memory 迁移 SQL 需要被 setuptools 打包进来（PyInstaller
 # 间接依赖 installed package 的数据文件）。
 "deskpet.memory.migrations" = ["*.sql"]
+# P4-S7: ContextAssembler policies ship as declarative YAML + JSONL.
+# default.yaml is the 8-task_type policy map, exemplars.jsonl is the
+# embed-tier exemplar pool (~100 hand-labelled lines).
+"deskpet.agent.assembler.policies" = ["*.yaml", "*.jsonl"]
 
 [tool.pytest.ini_options]
 # P4-S1 task 3.5: `perf` mark 默认跳过；手动 `pytest -m perf` 触发。

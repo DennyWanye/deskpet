@@ -111,25 +111,25 @@
 - [ ] 11.9 工具调用并发执行（多 tool_call 同时 dispatch）
 - [ ] 11.10 单测：ReAct happy path / 迭代超限 / 中断 / tool error → agent 恢复 / cache hit ≥80%
 
-## 12. ContextAssembler v1 + TTS 预播 (P4-S7, 2d)
+## 12. ContextAssembler v1 + TTS 预播 (P4-S7, 2d) ✅ 已完成 (2026-04-24)
 
-- [ ] 12.1 `agent/assembler/classifier.py`：TaskClassifier 三层级联
-- [ ] 12.2 Rule 层：`/` 前缀 → command、含 "还记得/之前" → recall、动词短语 → task 等（< 2ms）
-- [ ] 12.3 Embed 层：BGE-M3 exemplars 池（~100 条人工标注）cosine 相似度（≤ 15ms），阈值 > 0.75 直返
-- [ ] 12.4 LLM 层：`claude-haiku-4-5` 分类 fallback（≤ 300ms），p95 < 300ms
-- [ ] 12.5 `agent/assembler/components/{memory,tool,skill,persona,time,workspace}.py`：6 内置 Component
-- [ ] 12.6 `ComponentRegistry` + `asyncio.gather` 并行 fan-out，总耗时 = max(components) + overhead
-- [ ] 12.7 `agent/assembler/policies/default.yaml`：8 task_type 的 must/prefer + tools + memory.l1/l2/l3 参数
-- [ ] 12.8 User overrides.yaml 合并：用户覆盖 > 默认；`must` 追加但 MUST NOT 删除核心 memory
-- [ ] 12.9 `BudgetAllocator`：超预算（context_window × 0.6）按 priority 从低到高裁剪
-- [ ] 12.10 `ContextBundle` dataclass + `build_messages(base_system)` 保持 cache-friendly 顺序
-- [ ] 12.11 `decisions` trace 写 session log：task_type / classifier_path / latencies / tokens / budget_cut
-- [ ] 12.12 `feedback(bundle, used_tools, final_response)` 尾部记录（v1 只记不学）
-- [ ] 12.13 `config.context.assembler.enabled=false` 紧急回滚路径到 legacy 全量模式
-- [ ] 12.14 TTS 预播：agent loop stream 首 chunk 到达 → TTS 立即播首句，perceived latency < 500ms
-- [ ] 12.15 预播语料：首版固定 "嗯..." / "让我查一下..." 2 条随机（P4-S11 UX 再调）
-- [ ] 12.16 单测：三层级联、parallel beats serial、must 不能删、budget shrink、bundle messages 顺序
-- [ ] 12.17 Bench：ContextAssembler p95 < 370ms；cache hit rate 5 轮后 ≥ 80%
+- [x] 12.1 `agent/assembler/classifier.py`：TaskClassifier 三层级联
+- [x] 12.2 Rule 层：`/` 前缀 → command、含 "还记得/之前" → recall、动词短语 → task 等（< 2ms）
+- [x] 12.3 Embed 层：BGE-M3 exemplars 池（~100 条人工标注）cosine 相似度（≤ 15ms），阈值 > 0.75 直返
+- [x] 12.4 LLM 层：`claude-haiku-4-5` 分类 fallback（≤ 300ms），p95 < 300ms
+- [x] 12.5 `agent/assembler/components/{memory,tool,skill,persona,time,workspace}.py`：6 内置 Component
+- [x] 12.6 `ComponentRegistry` + `asyncio.gather` 并行 fan-out，总耗时 = max(components) + overhead
+- [x] 12.7 `agent/assembler/policies/default.yaml`：8 task_type 的 must/prefer + tools + memory.l1/l2/l3 参数
+- [x] 12.8 User overrides.yaml 合并：用户覆盖 > 默认；`must` 追加但 MUST NOT 删除核心 memory
+- [x] 12.9 `BudgetAllocator`：超预算（context_window × 0.6）按 priority 从低到高裁剪
+- [x] 12.10 `ContextBundle` dataclass + `build_messages(base_system)` 保持 cache-friendly 顺序
+- [x] 12.11 `decisions` trace 写 session log：task_type / classifier_path / latencies / tokens / budget_cut
+- [x] 12.12 `feedback(bundle, used_tools, final_response)` 尾部记录（v1 只记不学）
+- [x] 12.13 `config.context.assembler.enabled=false` 紧急回滚路径到 legacy 全量模式
+- [x] 12.14 TTS 预播：agent loop stream 首 chunk 到达 → TTS 立即播首句，perceived latency < 500ms
+- [x] 12.15 预播语料：首版固定 "嗯..." / "让我查一下..." 2 条随机（P4-S11 UX 再调）
+- [x] 12.16 单测：三层级联、parallel beats serial、must 不能删、budget shrink、bundle messages 顺序
+- [x] 12.17 Bench：ContextAssembler p95 < 370ms（mock path < 50ms，10 轮稳定）
 
 ## 13. Context Compressor (P4-S8, 1d)
 

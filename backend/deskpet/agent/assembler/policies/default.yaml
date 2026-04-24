@@ -1,0 +1,110 @@
+# Default AssemblyPolicy for every canonical task_type (P4-S7 task 12.7).
+#
+# Loaded by deskpet/agent/assembler/policy.py::load_policies.
+# User overrides live at %APPDATA%/deskpet/policies/overrides.yaml and
+# are deep-merged on top (D9 decision):
+#   - must         → user may ADD, never REMOVE core 'memory'
+#   - prefer       → user replaces
+#   - tools        → user replaces
+#   - memory.*     → user deep-merges (override only l3_top_k if wanted)
+#
+# Components available in v1:
+#   memory     — L1 snapshot + L2/L3 recall
+#   tool       — filters ToolRegistry by 'tools' whitelist
+#   skill      — skill prelude (P4-S10 wire-in)
+#   persona    — pet persona / system preamble
+#   time       — current time/date
+#   workspace  — workspace directory summary
+#
+# 'tools: ["*"]' exposes every tool from the registry.
+# 'tools: []'   exposes no tools that turn.
+# Named list entries filter by tool name.
+#
+# ⚠️ IMPORTANT: the 'tool' component must appear in must/prefer for its
+# slice (and thus the whitelist filter) to run. Policies with empty
+# 'tools: []' (e.g. emotion) omit 'tool' from prefer so it doesn't emit
+# an empty slice unnecessarily.
+policies:
+
+  chat:
+    must: [memory, persona]
+    prefer: [tool, time, workspace]
+    tools: ["*"]
+    memory:
+      l1: snapshot
+      l2_top_k: 5
+      l3_top_k: 5
+
+  recall:
+    # Pure memory-probe: user asked "what did we discuss about X".
+    # Give the LLM the widest possible memory window.
+    must: [memory]
+    prefer: [persona, tool, time]
+    tools: [memory_read, memory_search]
+    memory:
+      l1: snapshot
+      l2_top_k: 10
+      l3_top_k: 10
+
+  task:
+    # "Do X for me" — actioned request. Full tool access + workspace.
+    must: [memory, persona]
+    prefer: [tool, skill, workspace, time]
+    tools: ["*"]
+    memory:
+      l1: snapshot
+      l2_top_k: 5
+      l3_top_k: 3
+
+  code:
+    # Coding/debugging — scoped tool list, workspace is high value.
+    must: [memory]
+    prefer: [persona, tool, workspace]
+    tools:
+      - file_read
+      - file_write
+      - file_search
+      - todo_add
+      - todo_list
+    memory:
+      l1: snapshot
+      l2_top_k: 3
+      l3_top_k: 5
+
+  web_search:
+    must: [memory]
+    prefer: [persona, tool, time]
+    tools: [web_search, web_fetch, web_crawl]
+    memory:
+      l1: snapshot
+      l2_top_k: 2
+      l3_top_k: 3
+
+  plan:
+    must: [memory, persona]
+    prefer: [tool, time, workspace]
+    tools: [todo_add, todo_list, todo_update]
+    memory:
+      l1: snapshot
+      l2_top_k: 3
+      l3_top_k: 5
+
+  emotion:
+    # Emotional support — no tools, lean into persona + recent chat.
+    must: [memory, persona]
+    prefer: [time]
+    tools: []
+    memory:
+      l1: snapshot
+      l2_top_k: 5
+      l3_top_k: 5
+
+  command:
+    # Slash command or direct control; tool-driven, skip heavy memory.
+    must: [memory]
+    prefer: [persona, tool]
+    tools: ["*"]
+    memory:
+      l1: snapshot
+      l2_top_k: 2
+      l3_top_k: 0
