@@ -115,8 +115,10 @@ packages = [
 # 用 strict_markers 让未注册的 mark 直接报错，减少拼写错误。
 # P4-S2 task 4.5: `model_required` mark —— 只在 BGE-M3 权重可用时跑，
 # 默认跳过（CI / 新装用户没模型）。手动 `pytest -m model_required` 触发。
+# P4-S5: perf 覆盖 tool-framework web_fetch p95 / memory FTS5 10K 行 throughput；
+# 允许 CI runner 偶发波动，优先发布前本地跑。
 markers = [
-    "perf: slow performance regression tests (10K+ rows, skipped by default)",
+    "perf: performance regression test (p95 / throughput, 10K+ rows / localhost probes). Skipped by default; allowed to be flaky on CI; run locally before release.",
     "model_required: tests that need real BGE-M3 weights on disk (skipped by default)",
 ]
 addopts = "-m 'not perf and not model_required'"
