@@ -106,3 +106,14 @@ packages = [
 
 [tool.setuptools.package-data]
 "memory.migrations" = ["*.sql"]
+# P4-S0: deskpet.memory 迁移 SQL 需要被 setuptools 打包进来（PyInstaller
+# 间接依赖 installed package 的数据文件）。
+"deskpet.memory.migrations" = ["*.sql"]
+
+[tool.pytest.ini_options]
+# P4-S1 task 3.5: `perf` mark 默认跳过；手动 `pytest -m perf` 触发。
+# 用 strict_markers 让未注册的 mark 直接报错，减少拼写错误。
+markers = [
+    "perf: slow performance regression tests (10K+ rows, skipped by default)",
+]
+addopts = "-m 'not perf'"
