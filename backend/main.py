@@ -64,6 +64,7 @@ from config import load_config, resolve_config_path
 import paths as _paths
 from paths import resolve_model_dir  # P3-S1
 from context import ServiceContext
+import p4_ipc  # P4-S11 MemoryPanel + ContextTrace IPC handlers
 from observability.crash_reports import install_crash_reporter
 from observability.metrics import render as render_metrics
 from observability.startup import registry as startup_errors  # P3-S2
@@ -721,6 +722,18 @@ async def control_channel(ws: WebSocket):
                 # conversation history. All four go through the same memory
                 # store the agent reads from, so redaction-on-write still holds.
                 await _handle_memory_message(ws, session_id, msg_type, raw.get("payload", {}) or {})
+
+            elif msg_type in p4_ipc.P4_IPC_MESSAGE_TYPES:
+                # P4-S11 (§16.8): MemoryPanel + ContextTrace IPC surface.
+                # Gracefully degrades when P4 services aren't registered
+                # (pre-S12 wire-in) — UI shows empty state instead of error.
+                await p4_ipc.handle(
+                    ws,
+                    session_id,
+                    msg_type,
+                    raw.get("payload", {}) or {},
+                    service_context,
+                )
 
             elif msg_type == "provider_test_connection":
                 # P2-1-S3: SettingsPanel「测试连接」button. The candidate

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
 import { MemoryPanel } from "./components/MemoryPanel";
+import { ContextTracePanel } from "./components/ContextTracePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { DialogBar } from "./components/DialogBar";
 import { ChatHistoryPanel } from "./components/ChatHistoryPanel";
@@ -212,6 +213,8 @@ function App() {
 
   // S14 — memory management panel toggle.
   const [memoryOpen, setMemoryOpen] = useState(false);
+  // P4-S11 §16.5 — ContextTrace panel (decision timeline + token budget)
+  const [traceOpen, setTraceOpen] = useState(false);
 
   // P2-1-S3 — settings panel toggle (cloud account / strategy / daily budget).
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -586,6 +589,23 @@ function App() {
         >
           🗂
         </button>
+        {/* P4-S11 §16.5 — ContextTrace panel toggle */}
+        <button
+          data-testid="trace-toggle"
+          onClick={() => setTraceOpen(true)}
+          title="ContextTrace"
+          style={{
+            fontSize: "10px",
+            background: "rgba(0,0,0,0.5)",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            padding: "2px 6px",
+            cursor: "pointer",
+          }}
+        >
+          🧭
+        </button>
         {/* Settings panel toggle (P2-1-S3) */}
         <button
           data-testid="settings-toggle"
@@ -706,6 +726,13 @@ function App() {
         open={memoryOpen}
         onClose={() => setMemoryOpen(false)}
         sessionId="default"
+        getChannel={getControlChannel}
+      />
+
+      {/* P4-S11 ContextTrace overlay */}
+      <ContextTracePanel
+        open={traceOpen}
+        onClose={() => setTraceOpen(false)}
         getChannel={getControlChannel}
       />
 

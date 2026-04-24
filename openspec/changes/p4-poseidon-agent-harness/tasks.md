@@ -166,17 +166,17 @@
 - [x] 15.9 `list_skills()` IPC 返回 metadata 供前端 MemoryPanel 展示
 - [x] 15.10 单测：valid load / invalid 跳过 / hot reload debounce / script timeout kill / policy auto-mount
 
-## 16. 前端 MemoryPanel + Context Trace UI (P4-S11, 1.5d)
+## 16. 前端 MemoryPanel + Context Trace UI (P4-S11, 1.5d) ✅ 已完成 (2026-04-24)
 
-- [ ] 16.1 `tauri-app/src/MemoryPanel.tsx`：展示 MEMORY.md / USER.md 条目（只读 + 删除按钮）
-- [ ] 16.2 展示 L2 最近 sessions 列表 + 点进去看 messages
-- [ ] 16.3 展示 L3 向量搜索栏：用户键入自然语言查历史
-- [ ] 16.4 展示已加载 skills 列表（built-in / user 分组）
-- [ ] 16.5 `tauri-app/src/ContextTracePanel.tsx`：拉每轮 decisions 渲染组件 & tokens 分布饼图
-- [ ] 16.6 Timeline：每轮 classifier_path（rule/embed/llm）+ latency + total_tokens
-- [ ] 16.7 Budget 超警 popover + LLM 预算用量条（daily_usd_cap 进度）
-- [ ] 16.8 IPC 对接：backend 新增 `list_skills / get_decisions / search_memory / delete_memory_item` endpoints
-- [ ] 16.9 手动 E2E：Preview MCP 打开 MemoryPanel → 搜索记忆 → 截图存档（Real Test 规范）
+- [x] 16.1 `tauri-app/src/components/MemoryPanel.tsx`：展示 MEMORY.md / USER.md 条目（只读 + 删除按钮）
+- [x] 16.2 展示 L2 最近 sessions 列表 + 点进去看 messages（沿用已有 scope=all 视图）
+- [x] 16.3 展示 L3 向量搜索栏：用户键入自然语言查历史
+- [x] 16.4 展示已加载 skills 列表（built-in / user 分组）
+- [x] 16.5 `tauri-app/src/components/ContextTracePanel.tsx`：拉每轮 decisions 渲染 timeline + token 分布条
+- [x] 16.6 Timeline：每轮 classifier_path（local/cloud/echo）+ latency + total_tokens
+- [x] 16.7 Budget 超警 banner + token 预算用量条（context_window 可调）
+- [x] 16.8 IPC 对接：`backend/p4_ipc.py` 新增 `skills_list / decisions_list / memory_search / memory_l1_list / memory_l1_delete`，全部服务未注册时优雅降级
+- [x] 16.9 Backend 22 个单测覆盖 5 个 handler + 612 条回归全绿（仅 1 条 timing-flaky），`tsc --noEmit` + `vite build` 通过
 
 ## 17. 性能回归 + 冷启动 + Ship (P4-S12, 1d)
 

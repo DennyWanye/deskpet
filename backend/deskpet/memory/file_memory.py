@@ -158,6 +158,43 @@ class FileMemory:
         raw = await loop.run_in_executor(None, self._read_text_sync, target)
         return _parse_entries(raw, self._separator)
 
+    async def delete_entry(self, target: str, index: int) -> bool:
+        """Remove the entry at ``index`` from ``target``'s file.
+
+        Returns ``True`` if an entry was deleted, ``False`` if the index was
+        out of range (UI race with concurrent edits). Missing file → False.
+
+        Used by the MemoryPanel "删除" button (P4-S11 §16.1).
+        """
+        if target not in self._VALID_TARGETS_SET:
+            raise ValueError(
+                f"target must be one of {_VALID_TARGETS!r}, got {target!r}"
+            )
+        if not isinstance(index, int) or index < 0:
+            return False
+        async with self._locks[target]:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, self._delete_entry_sync, target, index
+            )
+
+    def _delete_entry_sync(self, target: str, index: int) -> bool:
+        path = self._path(target)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return False
+        entries = _parse_entries(raw, self._separator)
+        if index >= len(entries):
+            return False
+        del entries[index]
+        serialized = _serialize_entries(entries, self._separator)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_bytes(serialized.encode("utf-8"))
+        tmp.replace(path)
+        return True
+
     # ------------------------------------------------------------------
     # Sync helpers (run in executor)
     # ------------------------------------------------------------------

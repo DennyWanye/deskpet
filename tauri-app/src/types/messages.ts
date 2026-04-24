@@ -167,6 +167,102 @@ export interface DailyBudgetStatus {
   percent_used: number;
 }
 
+// --- P4-S11 MemoryPanel + ContextTrace (L1 / L3 / Skills / Decisions) --------
+//
+// Five new request→response pairs rendered on top of the existing control WS.
+// Backend handlers live in `backend/p4_ipc.py`; all of them degrade gracefully
+// (empty list + `reason`) when the underlying service hasn't been wired yet
+// so the UI ships independent of S12.
+
+export interface SkillDescriptor {
+  name: string;
+  description?: string;
+  version?: string;
+  author?: string;
+  /** "builtin" | "user" — lets the panel group custom skills separately. */
+  source?: "builtin" | "user" | string;
+  path?: string;
+}
+
+export interface SkillsListResponse {
+  type: "skills_list_response";
+  payload: {
+    skills: SkillDescriptor[];
+    /** Present when SkillLoader isn't registered yet (pre-S12 wire-in). */
+    reason?: string;
+  };
+}
+
+export interface DecisionRecord {
+  /** ISO8601 or epoch seconds — UI formats defensively. */
+  timestamp?: string | number;
+  /** Which router branch fired ("local" / "cloud" / "echo" etc.). */
+  classifier_path?: string;
+  /** End-to-end latency in ms for this turn. */
+  latency_ms?: number;
+  /** Total tokens consumed (prompt + completion). */
+  total_tokens?: number;
+  /** Per-section token budget breakdown for the bar chart. */
+  token_breakdown?: Record<string, number>;
+  /** Short one-line justification. */
+  reason?: string;
+  /** Session that produced the decision, if known. */
+  session_id?: string;
+}
+
+export interface DecisionsListResponse {
+  type: "decisions_list_response";
+  payload: {
+    decisions: DecisionRecord[];
+    reason?: string;
+  };
+}
+
+export interface MemoryHit {
+  text: string;
+  score: number;
+  source?: string;
+  created_at?: string | number | null;
+  session_id?: string | null;
+}
+
+export interface MemorySearchResponse {
+  type: "memory_search_response";
+  payload: {
+    query: string;
+    hits: MemoryHit[];
+    reason?: string;
+    error?: string;
+  };
+}
+
+export type L1Target = "memory" | "user";
+
+export interface L1Entry {
+  index: number;
+  text: string;
+  salience: number;
+}
+
+export interface MemoryL1ListResponse {
+  type: "memory_l1_list_response";
+  payload: {
+    target: L1Target;
+    entries: L1Entry[];
+    reason?: string;
+  };
+}
+
+export interface MemoryL1DeleteAck {
+  type: "memory_l1_delete_ack";
+  payload: {
+    target: L1Target;
+    index: number;
+    deleted: boolean;
+    reason?: string;
+  };
+}
+
 export type IncomingMessage =
   | ChatResponse
   | PongMessage
@@ -179,6 +275,11 @@ export type IncomingMessage =
   | MemoryClearAck
   | MemoryExportResponse
   | ProviderTestConnectionResult
-  | BudgetStatusMessage;
+  | BudgetStatusMessage
+  | SkillsListResponse
+  | DecisionsListResponse
+  | MemorySearchResponse
+  | MemoryL1ListResponse
+  | MemoryL1DeleteAck;
 
 export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | TTSBargeInMessage | ErrorMessage;
