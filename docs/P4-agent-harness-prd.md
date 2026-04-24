@@ -469,17 +469,49 @@ registry = ToolRegistry()  # module-level singleton
 # 每个文件顶部调用 registry.register(...) 登记自己
 ```
 
-**MVP 工具清单**（15 个，分 4 类）：
+**MVP 工具清单**（16 个，分 4 类）：
 
 | 类别 | 工具 | 来源 | 优先级 |
 |---|---|---|---|
 | **记忆** | `memory_write` / `memory_read` / `memory_search` | Hermes + 扩展 | P0 |
 | **任务** | `todo_write` / `todo_complete` | Hermes + Claude-Code-Best pattern | P0 |
 | **文件** | `file_read` / `file_write` / `file_glob` / `file_grep` | Hermes | P1 |
-| **网络** | `web_search` (brave) / `web_fetch` | Claude-Code-Best pattern | P1 |
+| **网络** | `web_fetch` / `web_crawl` / `web_extract_article` / `web_read_sitemap` | **自研**（D5 决策，零成本爬虫栈）| P1 |
 | **子任务** | `delegate` (spawn 子 agent) | Hermes `delegate_tool.py` | P1 |
 | **Skill** | `skill_invoke` | Hermes `skill_commands.py` | P1 |
 | **MCP** | `mcp_call` (动态 MCP 工具 dispatch) | Claude-Code-Best `mcp-client` pattern | P2 |
+
+#### 3.4.1 Web 工具集（零成本自研，D5 决策落地）
+
+**背景**：D5 决策不使用付费搜索服务（Brave/Bing/Tavily/Exa 等）。桌宠靠"给 agent 4 个基础网络工具，让它自己拼出搜索能力"。
+
+| 工具 | 签名 | 实现 | 说明 |
+|---|---|---|---|
+| `web_fetch` | `(url: str) → str` | `httpx` + `trafilatura` | 拉 URL → 提取正文。已知 URL 时用。|
+| `web_crawl` | `(seed_url, keywords, max_depth=2, max_pages=20) → list[{url, excerpt, score}]` | `httpx` + `selectolax` BFS 爬同域链接 + 关键词打分 | 给一个种子站点（如 stackoverflow.com）+ 关键词，自动爬相关页面 |
+| `web_extract_article` | `(url) → {title, author, date, text, language}` | `trafilatura` 结构化提取 | 专门对付新闻/博客，去除导航栏广告 |
+| `web_read_sitemap` | `(domain) → list[{url, lastmod}]` | 拉 `/sitemap.xml` 解析 | 让 agent 先看一个网站全貌，再 crawl |
+
+**组合出的"搜索"能力**：
+- agent 自己根据问题判断用哪个域名（"查 Python 问题 → stackoverflow.com / docs.python.org"）
+- 对常用知识站点，在 system prompt 里给一个白名单提示
+- 需要时 crawl 拉一批 → 按相关性打分 → 返回 top-5 给 LLM 总结
+
+**局限 + 缓解**：
+- **没有真正的搜索引擎**：对小众 / 新兴话题覆盖差
+  - 缓解：agent 可通过 `delegate` 子任务把"无法回答"的问题存到 `missing_knowledge.md`，未来手动补充
+- **rate limit**：自爬容易被封
+  - 缓解：`web_crawl` 内置 `robots.txt` 遵守 + `User-Agent: DeskPet/0.6 (https://github.com/...)` + 每域名最大并发 2 + 请求间隔 500ms
+- **反爬**：JS 渲染站点抓不到
+  - 缓解：未来可加 `web_render` 用 Playwright 兜底（Phase 5 考虑）
+
+**依赖**（全部开源免费）：
+```
+httpx>=0.25         # HTTP client
+trafilatura>=1.6    # 正文提取
+selectolax>=0.3     # 极快 HTML 解析
+urllib3>=2.0        # robots.txt 解析
+```
 
 **Post-MVP（Phase 5）**：
 - `cron_create` / `cron_list` / `cron_delete`
@@ -562,9 +594,11 @@ class ContextEngine(ABC):
 
 **桌宠 MVP 附带的 MCP servers**：
 - `@mcp/filesystem` —— 本地文件访问（限定到 `%AppData%\deskpet\workspace\`）
-- `@mcp/brave-search` —— 网页搜索（需 API key）
-- `@mcp/weather` —— 天气（自研或用现成）
+- `@mcp/weather` —— 天气（自研或用现成免费 API，如 open-meteo.com 无需 key）
 - （可选）`@ccd_session` —— Claude Code Session（如果主人在用）
+
+**不含**的 MCP（按 D5 决策排除）：
+- ~~`@mcp/brave-search`~~ —— 付费服务，改走自研 `web_fetch` + `web_crawl`
 
 ### 3.8 ContextAssembler —— 智能上下文组装器（**原创**）
 
@@ -854,7 +888,7 @@ enabled = true
 policy_file = "agent/policies/default.yaml"
 user_overrides = "%APPDATA%/deskpet/policies/overrides.yaml"
 budget_ratio = 0.6              # ContextBundle 允许占 context_window 的比例
-classifier_mode = "rule+embed"  # rule | rule+embed | rule+embed+llm
+classifier_mode = "rule+embed+llm"  # D8 决策：默认级联到 LLM
 classifier_exemplars = "agent/policies/exemplars.jsonl"
 llm_classifier_model = "claude-haiku-4-5"  # 仅当 mode 含 llm 时
 fallback_task_type = "chat"
@@ -863,12 +897,28 @@ trace_enabled = true            # 每轮写 decisions 到 log
 [tools]
 enabled = ["memory", "todo", "file", "web", "delegate", "skill", "mcp"]
 disabled = []
-web_search_provider = "brave"
+
+[tools.web]
+# D5 决策：零成本自研爬虫栈，无搜索引擎 API
+user_agent = "DeskPet/0.6 (+https://github.com/.../deskpet)"
+respect_robots_txt = true
+per_domain_max_concurrency = 2
+request_interval_ms = 500
+crawl_default_max_pages = 20
+crawl_default_max_depth = 2
+# 白名单知识源（injected 到 system prompt，agent 知道遇到什么问题去哪）
+preferred_sources = [
+    { domain = "stackoverflow.com",     topic = "code" },
+    { domain = "docs.python.org",       topic = "python" },
+    { domain = "developer.mozilla.org", topic = "web" },
+    { domain = "en.wikipedia.org",      topic = "general" },
+    { domain = "zh.wikipedia.org",      topic = "general-zh" },
+    { domain = "github.com",            topic = "code" },
+]
 
 [mcp]
 servers = [
     { name = "filesystem", command = "npx", args = ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/.../Documents/deskpet-ws"] },
-    { name = "brave-search", command = "npx", args = ["-y", "@modelcontextprotocol/server-brave-search"], env = { BRAVE_API_KEY = "..." } },
 ]
 
 [performance]
@@ -884,10 +934,10 @@ tool_call_p50_budget_ms = 50
 
 | 指标 | 目标 | 当前（rc1） | 预算分解 |
 |---|---|---|---|
-| **首字延迟**（ASR 结束 → 首字 TTS）| **< 800ms p50** | ~2000ms | Assembler 70ms + LLM stream first token 330ms + TTS first chunk 400ms |
+| **首字延迟**（ASR 结束 → 首字 TTS）| **< 1100ms p50**（D8 后调整） | ~2000ms | Assembler 70ms（含 LLM classifier 300ms）+ LLM stream first token 330ms + TTS first chunk 400ms。**TTS 预播兜底感知延迟 <500ms**（classifier 跑时先播 "嗯..."）|
 | **记忆召回** | **< 30ms p95**（10 万条） | N/A | 向量 20ms + FTS 5ms + 融合 5ms |
-| **ContextAssembler** | **< 70ms p95** | N/A | Classifier 20ms + 并行 component.provide() 40ms + Budget alloc 10ms |
-| ├─ TaskClassifier | **< 20ms p95** | N/A | rule 2ms / embed 15ms / llm 300ms（可选） |
+| **ContextAssembler** | **< 370ms p95**（D8 默认开 LLM）| N/A | Classifier 320ms + 并行 component.provide() 40ms + Budget alloc 10ms |
+| ├─ TaskClassifier | **< 320ms p95**（D8 后）| N/A | rule 2ms → embed 15ms → **LLM 300ms（D8 默认开）**。级联：rule 命中直出；miss → embed；embed 置信 < 0.5 → LLM |
 | ├─ Component 并行组装 | **< 50ms p95** | N/A | MemoryComponent 30ms + ToolComponent 5ms + 其余 <5ms each |
 | **工具调用往返** | **< 50ms p50**（本地） | N/A | JSON encode 5ms + dispatch 2ms + handler 30ms + encode back 10ms |
 | **Context 压缩** | **< 2000ms**（触发时） | N/A | summarize 用 haiku 模型 |
@@ -1092,28 +1142,28 @@ backend/
 
 ---
 
-## 9. 开放问题（需你决策）
+## 9. 决策记录（已签字）
 
-1. **LLM provider 选型**：默认用 Anthropic Claude（PRD 假设），还是允许多 provider 启动时选？
-   - 建议：默认 Anthropic，但启动时 `/login` 可切换（Claude-Code-Best 模式）
-2. **本地 LLM 支持**：是否要打进 bundle？
-   - 本 PRD 建议：**Phase 4 不做**，留 provider 接口但默认云端。`llama-cpp-python` 打包复杂，推到 Phase 5
-3. **Skill 热加载**：文件监听自动重载 vs 重启生效？
-   - 建议：**watchdog 监听 + debounce 1s 自动重载**
-4. **隐私默认值**：记忆库是否默认加密？
-   - 建议：**不加密**（性能优先），但 `uninstall_user_data` 时彻底清空；如用户要加密，提供 SQLCipher 选项（Phase 5）
-5. **Web 搜索默认 provider**：Brave / Bing / Google
-   - 建议：**Brave**（有官方 MCP + API 便宜）
-6. **子 agent 隔离**：delegate 工具 spawn 的子 agent 是否共享主 agent 记忆？
-   - 建议：**只读共享**（子 agent 能检索但不能写），主 agent 负责回写
-7. **Embedding 不可用时的降级**：首次启动 BGE-M3 没下载好
-   - 建议：纯 FTS5 记忆 + "记忆模型加载中..." 状态提示，BGE-M3 ready 后异步回填
-8. **TaskClassifier 第 3 层 LLM 默认开关**：
-   - 建议：**默认关**（省 300ms），仅在 embed 置信度 < 0.5 且 3 秒内无多轮上下文时才调用；用户可在 settings 开启"精准模式"
-9. **AssemblyPolicy 冲突时的仲裁**：用户 overrides.yaml 和 default.yaml 规则冲突时
-   - 建议：用户覆盖 > 默认；必须字段（`must`）允许追加但不允许删除核心 memory 组件（防止用户误关记忆）
-10. **Assembler feedback 是否真的做在线学习**：
-    - 建议：**v1 只记录不学习**（P4-S7 落盘 decisions + 实际工具使用），离线每周跑一次 exemplars 聚类；真正的 online adaptive policy 放 Phase 5
+**签字日期**: 2026-04-24
+**签字人**: @owner
+
+| ID | 决策项 | 最终选择 | 原建议 | 备注 |
+|---|---|---|---|---|
+| **D1** | LLM provider | `anthropic` / `openai` / `gemini` 三选一，**不支持 local** | 默认 Anthropic + 启动可切 | 与 D2 一致，本地 LLM 完全排除 |
+| **D2** | 本地 LLM 打进 bundle | **不支持**（Phase 4 + 未来） | Phase 5 再说 | 严格云端，bundle 不塞 llama-cpp |
+| **D3** | Skill 热加载 | watchdog + debounce 1s | 同建议 | ✅ 按建议 |
+| **D4** | 记忆库加密 | 默认不加密 | 同建议 | ✅ 按建议；SQLCipher 选项留 Phase 5 |
+| **D5** | Web 搜索方案 | **零成本自研爬虫栈**：`web_fetch` + `web_crawl` + `web_extract_article` + `web_read_sitemap`；不接任何付费 API | Brave $3/千次 | 详见 §3.4.1 Web 工具集 |
+| **D6** | 子 agent 记忆可见性 | 只读共享主 agent 记忆 | 同建议 | ✅ 按建议 |
+| **D7** | Embedding 模型 | **BGE-M3 INT8 本地部署**（~286 MB，打进 `%LocalAppData%\deskpet\models\bge-m3-int8\`）；降级路径：纯 FTS5 + 异步回填 | BGE-M3 (建议) | ✅ 按建议，本地部署可行性已 confirm |
+| **D8** | TaskClassifier LLM 层 | **默认开**（rule → embed → LLM 级联），首字延迟 800ms → **1100ms p50**；TTS 预播把感知延迟压到 <500ms | 默认关 | ⚠️ 覆盖原建议，质量 > 延迟 |
+| **D9** | AssemblyPolicy 仲裁 | 用户覆盖 > 默认；`must` 允许追加但禁止删除核心 memory | 同建议 | ✅ 按建议 |
+| **D10** | Assembler feedback 学习 | v1 只记录 decisions；online adaptive 推 Phase 5 | 同建议 | ✅ 按建议 |
+
+**D8 副作用跟踪**（关键）：
+- 首字延迟 target 从 **800ms → 1100ms p50**（§5 已同步）
+- **TTS 预播**成为必做需求（P4-S7 子任务）：agent 在 classifier 运行期间主动播"嗯..."/"让我想想"占位
+- P4-S12 性能回归必须验证："感知首字延迟 ≤500ms"（含 TTS 预播）
 
 ---
 
