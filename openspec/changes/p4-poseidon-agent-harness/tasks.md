@@ -198,3 +198,19 @@
 **rc1 注：** S0-S11 组件全部落地并单测通过（612 条 deskpet 套件 + 22 条 P4 IPC）。S12 rc1
 只做“组件 SLO 基线 + tag”，全链（main.py session flow + LLM 首字 + prompt cache）的
 集成和冷启动计时在 **S13 Lead 集成 sprint** 跑完后再收尾 §17.2 / §17.7 / §17.9。
+
+## 18. S13 只读 wire-in (2026-04-25) ✅
+
+rc1 后的第一步集成。`main.py` 启动时构造 `FileMemory` + `MemoryManager` +
+`SkillLoader` 并注册进 `service_context`，lifespan 里调 `initialize()` /
+`start()`，shutdown 里 `stop()`。所有失败被 catch 成 warning —— P4 服务起不来
+不影响 legacy chat 路径。
+
+- [x] 18.1 `main.py` 新增 S13 注册块（FileMemory / MemoryManager / SkillLoader）
+- [x] 18.2 `lifespan` 里 `MemoryManager.initialize()` + `SkillLoader.start()` + 逆向 shutdown
+- [x] 18.3 SkillLoader 显式传 `skill_dirs=[<pkg builtin dir>, <user dir>]`，三个内置技能（recall-yesterday / summarize-day / weather-report）被发现
+- [x] 18.4 `tests/test_deskpet_p4_wire_in.py`：5 条集成测试覆盖 L1 list / delete / skills / search-with-no-L3 / 回落路径
+- [x] 18.5 回归：618 条 deskpet 套件全绿
+- [ ] 18.6 ContextAssembler 接入 `chat_stream`（deferred — 需要改 signature，风险更高）
+- [ ] 18.7 MCPManager 启动（deferred — 需要外部 server + config）
+- [ ] 18.8 L3 Retriever 接 MemoryManager（deferred — BGE-M3 预热需要冷启动预算）

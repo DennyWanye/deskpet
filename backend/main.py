@@ -251,6 +251,71 @@ else:
     tts = EdgeTTSProvider(voice=config.tts.voice)
 service_context.register("tts_engine", tts)
 
+# --- P4-S13: read-only P4 services (FileMemory + SkillLoader + MemoryManager) ---
+#
+# We construct the three "safe" components at module top-level so p4_ipc.py
+# handlers (skills_list / memory_l1_list / memory_l1_delete) return real data
+# instead of the pre-S13 graceful-empty stub. ContextAssembler + MCPManager
+# stay deferred to a later slice because they require deeper hooks into the
+# chat stream and external processes respectively.
+#
+# Everything is best-effort: any failure logs a warning + leaves the slot
+# empty. p4_ipc.py's graceful fallback then surfaces `reason: *_not_registered`
+# to the UI, which keeps the panels usable.
+try:
+    from deskpet.memory.file_memory import FileMemory as _FileMemory
+    from deskpet.memory.manager import MemoryManager as _MemoryManager
+    from deskpet.skills.loader import SkillLoader as _SkillLoader
+
+    # L1 lives under the same data dir as memory.db → already resolved by
+    # load_config() into an absolute path. paths.user_data_dir() is the
+    # canonical root when memory.db_path was blank.
+    _l1_dir = Path(config.memory.db_path).resolve().parent if config.memory.db_path else _paths.user_data_dir() / "data"
+    _file_memory = _FileMemory(base_dir=_l1_dir)
+    service_context.register("file_memory", _file_memory)
+
+    # MemoryManager: L1 + L2 (reuses existing memory_store via duck typing —
+    # SqliteConversationMemory has `append`/`get_recent` which MemoryManager
+    # recognises). L3 (retriever) left None — no BGE-M3 preload overhead on
+    # cold start; p4_ipc.memory_search returns empty + reason until wired.
+    _memory_manager = _MemoryManager(
+        file_memory=_file_memory,
+        session_db=memory_store,
+        retriever=None,
+    )
+    service_context.register("memory_manager", _memory_manager)
+
+    # SkillLoader: explicitly point dir[0] at the package-data builtin dir so
+    # the three shipped skills (recall-yesterday / summarize-day / weather-
+    # report) are found without needing a user-dir copy step. dir[1] is the
+    # user's override dir under %AppData%/deskpet/skills/user.
+    # enable_watch=False in rc1 to avoid the watchdog thread on cold boot;
+    # UI's refresh button triggers a manual reload via list_skills() anyway.
+    import deskpet.skills.builtin as _builtin_pkg
+    _builtin_dir = Path(_builtin_pkg.__file__).parent
+    _user_skills_dir = _paths.user_data_dir() / "skills" / "user"
+    _user_skills_dir.mkdir(parents=True, exist_ok=True)
+    _skill_loader = _SkillLoader(
+        skill_dirs=[_builtin_dir, _user_skills_dir],
+        enable_watch=False,
+    )
+    service_context.register("skill_loader", _skill_loader)
+
+    logger.info(
+        "p4_services_registered",
+        l1_dir=str(_l1_dir),
+        memory_manager=True,
+        skill_loader=True,
+    )
+except Exception as _p4_exc:
+    # S13 stay-alive guarantee: ANY P4 import/init failure must not block the
+    # legacy chat path. p4_ipc.py already handles None services gracefully.
+    logger.warning(
+        "p4_services_registration_failed",
+        error=str(_p4_exc),
+        error_type=type(_p4_exc).__name__,
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -276,8 +341,32 @@ async def lifespan(app: FastAPI):
                 # can surface "degraded" state instead of silently accepting
                 # requests that will later 500.
                 startup_errors.record(name, exc)
+    # P4-S13: async initialisers for the P4 read-only stack. Each failure is
+    # isolated — MemoryManager needing a base dir doesn't prevent SkillLoader
+    # from scanning the built-in dir, etc.
+    _mm = service_context.get("memory_manager")
+    if _mm is not None:
+        try:
+            await _mm.initialize()
+            logger.info("p4_memory_manager_ready")
+        except Exception as exc:
+            logger.warning("p4_memory_manager_init_failed", error=str(exc))
+    _sl = service_context.get("skill_loader")
+    if _sl is not None:
+        try:
+            await _sl.start()
+            logger.info("p4_skill_loader_ready", count=len(_sl.list_skills()))
+        except Exception as exc:
+            logger.warning("p4_skill_loader_start_failed", error=str(exc))
     logger.info("startup complete")
     yield
+    # P4-S13: clean up the watchdog + observer threads SkillLoader owns.
+    _sl = service_context.get("skill_loader")
+    if _sl is not None:
+        try:
+            await _sl.stop()
+        except Exception as exc:
+            logger.warning("p4_skill_loader_stop_failed", error=str(exc))
     logger.info("shutting down")
 
 
