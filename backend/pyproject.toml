@@ -115,6 +115,7 @@ packages = [
     "deskpet.memory.migrations",
     "deskpet.tools",
     "deskpet.skills",
+    "deskpet.skills.builtin",
     "deskpet.mcp",
     "deskpet.llm",
 ]
@@ -128,6 +129,10 @@ packages = [
 # default.yaml is the 8-task_type policy map, exemplars.jsonl is the
 # embed-tier exemplar pool (~100 hand-labelled lines).
 "deskpet.agent.assembler.policies" = ["*.yaml", "*.jsonl"]
+# P4-S10: built-in skills (SKILL.md + optional script.py) ship as
+# package data. SkillLoader resolves <user_data>/skills/built-in first,
+# but the installer seeds that dir from this package-data set.
+"deskpet.skills.builtin" = ["**/*"]
 
 [tool.pytest.ini_options]
 # P4-S1 task 3.5: `perf` mark 默认跳过；手动 `pytest -m perf` 触发。

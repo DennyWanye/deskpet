@@ -13,3 +13,6 @@
 - Ship set (v1)       — 3 built-ins: ``recall-yesterday``,
   ``summarize-day``, ``weather-report`` (task 15.7).
 """
+from deskpet.skills.loader import SkillLoader, SkillMeta
+
+__all__ = ["SkillLoader", "SkillMeta"]

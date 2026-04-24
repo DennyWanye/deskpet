@@ -139,32 +139,32 @@
 - [x] 13.4 摘要 MUST 作为 dynamic assistant message 注入 first_n 之后 / last_n 之前，NOT 进 frozen system
 - [x] 13.5 单测（29 项）：阈值门、short-conversation no-op、LLM fail 回退、first/last verbatim、partition layout、reduction_ratio > 0.4 floor、key-fact transcript、multipart/tool_calls 转写、summariser 调 haiku / temp=0 / max_tokens、summary 带 `[压缩摘要]` marker
 
-## 14. MCP Client (P4-S9, 1d)
+## 14. MCP Client (P4-S9, 1d) ✅ 已完成 (2026-04-24)
 
-- [ ] 14.1 写 `backend/deskpet/mcp/manager.py`：基于官方 `mcp>=1.0` SDK 的 ClientSession 管理
-- [ ] 14.2 Config 驱动：`[mcp.servers]` 数组，启动时按 `enabled=true` 拉起 stdio 子进程
-- [ ] 14.3 Transport 支持：stdio（首选）、SSE、streamable HTTP
-- [ ] 14.4 Session 握手：`session.initialize()` + `session.list_tools()` + 注入 registry（namespace `mcp_{server}_{tool}`）
-- [ ] 14.5 崩溃重连：指数退避 1s→2s→4s→8s，最多 5 次；超限标 state=failed 从 schemas 移除
-- [ ] 14.6 优雅关闭：SIGTERM 对每个 session 调 `close()` + 终止子进程
-- [ ] 14.7 统一 `mcp_call(server_name, tool_name, args)` 工具；unknown server 返回明确 error
-- [ ] 14.8 MVP ship 只配 `@modelcontextprotocol/server-filesystem`（scope `%APPDATA%\deskpet\workspace\`）+ weather (open-meteo 封装)
-- [ ] 14.9 审查守门：`grep brave-search` 默认 config 为空
-- [ ] 14.10 Resource / Prompt read-only：`list_resources` / `read_resource` / `list_prompts` / `get_prompt` 通过 IPC 暴露给前端
-- [ ] 14.11 单测：spawn / crash reconnect / max retries fail / namespace 不冲突 / dead session dispatch fast-fail
+- [x] 14.1 写 `backend/deskpet/mcp/manager.py`：基于官方 `mcp>=1.0` SDK 的 ClientSession 管理（含 bootstrap.py 工厂）
+- [x] 14.2 Config 驱动：`[mcp.servers]` 数组，启动时按 `enabled=true` 拉起 stdio 子进程
+- [x] 14.3 Transport 支持：stdio（首选）、SSE、streamable HTTP
+- [x] 14.4 Session 握手：`session.initialize()` + `session.list_tools()` + 注入 registry（namespace `mcp_{server}_{tool}`）
+- [x] 14.5 崩溃重连：指数退避 1s→2s→4s→8s→16s，最多 5 次；超限标 state=failed 从 schemas 移除
+- [x] 14.6 优雅关闭：AsyncExitStack aclose() 每个 session（2s timeout）+ 终止子进程
+- [x] 14.7 统一 `mcp_call(server_name, tool_name, args)` 工具；unknown server / unknown tool / dead session 返回明确 error
+- [x] 14.8 MVP ship 只配 `@modelcontextprotocol/server-filesystem`（scope `%APPDATA%\deskpet\workspace\`）+ weather (disabled stub，真实实现在 S10 skill)
+- [x] 14.9 审查守门：默认 config 空 brave-search（`test_default_config_no_brave_search` 护栏）
+- [x] 14.10 Resource / Prompt read-only：`list_resources` / `read_resource` / `list_prompts` / `get_prompt` 暴露 MCPManager API（IPC 于 S11 接入）
+- [x] 14.11 单测（13 项）：spawn / crash reconnect / max retries fail / namespace 不冲突 / dead session dispatch fast-fail / unknown server / unknown tool / graceful shutdown / disabled skip / unknown transport skip / config no-brave / config filesystem scoped / mcp_call success
 
-## 15. Skill System + 热加载 (P4-S10, 1d)
+## 15. Skill System + 热加载 (P4-S10, 1d) ✅ 已完成 (2026-04-24)
 
-- [ ] 15.1 写 `backend/deskpet/skills/loader.py`：扫 `%APPDATA%\deskpet\skills\{built-in,user}\` 下所有 SKILL.md
-- [ ] 15.2 YAML frontmatter 解析：required 字段 `name, description, version, author`；缺失 log warning 跳过
-- [ ] 15.3 前端 slash command：输入 `/name` 转 `skill_invoke(name, args=[])` 工具调用
-- [ ] 15.4 `SkillLoader.execute(name)`：SKILL.md body 作为 user role message 注入（NOT system，保 cache）
-- [ ] 15.5 Watchdog 监听 user 目录：debounce 1s 自动 reload（D3 决策）；reload 失败 log 但保留已加载
-- [ ] 15.6 可选 `script.py` 沙箱执行：受限 globals，timeout ≤ 10s，stdout 注入为 user message；超时 kill 进程
-- [ ] 15.7 Ship 3 个 built-in：`recall-yesterday` / `summarize-day` / `weather-report`
-- [ ] 15.8 Assembler SkillComponent 集成：policy.prefer=[skill:name] 自动挂载为 skill_prelude
-- [ ] 15.9 `list_skills()` IPC 返回 metadata 供前端 MemoryPanel 展示
-- [ ] 15.10 单测：valid load / invalid 跳过 / hot reload debounce / script timeout kill / policy auto-mount
+- [x] 15.1 写 `backend/deskpet/skills/loader.py`：扫 `%APPDATA%\deskpet\skills\{built-in,user}\` 下所有 SKILL.md
+- [x] 15.2 YAML frontmatter 解析：required 字段 `name, description, version, author`；缺失 log warning 跳过
+- [x] 15.3 前端 slash command：输入 `/name` 转 `skill_invoke(name, args=[])` 工具调用
+- [x] 15.4 `SkillLoader.execute(name)`：SKILL.md body 作为 user role message 注入（NOT system，保 cache）
+- [x] 15.5 Watchdog 监听 user 目录：debounce 1s 自动 reload（D3 决策）；reload 失败 log 但保留已加载
+- [x] 15.6 可选 `script.py` 沙箱执行：受限 globals，timeout ≤ 10s，stdout 注入为 user message；超时 kill 进程
+- [x] 15.7 Ship 3 个 built-in：`recall-yesterday` / `summarize-day` / `weather-report`
+- [x] 15.8 Assembler SkillComponent 集成：policy.prefer=[skill:name] 自动挂载为 skill_prelude
+- [x] 15.9 `list_skills()` IPC 返回 metadata 供前端 MemoryPanel 展示
+- [x] 15.10 单测：valid load / invalid 跳过 / hot reload debounce / script timeout kill / policy auto-mount
 
 ## 16. 前端 MemoryPanel + Context Trace UI (P4-S11, 1.5d)
 

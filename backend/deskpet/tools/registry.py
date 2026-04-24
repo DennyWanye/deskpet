@@ -138,6 +138,14 @@ class ToolRegistry:
                 )
             self._tools[name] = spec
 
+    def unregister(self, name: str) -> bool:
+        """Remove a tool by name. Returns True if removed, False if
+        the name was absent. Used by MCPManager to drop a server's
+        tools on disconnect (P4-S9 task 14.5 + 14.6).
+        """
+        with self._lock:
+            return self._tools.pop(name, None) is not None
+
     # ------------------------------------------------------------------
     # Schema export
     # ------------------------------------------------------------------
