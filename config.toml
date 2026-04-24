@@ -224,6 +224,19 @@ args = []
 transport = "stdio"
 enabled = false
 
+# ─────────────────────────────────────────────────────────────────
+# P4-S6: multi-provider LLM layer (Anthropic / OpenAI / Gemini).
+#
+# Spec-compliant namespace (`[llm.providers]` + `[llm.fallback_chain]`)
+# per openspec/changes/p4-poseidon-agent-harness/specs/llm-providers/spec.md.
+# The agent_loop / registry MUST read from here. The legacy `[llm_p4.*]`
+# namespace below is kept temporarily because the S6 adapter currently
+# reads that — follow-up task S12.pre-ship migrates S6 adapter code to
+# the spec-compliant namespace and removes [llm_p4.*].
+#
+# API keys are resolved via env / keyring (see backend/llm/keys.py).
+# MUST NOT be written into this file — commits would leak them.
+# ─────────────────────────────────────────────────────────────────
 # P4-S6: provider selection + global knobs shared by every adapter.
 # `main_model` is the default chat model; `classifier_model` is used by
 # the ContextAssembler LLM tier. `daily_usd_cap` is the hard budget cap
@@ -242,3 +255,29 @@ chain = [
     "openai:gpt-4o",
     "gemini:gemini-1.5-pro",
 ]
+
+# ─── legacy [llm_p4.*] namespace (kept until S12 pre-ship migration) ───
+# S6's backend/llm/registry.py currently reads these keys verbatim. When
+# it's refactored to read [llm.providers]/[llm.fallback_chain] above, this
+# block can be deleted. Values MUST mirror [llm.providers]+[llm.fallback_chain].
+[llm_p4]
+main_model = "anthropic:claude-sonnet-4-5"
+classifier_model = "anthropic:claude-haiku-4-5"
+daily_usd_cap = 10.0
+fallback_chain = [
+    "anthropic:claude-sonnet-4-5",
+    "openai:gpt-4o",
+    "gemini:gemini-1.5-pro",
+]
+
+[llm_p4.providers.anthropic]
+default_model = "claude-sonnet-4-5"
+timeout = 60.0
+
+[llm_p4.providers.openai]
+default_model = "gpt-4o"
+timeout = 60.0
+
+[llm_p4.providers.gemini]
+default_model = "gemini-1.5-pro"
+timeout = 60.0

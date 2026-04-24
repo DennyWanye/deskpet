@@ -51,7 +51,10 @@ dependencies = [
     "watchdog>=3.0",
     # P4-S6: LLM provider adapters. anthropic / openai / google-genai
     # unified behind llm/base.py::LLMClient. Fallback chain lives in
-    # config.toml's [llm.fallback_chain].
+    # config.toml's [llm.fallback_chain]. pydantic v2 is already pulled in
+    # via fastapi; explicit pin documents the floor. keyring is optional
+    # on CI but used on desktop build for secret isolation (§keys.py).
+    "pydantic>=2.0",
     "anthropic>=0.40",
     "openai>=1.40",
     # P4-S6: Google's current official SDK is `google-genai` (new API,
@@ -60,6 +63,7 @@ dependencies = [
     # in deskpet/llm/gemini_adapter.py will target google-genai's modern API.
     # Pinned >=1.0 (first stable release, 2025-05).
     "google-genai>=1.0",
+    "keyring>=24.0",
 ]
 
 [project.optional-dependencies]
@@ -79,6 +83,9 @@ py-modules = ["config", "main"]
 # Rationale: P3 rc1 code (agent/, memory/, tools/) keeps running unchanged
 # while Phase 4 builds out `deskpet/*` in isolation. Cutover happens at
 # P4-S12 when main.py routes are switched from legacy to deskpet.
+# P4-S6 addendum: agent landed `backend/llm/` as a top-level sibling of
+# `backend/agent/` rather than `backend/deskpet/llm/` (its worktree baseline
+# predated the S0 `deskpet/` scaffold). Tech debt tracked for S7 refactor.
 packages = [
     "providers",
     "memory",
@@ -90,6 +97,10 @@ packages = [
     "observability",
     "router",
     "billing",
+    # P4-S6 new top-level package (backend/llm/** — anthropic/openai/gemini
+    # adapter + registry + budget + keys). Tracked for migration into
+    # `deskpet.llm` namespace in a follow-up refactor.
+    "llm",
     # P4-S0 new packages (backend/deskpet/**)
     "deskpet",
     "deskpet.agent",
