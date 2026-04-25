@@ -157,6 +157,11 @@ class AppConfig:
     voice: VoiceConfig = field(default_factory=VoiceConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     billing: BillingConfig = field(default_factory=BillingConfig)
+    # P4-S15: capture the raw TOML so layers that don't have a dataclass
+    # yet (P4 [mcp], [agent], [context.assembler], [memory.l3], [tools.web])
+    # can read their config without us having to migrate all of them at once.
+    # Always a dict — empty when no config.toml exists. Treat as read-only.
+    raw: dict = field(default_factory=dict)
 
 def _load_section(cls, raw_dict: dict):
     """Build a dataclass from a raw dict, dropping keys the dataclass no
@@ -369,4 +374,8 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     # to the same directory as memory.db so the two SQLite files stay together.
     db_dir = resolved_mem.parent
     config.billing = BillingConfig.from_toml(raw, db_dir=db_dir)
+    # P4-S15: stash the raw parsed TOML so consumers (MCP bootstrap, agent
+    # bootstrap, etc.) can pick out their sections without us bolting on
+    # a dataclass for each one.
+    config.raw = dict(raw)
     return config

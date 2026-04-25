@@ -5,6 +5,52 @@ All notable changes to DeskPet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0-phase4-rc2] — 2026-04-25
+
+**Phase 4 full-stack integration on top of rc1.** Every P4 component is now
+live in the running backend, not just registered.
+
+### Added
+
+- **S14 ContextAssembler in chat handler** — every turn now runs
+  `assembler.assemble()` BEFORE `chat_stream`, builds an OpenAI-shape
+  messages list (frozen_system + memory_block + skill_prelude + history +
+  user) and feeds it to the agent. Decisions auto-stamped with timestamp +
+  session_id; ContextTracePanel renders a real timeline.
+- **S15 Embedder + L3 Retriever** — `Embedder` wired with mock fallback (no
+  cold-start cost without BGE-M3 weights). `SessionDB` at `<data>/state.db`
+  as canonical L2. `VectorWorker` drains writes into vec0. `Retriever` ships
+  RRF fusion (vec / fts / recency / salience) into MemoryManager as L3.
+- **S15 dual-write memory adapter** — legacy `memory_store` writes are
+  mirrored to `SessionDB` so L3 search has content to retrieve, without
+  breaking the existing `agent_engine` contract.
+- **S15 MCPManager bootstrap** — lifespan now reads `config.raw["mcp"]` and
+  brings up enabled servers via `create_and_start_from_config`. Empty/no
+  config = no-op; failures isolated per server.
+- **S15 classifier embedder protocol** — `Embedder.embed()` adapter
+  unifies the classifier's `embed(texts) -> list[list[float]]` shape with
+  the retriever's canonical `encode(texts) -> ndarray`. No more
+  `'Embedder' object has no attribute 'embed'` warnings on every turn.
+- **S15 full-stack bench** — `scripts/bench_phase4_full_stack.py`:
+  - Cold-start (mock embedder): **98ms** (SLO <5s) ✅
+  - Per-turn assemble p95: **48ms** (SLO <370ms) ✅
+- **AssemblyDecisions front-end aliases** — `latency_ms`, `token_breakdown`,
+  `reason`, `timestamp`, `session_id` emitted alongside canonical fields.
+
+### Tests
+
+- 628 passing in deskpet regression (+10 from rc1's 618).
+- 4/4 S14 assembler-hook tests.
+- 6/6 S15 full-stack tests.
+- Frontend `tsc --noEmit` clean; no UI churn (S11 already declared the
+  trace fields).
+
+### Open follow-ups (future slice, not blocking rc2)
+
+- Real BGE-M3 cold-start measurement (need user to run download_bge_m3.py)
+- Native Tauri E2E smoke (Preview MCP renders 0×0 viewport)
+- OpenSpec archive
+
 ## [0.6.0-phase4-rc1] — 2026-04-24
 
 **Phase 4 Poseidon agent harness + long-term memory — rc1 (components complete).**

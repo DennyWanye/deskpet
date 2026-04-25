@@ -247,6 +247,22 @@ class Embedder:
                 return self._encode_mock(texts)
             return await self._encode_real(texts)
 
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """``encode`` adapter for the classifier protocol (P4-S15).
+
+        ``ContextAssembler.classifier.TaskClassifier`` was written against
+        an ``embed(texts) -> list[list[float]]`` protocol (see
+        ``tests/test_deskpet_context_assembler.py::FakeEmbedder``), while
+        :class:`Retriever` uses the canonical ``encode(texts) -> ndarray``.
+        Both protocols now coexist on the same object so production wiring
+        passes the live :class:`Embedder` to either consumer without an
+        extra adapter layer.
+        """
+        if not texts:
+            return []
+        arr = await self.encode(texts)
+        return [list(map(float, row)) for row in arr]
+
     def _encode_mock(self, texts: list[str]) -> np.ndarray:
         """Mock: 每条文本 md5 种子生成稳定向量。"""
         rows = [_mock_vector(t, EMBEDDING_DIM) for t in texts]

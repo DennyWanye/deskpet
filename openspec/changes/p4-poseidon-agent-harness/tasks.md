@@ -211,6 +211,31 @@ rc1 后的第一步集成。`main.py` 启动时构造 `FileMemory` + `MemoryMana
 - [x] 18.3 SkillLoader 显式传 `skill_dirs=[<pkg builtin dir>, <user dir>]`，三个内置技能（recall-yesterday / summarize-day / weather-report）被发现
 - [x] 18.4 `tests/test_deskpet_p4_wire_in.py`：5 条集成测试覆盖 L1 list / delete / skills / search-with-no-L3 / 回落路径
 - [x] 18.5 回归：618 条 deskpet 套件全绿
-- [ ] 18.6 ContextAssembler 接入 `chat_stream`（deferred — 需要改 signature，风险更高）
-- [ ] 18.7 MCPManager 启动（deferred — 需要外部 server + config）
-- [ ] 18.8 L3 Retriever 接 MemoryManager（deferred — BGE-M3 预热需要冷启动预算）
+- [x] 18.6 ContextAssembler 接入 `chat_stream`（S14）
+- [x] 18.7 MCPManager 启动（S15）
+- [x] 18.8 L3 Retriever 接 MemoryManager（S15）
+
+## 19. S14 ContextAssembler 集成 (2026-04-25) ✅
+
+- [x] 19.1 `main.py`: `build_default_assembler` 注册到 `service_context`
+- [x] 19.2 chat handler: 每回合调 `assemble()` → `bundle.build_messages()` → 喂给 `chat_stream`，失败回落 legacy
+- [x] 19.3 `bundle.decisions.timestamp / session_id` 主线程戳上，`feedback()` 写 final_response_len
+- [x] 19.4 `AssemblyDecisions.to_dict()` 加前端 alias：`latency_ms`, `token_breakdown`, `reason`
+- [x] 19.5 `tests/test_deskpet_p4_s14_assembler_hook.py` 4 条集成测试
+
+## 20. S15 全栈接入 (2026-04-25) ✅
+
+- [x] 20.1 `Embedder` 注册（mock fallback + 后台 warmup，不阻塞冷启动）
+- [x] 20.2 `SessionDB` 注册（`<data>/state.db`），lifespan 里 `initialize()`
+- [x] 20.3 `VectorWorker` 注册 + start，挂 `SessionDB.on_message_written` hook
+- [x] 20.4 `Retriever(session_db, embedder)` 注册
+- [x] 20.5 `MemoryManager` 升级用 `SessionDB` 作 L2 + 接 `Retriever` 作 L3
+- [x] 20.6 `_DualWriteMemoryStore` 适配器：legacy memory_store 写入镜像到 SessionDB
+- [x] 20.7 `Embedder.embed()` 别名 → `encode()` 统一 classifier/retriever 协议
+- [x] 20.8 `ContextAssembler` 接入 embedder（rule → embed → llm 级联）
+- [x] 20.9 `MCPManager` lifespan 里 bootstrap（`config.raw["mcp"]`）+ shutdown stop
+- [x] 20.10 `AppConfig.raw` 字段保存原始 TOML（供 `[mcp]` 等无 dataclass 的 section 直读）
+- [x] 20.11 `tests/test_deskpet_p4_s15_full_stack.py` 6 条全栈集成测试
+- [x] 20.12 `scripts/bench_phase4_full_stack.py` 冷启动 + per-turn assemble bench
+- [x] 20.13 SLO 实测：冷启动 98ms（mock embedder, SLO <5s）/ assemble p95 48ms（SLO <370ms）
+- [x] 20.14 回归：628 条 deskpet 套件全绿

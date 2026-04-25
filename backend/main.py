@@ -8,6 +8,7 @@ try:
 except AttributeError:
     pass
 
+import asyncio
 import os
 import re
 import secrets
@@ -265,6 +266,10 @@ service_context.register("tts_engine", tts)
 try:
     from deskpet.memory.file_memory import FileMemory as _FileMemory
     from deskpet.memory.manager import MemoryManager as _MemoryManager
+    from deskpet.memory.session_db import SessionDB as _SessionDB
+    from deskpet.memory.embedder import Embedder as _Embedder
+    from deskpet.memory.vector_worker import VectorWorker as _VectorWorker
+    from deskpet.memory.retriever import Retriever as _Retriever
     from deskpet.skills.loader import SkillLoader as _SkillLoader
 
     # L1 lives under the same data dir as memory.db → already resolved by
@@ -274,16 +279,93 @@ try:
     _file_memory = _FileMemory(base_dir=_l1_dir)
     service_context.register("file_memory", _file_memory)
 
-    # MemoryManager: L1 + L2 (reuses existing memory_store via duck typing —
-    # SqliteConversationMemory has `append`/`get_recent` which MemoryManager
-    # recognises). L3 (retriever) left None — no BGE-M3 preload overhead on
-    # cold start; p4_ipc.memory_search returns empty + reason until wired.
+    # P4-S15: Embedder — BGE-M3 INT8 with mock fallback when the model dir
+    # is absent. Mock embedder hits is_ready=True instantly so cold-start
+    # isn't blocked even on a fresh install. Real model loads in the
+    # background via lifespan.warmup() so prompt cache stays hot.
+    try:
+        _bge_dir = resolve_model_dir("bge-m3-int8")
+    except Exception:
+        _bge_dir = None
+    _embedder = _Embedder(
+        model_path=_bge_dir,
+        use_mock_when_missing=True,
+    )
+
+    # P4-S15: SessionDB at <data>/state.db, side-by-side with the legacy
+    # memory.db. on_message_written hook will be wired to VectorWorker.enqueue
+    # in lifespan once the worker has started, so embeddings backfill
+    # automatically as new turns hit the DB.
+    _state_db_path = _l1_dir / "state.db"
+    _session_db = _SessionDB(db_path=_state_db_path)
+
+    # P4-S15: VectorWorker — drains a queue of (msg_id, text) into the
+    # vec0 virtual table on a 1s interval. Stays empty until SessionDB
+    # actually receives writes, so the cold-start cost is essentially nil.
+    _vector_worker = _VectorWorker(
+        session_db=_session_db,
+        embedder=_embedder,
+    )
+
+    # P4-S15: Retriever — RRF fusion of vec / fts / recency / salience.
+    # Embedder may still be loading; Retriever skips the vec route until
+    # embedder.is_ready becomes True. Other routes work immediately.
+    _retriever = _Retriever(
+        session_db=_session_db,
+        embedder=_embedder,
+    )
+
+    # P4-S15: MemoryManager now uses SessionDB as L2 (Retriever needs it)
+    # and ships with the live Retriever. Legacy `memory_store` stays in
+    # service_context for agent_engine; a dual-write adapter below mirrors
+    # writes to SessionDB so L3 search has data to find.
     _memory_manager = _MemoryManager(
         file_memory=_file_memory,
-        session_db=memory_store,
-        retriever=None,
+        session_db=_session_db,
+        retriever=_retriever,
     )
     service_context.register("memory_manager", _memory_manager)
+
+    # P4-S15: dual-write adapter — every chat turn that goes through
+    # `memory_store.append()` ALSO lands in SessionDB so L3 search/recall
+    # has content to retrieve. Failures only log; the legacy path is
+    # never blocked. Replace the registered memory_store with the
+    # adapter so SimpleLLMAgent sees both stores transparently.
+    class _DualWriteMemoryStore:
+        """Wrap the legacy memory_store to also fan-out to SessionDB."""
+
+        def __init__(self, primary: Any, session_db: Any) -> None:
+            self._primary = primary
+            self._session_db = session_db
+
+        async def get_recent(self, session_id: str, limit: int = 10):
+            return await self._primary.get_recent(session_id, limit)
+
+        async def append(self, session_id: str, role: str, content: str) -> None:
+            # Primary path drives existing behaviour (P3 contract). Failure
+            # propagates so callers see real errors as before.
+            await self._primary.append(session_id, role, content)
+            # Mirror to SessionDB; isolate failures.
+            try:
+                await self._session_db.append_message(
+                    session_id=session_id,
+                    role=role,
+                    content=content,
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "p4_session_db_mirror_failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+
+        # Pass through any other attribute lookups so admin endpoints
+        # (list_turns / delete_turn / etc.) keep working unchanged.
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._primary, name)
+
+    memory_store = _DualWriteMemoryStore(memory_store, _session_db)
+    service_context.register("memory_store", memory_store)
 
     # SkillLoader: explicitly point dir[0] at the package-data builtin dir so
     # the three shipped skills (recall-yesterday / summarize-day / weather-
@@ -301,33 +383,38 @@ try:
     )
     service_context.register("skill_loader", _skill_loader)
 
-    # P4-S14: ContextAssembler — must come AFTER memory_manager / skill_loader
-    # registration since the chat handler hands those into assemble() each turn.
-    # build_default_assembler wires the 6 built-in components + packaged
-    # default policies + a TaskClassifier with no embedder/LLM (rule-only
-    # path; rc1 doesn't ship BGE-M3 yet). Set enabled=True so the chat handler
-    # can drive it without an extra config flag — failures degrade gracefully.
+    # P4-S14 + S15: ContextAssembler — pass embedder so TaskClassifier can
+    # use the embed-tier route (rule → embed → llm cascade). When BGE-M3
+    # isn't loaded yet, the embed path silently falls through to default —
+    # graceful degradation already implemented in the classifier.
     from deskpet.agent.assembler import build_default_assembler as _build_assembler
     _assembler = _build_assembler(
-        embedder=None,
+        embedder=_embedder,
         llm_registry=None,
         enabled=True,
-        # Local LLM context window (Qwen2.5-7B-Instruct default);
-        # cloud Claude is bigger but the budget allocator scales by
-        # ratio so this is a reasonable floor. The classifier never
-        # actually writes a prompt this big — budget_ratio=0.6 caps
-        # output tokens to ~19200 in practice.
         context_window=32_000,
         budget_ratio=0.6,
     )
     service_context.register("context_assembler", _assembler)
 
+    # Stash worker + session_db on the context so lifespan can drive their
+    # async lifecycle. They aren't part of the public service-context schema,
+    # but ServiceContext is a dataclass with attribute access — ok to
+    # attach helper handles for shutdown.
+    service_context._p4_session_db = _session_db  # type: ignore[attr-defined]
+    service_context._p4_vector_worker = _vector_worker  # type: ignore[attr-defined]
+    service_context._p4_embedder = _embedder  # type: ignore[attr-defined]
+
     logger.info(
         "p4_services_registered",
         l1_dir=str(_l1_dir),
+        state_db=str(_state_db_path),
         memory_manager=True,
         skill_loader=True,
         context_assembler=True,
+        embedder_mock_when_missing=True,
+        vector_worker=True,
+        retriever=True,
     )
 except Exception as _p4_exc:
     # S13 stay-alive guarantee: ANY P4 import/init failure must not block the
@@ -366,6 +453,13 @@ async def lifespan(app: FastAPI):
     # P4-S13: async initialisers for the P4 read-only stack. Each failure is
     # isolated — MemoryManager needing a base dir doesn't prevent SkillLoader
     # from scanning the built-in dir, etc.
+    _sdb = getattr(service_context, "_p4_session_db", None)
+    if _sdb is not None:
+        try:
+            await _sdb.initialize()
+            logger.info("p4_session_db_ready", path=str(_sdb._db_path))
+        except Exception as exc:
+            logger.warning("p4_session_db_init_failed", error=str(exc))
     _mm = service_context.get("memory_manager")
     if _mm is not None:
         try:
@@ -380,9 +474,60 @@ async def lifespan(app: FastAPI):
             logger.info("p4_skill_loader_ready", count=len(_sl.list_skills()))
         except Exception as exc:
             logger.warning("p4_skill_loader_start_failed", error=str(exc))
+    # P4-S15: Embedder warmup runs in the background so cold-start isn't
+    # blocked by 286 MB of BGE-M3 weights. Mock fallback returns instantly.
+    _emb = getattr(service_context, "_p4_embedder", None)
+    if _emb is not None:
+        async def _embedder_warmup_bg() -> None:
+            try:
+                await _emb.warmup()
+                logger.info("p4_embedder_ready", is_mock=_emb.is_mock())
+            except Exception as exc:
+                logger.warning("p4_embedder_warmup_failed", error=str(exc))
+        # fire-and-forget; we deliberately don't await
+        asyncio.create_task(_embedder_warmup_bg())
+    # P4-S15: VectorWorker — starts after SessionDB is initialised so the
+    # vec0 schema is in place. After start, wire its enqueue() onto the
+    # SessionDB write-hook so new chat turns auto-embed.
+    _vw = getattr(service_context, "_p4_vector_worker", None)
+    if _vw is not None and _sdb is not None:
+        try:
+            await _vw.start()
+            _sdb._on_message_written = _vw.enqueue  # type: ignore[attr-defined]
+            logger.info("p4_vector_worker_ready")
+        except Exception as exc:
+            logger.warning("p4_vector_worker_start_failed", error=str(exc))
+    # P4-S15: MCPManager — bootstrap from raw [mcp] section. start() is
+    # tolerant: missing section / disabled servers / spawn failures are all
+    # logged but don't raise. Only the manager handle is registered; the
+    # actual server states are inspectable via manager.server_state().
+    try:
+        from deskpet.mcp.bootstrap import create_and_start_from_config as _mcp_bootstrap
+        _mcp_manager = await _mcp_bootstrap(
+            app_config=config.raw,
+            tool_registry=service_context.get("tool_router"),
+        )
+        service_context.register("mcp_manager", _mcp_manager)
+        logger.info("p4_mcp_manager_ready", states=_mcp_manager.server_state())
+    except Exception as exc:
+        logger.warning("p4_mcp_manager_bootstrap_failed", error=str(exc))
     logger.info("startup complete")
     yield
-    # P4-S13: clean up the watchdog + observer threads SkillLoader owns.
+    # P4-S15: stop in reverse-dependency order — MCP servers first (so they
+    # don't keep firing tool_invoke writes), then VectorWorker (drain
+    # outstanding embeds), then SkillLoader's watchdog thread.
+    _mcp = service_context.get("mcp_manager")
+    if _mcp is not None:
+        try:
+            await _mcp.stop()
+        except Exception as exc:
+            logger.warning("p4_mcp_manager_stop_failed", error=str(exc))
+    _vw = getattr(service_context, "_p4_vector_worker", None)
+    if _vw is not None:
+        try:
+            await _vw.stop()
+        except Exception as exc:
+            logger.warning("p4_vector_worker_stop_failed", error=str(exc))
     _sl = service_context.get("skill_loader")
     if _sl is not None:
         try:
