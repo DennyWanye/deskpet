@@ -174,24 +174,52 @@ class AssemblyDecisions:
     planned_tools: list[str] = field(default_factory=list)
     used_tools: list[str] = field(default_factory=list)
     final_response_len: int = 0
+    # P4-S14: caller-stamped fields used by the Context Trace UI.
+    # ``timestamp`` is wall-clock seconds (float, ``time.time()``);
+    # ``session_id`` lets the panel filter by session if needed.
+    # Both default None so the existing IPC contract stays backward
+    # compatible — frontend treats missing fields as "?"/"-".
+    timestamp: Optional[float] = None
+    session_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize for IPC/log — dataclasses aren't JSON-native."""
+        """Serialize for IPC/log — dataclasses aren't JSON-native.
+
+        Frontend ``ContextTracePanel`` reads:
+        - ``classifier_path`` (verbatim)
+        - ``latency_ms`` — alias for ``assembly_latency_ms``
+        - ``total_tokens`` (verbatim)
+        - ``token_breakdown`` — flattened ``{component_name: tokens}``
+        - ``timestamp`` / ``session_id`` (P4-S14 wire-in)
+        - ``reason`` — short rationale (task_type + classifier_path)
+        """
+        components_view = {
+            name: {
+                "tokens": t.tokens,
+                "latency_ms": round(t.latency_ms, 2),
+                "included": t.included,
+                "meta": t.meta,
+            }
+            for name, t in self.components.items()
+        }
+        token_breakdown = {
+            name: t.tokens for name, t in self.components.items() if t.tokens
+        }
         return {
             "task_type": self.task_type,
             "classifier_path": self.classifier_path,
             "classifier_latency_ms": round(self.classifier_latency_ms, 2),
             "classifier_confidence": round(self.classifier_confidence, 3),
             "assembly_latency_ms": round(self.assembly_latency_ms, 2),
-            "components": {
-                name: {
-                    "tokens": t.tokens,
-                    "latency_ms": round(t.latency_ms, 2),
-                    "included": t.included,
-                    "meta": t.meta,
-                }
-                for name, t in self.components.items()
-            },
+            # Frontend-friendly aliases (kept ALONGSIDE the canonical
+            # fields so any existing consumer still sees the original
+            # naming).
+            "latency_ms": round(self.assembly_latency_ms, 2),
+            "token_breakdown": token_breakdown,
+            "reason": f"{self.task_type}/{self.classifier_path}",
+            "timestamp": self.timestamp,
+            "session_id": self.session_id,
+            "components": components_view,
             "budget_cut": list(self.budget_cut),
             "total_tokens": self.total_tokens,
             "planned_tools": list(self.planned_tools),

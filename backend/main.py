@@ -301,11 +301,33 @@ try:
     )
     service_context.register("skill_loader", _skill_loader)
 
+    # P4-S14: ContextAssembler — must come AFTER memory_manager / skill_loader
+    # registration since the chat handler hands those into assemble() each turn.
+    # build_default_assembler wires the 6 built-in components + packaged
+    # default policies + a TaskClassifier with no embedder/LLM (rule-only
+    # path; rc1 doesn't ship BGE-M3 yet). Set enabled=True so the chat handler
+    # can drive it without an extra config flag — failures degrade gracefully.
+    from deskpet.agent.assembler import build_default_assembler as _build_assembler
+    _assembler = _build_assembler(
+        embedder=None,
+        llm_registry=None,
+        enabled=True,
+        # Local LLM context window (Qwen2.5-7B-Instruct default);
+        # cloud Claude is bigger but the budget allocator scales by
+        # ratio so this is a reasonable floor. The classifier never
+        # actually writes a prompt this big — budget_ratio=0.6 caps
+        # output tokens to ~19200 in practice.
+        context_window=32_000,
+        budget_ratio=0.6,
+    )
+    service_context.register("context_assembler", _assembler)
+
     logger.info(
         "p4_services_registered",
         l1_dir=str(_l1_dir),
         memory_manager=True,
         skill_loader=True,
+        context_assembler=True,
     )
 except Exception as _p4_exc:
     # S13 stay-alive guarantee: ANY P4 import/init failure must not block the
@@ -713,6 +735,45 @@ async def control_channel(ws: WebSocket):
                 budget_exceeded = False
                 budget_reason: str | None = None
 
+                # P4-S14: per-turn ContextAssembler. Runs BEFORE chat_stream so
+                # the bundle's frozen_system + memory_block + skill_prelude land
+                # in the prompt, and the decision is recorded for ContextTrace.
+                # Failures NEVER block the chat path — bundle stays None, the
+                # message list falls back to legacy ``[{"role":"user", ...}]``.
+                _bundle = None
+                _assembler = service_context.get("context_assembler")
+                if _assembler is not None and getattr(_assembler, "enabled", True):
+                    try:
+                        import time as _ti
+                        _bundle = await _assembler.assemble(
+                            user_message=text,
+                            memory_manager=service_context.get("memory_manager"),
+                            tool_registry=service_context.get("tool_router"),
+                            skill_registry=service_context.get("skill_loader"),
+                            mcp_manager=service_context.get("mcp_manager"),
+                            session_id=session_id,
+                        )
+                        # Stamp wall-clock + session so ContextTracePanel can
+                        # render a meaningful timeline. AssemblyDecisions
+                        # already records assembly_latency_ms during assemble.
+                        if _bundle is not None and _bundle.decisions is not None:
+                            _bundle.decisions.timestamp = _ti.time()
+                            _bundle.decisions.session_id = session_id
+                    except Exception as exc:
+                        logger.warning(
+                            "p4_assembler_failed",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        )
+                        _bundle = None
+
+                # If assembler succeeded, build a fully-shaped messages list;
+                # otherwise fall back to the legacy shape.
+                if _bundle is not None:
+                    _msgs = _bundle.build_messages(user_message=text)
+                else:
+                    _msgs = [{"role": "user", "content": text}]
+
                 # V5 §2.3: route through agent_engine (not llm_engine directly).
                 # Keeps WS layer stable when S2/S3 add memory/tools to Agent.
                 agent_engine = service_context.agent_engine
@@ -720,7 +781,7 @@ async def control_channel(ws: WebSocket):
                     try:
                         response_text = ""
                         async for token in agent_engine.chat_stream(
-                            [{"role": "user", "content": text}],
+                            _msgs,
                             session_id=session_id,
                         ):
                             response_text += token
@@ -740,6 +801,15 @@ async def control_channel(ws: WebSocket):
                     except Exception as exc:
                         logger.warning("agent_stream_failed", error=str(exc))
                         response_text = f"[echo] {text}"
+
+                # P4-S14: feedback decision so ContextTrace shows the final
+                # response length on the same record. Best-effort — never
+                # surface to the user.
+                if _bundle is not None and _assembler is not None:
+                    try:
+                        _assembler.feedback(_bundle, final_response=response_text)
+                    except Exception as exc:
+                        logger.warning("p4_assembler_feedback_failed", error=str(exc))
 
                 # P2-1-S8: on a successful stream, consult the underlying
                 # providers' last_usage (set by OpenAICompatibleProvider) and
