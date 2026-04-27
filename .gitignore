@@ -49,7 +49,14 @@ scripts/perf/asr_samples/
 # Claude Code scheduled-task runtime files / per-agent worktrees.
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+.claude/codex-tasks/
+.claude/tauri_dev.log.err
+backend/.claude/
 /logs/
+
+# P4-S15: dev-only L2 conversation DB. Real path is %AppData%/deskpet/data/.
+# Local CWD-relative leftover from old runs.
+/data/
 
 # P4-S2: BGE-M3 INT8 weights (~286MB after quantise, 2.2GB fp16 source)
 # — downloaded on first run by backend/scripts/download_bge_m3.py, not in git.
