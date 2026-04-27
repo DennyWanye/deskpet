@@ -35,6 +35,8 @@ P4_IPC_MESSAGE_TYPES = frozenset(
         "memory_search",
         "memory_l1_list",
         "memory_l1_delete",
+        # P4-S16: SettingsPanel "BGE-M3 状态" 卡片探针。
+        "embedder_status",
     }
 )
 
@@ -61,6 +63,8 @@ async def handle(
             await _handle_memory_l1_list(ws, payload, service_context)
         elif msg_type == "memory_l1_delete":
             await _handle_memory_l1_delete(ws, payload, service_context)
+        elif msg_type == "embedder_status":
+            await _handle_embedder_status(ws, payload, service_context)
         else:
             # Shouldn't happen — membership check is done by caller.
             await _send_error(ws, f"unknown P4 message type: {msg_type}")
@@ -280,6 +284,65 @@ async def _handle_memory_l1_delete(
         {
             "type": "memory_l1_delete_ack",
             "payload": {"target": target, "index": index, "deleted": deleted},
+        }
+    )
+
+
+async def _handle_embedder_status(
+    ws: Any, payload: dict[str, Any], sc: Any
+) -> None:
+    """P4-S16: 查询当前 Embedder 状态供 SettingsPanel 渲染。
+
+    返回 ``{is_ready, is_mock, model_path, reason?}``。Embedder 是私有
+    属性 ``_p4_embedder`` 而不是注册服务（main.py 暂时这么挂），所以走
+    ``getattr(sc, "_p4_embedder", None)`` 直接取。任何阶段失败都退到
+    "未注册" 形态而不是抛错——前端拿到 reason 字段就知道为什么不能用。
+    """
+    embedder = getattr(sc, "_p4_embedder", None) if sc is not None else None
+    if embedder is None:
+        await ws.send_json(
+            {
+                "type": "embedder_status_response",
+                "payload": {
+                    "is_ready": False,
+                    "is_mock": False,
+                    "model_path": "",
+                    "reason": "embedder_not_registered",
+                },
+            }
+        )
+        return
+    try:
+        is_ready = bool(embedder.is_ready())
+        is_mock = bool(embedder.is_mock())
+        # _model_path 是 Path 对象；str() 兼容缺失情况
+        model_path = str(getattr(embedder, "_model_path", "") or "")
+    except Exception as exc:
+        logger.warning(
+            "p4_ipc.embedder_status_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        await ws.send_json(
+            {
+                "type": "embedder_status_response",
+                "payload": {
+                    "is_ready": False,
+                    "is_mock": False,
+                    "model_path": "",
+                    "reason": f"embedder_error: {type(exc).__name__}",
+                },
+            }
+        )
+        return
+    await ws.send_json(
+        {
+            "type": "embedder_status_response",
+            "payload": {
+                "is_ready": is_ready,
+                "is_mock": is_mock,
+                "model_path": model_path,
+            },
         }
     )
 

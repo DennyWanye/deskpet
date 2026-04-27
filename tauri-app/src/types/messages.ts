@@ -263,6 +263,26 @@ export interface MemoryL1DeleteAck {
   };
 }
 
+// --- P4-S16 Embedder status (SettingsPanel BGE-M3 卡片) ---------------------
+//
+// 让用户在前端直接看见当前 BGE-M3 是真模型还是 mock。后端 handler 在
+// backend/p4_ipc.py::_handle_embedder_status；service_context._p4_embedder
+// 缺失或抛错会带 reason 回传，UI 据此渲染降级状态。
+
+export interface EmbedderStatusResponse {
+  type: "embedder_status_response";
+  payload: {
+    /** Embedder.warmup() 是否已完成（mock 也算 ready）。 */
+    is_ready: boolean;
+    /** True = 当前走 mock 路径（语义搜索能力受限）。 */
+    is_mock: boolean;
+    /** Embedder 期望的模型路径（绝对路径，已脱敏不含密码）。 */
+    model_path: string;
+    /** 仅在异常态出现："embedder_not_registered" / "embedder_error: ..." */
+    reason?: string;
+  };
+}
+
 export type IncomingMessage =
   | ChatResponse
   | PongMessage
@@ -280,6 +300,7 @@ export type IncomingMessage =
   | DecisionsListResponse
   | MemorySearchResponse
   | MemoryL1ListResponse
-  | MemoryL1DeleteAck;
+  | MemoryL1DeleteAck
+  | EmbedderStatusResponse;
 
 export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | TTSBargeInMessage | ErrorMessage;

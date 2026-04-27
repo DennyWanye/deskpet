@@ -420,6 +420,91 @@ class TestMemoryL1Delete:
 
 
 # ---------------------------------------------------------------------------
+# P4-S16: EmbedderStatus
+# ---------------------------------------------------------------------------
+class FakeEmbedder:
+    """Mirrors deskpet.memory.embedder.Embedder 的关键 surface。"""
+
+    def __init__(
+        self,
+        ready: bool = True,
+        mock: bool = True,
+        path: str = "/fake/bge-m3",
+        raise_on_call: Exception | None = None,
+    ) -> None:
+        self._ready = ready
+        self._mock = mock
+        self._model_path = path
+        self._raise = raise_on_call
+
+    def is_ready(self) -> bool:
+        if self._raise:
+            raise self._raise
+        return self._ready
+
+    def is_mock(self) -> bool:
+        if self._raise:
+            raise self._raise
+        return self._mock
+
+
+class FakeServiceContextWithEmbedder(FakeServiceContext):
+    """允许测试直接挂 _p4_embedder 私有属性，对齐 main.py 的实现。"""
+
+    def __init__(self, embedder: Any = None, **services: Any) -> None:
+        super().__init__(**services)
+        if embedder is not None:
+            self._p4_embedder = embedder
+
+
+class TestEmbedderStatus:
+    @pytest.mark.asyncio
+    async def test_returns_status_when_real_embedder_registered(self) -> None:
+        emb = FakeEmbedder(ready=True, mock=False, path="C:/models/bge-m3")
+        ws = FakeWebSocket()
+        sc = FakeServiceContextWithEmbedder(embedder=emb)
+        await p4_ipc.handle(ws, "s1", "embedder_status", {}, sc)
+        m = ws.sent[0]
+        assert m["type"] == "embedder_status_response"
+        assert m["payload"]["is_ready"] is True
+        assert m["payload"]["is_mock"] is False
+        assert m["payload"]["model_path"] == "C:/models/bge-m3"
+        assert "reason" not in m["payload"]
+
+    @pytest.mark.asyncio
+    async def test_returns_mock_status_correctly(self) -> None:
+        emb = FakeEmbedder(ready=True, mock=True, path="/fake/no-bge")
+        ws = FakeWebSocket()
+        sc = FakeServiceContextWithEmbedder(embedder=emb)
+        await p4_ipc.handle(ws, "s1", "embedder_status", {}, sc)
+        m = ws.sent[0]
+        assert m["payload"]["is_ready"] is True
+        assert m["payload"]["is_mock"] is True
+
+    @pytest.mark.asyncio
+    async def test_graceful_when_embedder_absent(self) -> None:
+        ws = FakeWebSocket()
+        sc = FakeServiceContext()  # 没挂 _p4_embedder
+        await p4_ipc.handle(ws, "s1", "embedder_status", {}, sc)
+        m = ws.sent[0]
+        assert m["type"] == "embedder_status_response"
+        assert m["payload"]["is_ready"] is False
+        assert m["payload"]["reason"] == "embedder_not_registered"
+
+    @pytest.mark.asyncio
+    async def test_handles_embedder_method_raise(self) -> None:
+        emb = FakeEmbedder(raise_on_call=RuntimeError("CUDA OOM"))
+        ws = FakeWebSocket()
+        sc = FakeServiceContextWithEmbedder(embedder=emb)
+        await p4_ipc.handle(ws, "s1", "embedder_status", {}, sc)
+        m = ws.sent[0]
+        # 必须不抛、必须返回 reason
+        assert m["type"] == "embedder_status_response"
+        assert m["payload"]["is_ready"] is False
+        assert "embedder_error" in m["payload"]["reason"]
+
+
+# ---------------------------------------------------------------------------
 # Membership guard
 # ---------------------------------------------------------------------------
 def test_message_type_membership() -> None:
@@ -429,4 +514,5 @@ def test_message_type_membership() -> None:
     assert "memory_search" in p4_ipc.P4_IPC_MESSAGE_TYPES
     assert "memory_l1_list" in p4_ipc.P4_IPC_MESSAGE_TYPES
     assert "memory_l1_delete" in p4_ipc.P4_IPC_MESSAGE_TYPES
-    assert len(p4_ipc.P4_IPC_MESSAGE_TYPES) == 5
+    assert "embedder_status" in p4_ipc.P4_IPC_MESSAGE_TYPES
+    assert len(p4_ipc.P4_IPC_MESSAGE_TYPES) == 6

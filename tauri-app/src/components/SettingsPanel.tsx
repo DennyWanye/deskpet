@@ -24,6 +24,7 @@ import {
   setCloudApiKey,
 } from "../bindings/secrets";
 import { updateCloudConfig } from "../bindings/config";
+import { EmbedderStatusCard } from "./EmbedderStatusCard";
 import type {
   DailyBudgetStatus,
   IncomingMessage,
@@ -487,6 +488,12 @@ export function SettingsPanel({
           <p style={hintStyle}>
             数据来自 BillingLedger（S8），按 Asia/Shanghai 时区按日累计。
           </p>
+        </section>
+
+        {/* ================ 模型状态 (P4-S16) ================ */}
+        <section style={sectionStyle}>
+          <h3 style={h3Style}>模型状态</h3>
+          <EmbedderStatusCard getChannel={getChannel} />
         </section>
 
         {/* ================ 危险区 (P3-S9) ================ */}
