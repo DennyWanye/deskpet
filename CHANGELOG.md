@@ -5,6 +5,68 @@ All notable changes to DeskPet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0-phase4-rc3] — 2026-04-27
+
+**真 BGE-M3 语义嵌入激活 + EmbedderStatusCard 前端可见。**
+
+rc2 的尾巴全部清完：BGE-M3 INT8 模型从 mock fallback 切到真 GPU 推理，
+SettingsPanel 加状态徽章让用户能直接看见。
+
+### 环境
+
+- **torch**: 2.5.1+cu121 → **2.6.0+cu124**（cu124 wheel 走阿里云镜像 ≈ 2.5GB）
+- **torchvision / torchaudio**: 同步升到 0.21.0+cu124 / 2.6.0+cu124
+- **GPU**: RTX 4090 + CUDA 12.4 全栈可用
+- **新增依赖**: `hf_xet` 加速 HuggingFace 下载
+
+### Added
+
+- **BGE-M3 INT8 真模型激活**
+  - `scripts/download_bge_m3.py` 下载完整仓库（60 文件 / 2.3GB）到
+    `%LocalAppData%\deskpet\models\bge-m3-int8\`
+  - `Embedder.warmup()` 在 RTX 4090 上 **5.78 秒** 加载完成（PRD target <90s）
+  - 跨语言语义召回验证：「柴犬可爱」↔「I love dogs」cosine = **0.698**
+  - 「柴犬」↔「天气」cosine = **0.492**（无关概念正确低分）
+- **EmbedderStatusCard**（`tauri-app/src/components/EmbedderStatusCard.tsx`）
+  - SettingsPanel「模型状态」section 新嵌入
+  - 三档徽章：绿「BGE-M3 已就绪 ✓」/ 黄「Mock 模式 ⚠」/ 灰「未启动」
+  - mock 状态下展示下载脚本提示
+- **Backend IPC**（`backend/p4_ipc.py::_handle_embedder_status`）
+  - 新增 `embedder_status` message type，返回 `{is_ready, is_mock, model_path, reason?}`
+  - graceful fallback 三态：service 未注册 / 方法 raise / 正常
+  - `Embedder.embed()` 适配器（之前已加，rc2 已 ship）保持不变
+
+### Bench (RTX 4090)
+
+| 指标 | 实测 | PRD target | margin |
+|---|---|---|---|
+| Cold-start warmup | **5.78s** | <90s | 15.6× |
+| Single encode p50 | 21.6ms | — | — |
+| Single encode p95 | 24.7ms | — | — |
+| **Batch-8 p50** | **24.4ms** | **≤80ms** | **3.3×** |
+| Batch-8 p95 | 28.4ms | — | — |
+| Batch-32 p50 | 53.7ms (1.68ms/句) | — | — |
+
+实测产物：`backend/bench_bge_m3_real.json`
+
+### Tests
+
+- 632 passing in deskpet 套件（rc2 是 628，+4 from `TestEmbedderStatus`）
+- 26 IPC handler tests
+- frontend `tsc --noEmit` clean，`vite build` clean
+- torch 2.6 升级**零回归**：所有 P2/P3/P4 测试照常通过
+
+### Documentation
+
+- `docs/INDEX.md` 完全重写（之前停在 P3 rc1，现在反映 rc2/rc3 状态）
+- `.gitignore` 整洁化（清理 worktree 后的 4 个 untracked 残留）
+
+### 仍待办（不阻塞 rc3）
+
+- 真机 Tauri E2E smoke（Preview MCP 渲染 0×0 viewport，需真 Windows 机）
+- OpenSpec archive（等真机 smoke 后 `/opsx:archive`）
+- 全链首字延迟 + prompt cache 命中率（需真 LLM key）
+
 ## [0.6.0-phase4-rc2] — 2026-04-25
 
 **Phase 4 full-stack integration on top of rc1.** Every P4 component is now
