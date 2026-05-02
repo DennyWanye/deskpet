@@ -163,6 +163,19 @@ class AppConfig:
     # Always a dict — empty when no config.toml exists. Treat as read-only.
     raw: dict = field(default_factory=dict)
 
+# P4-S15: 这些 key 是 P4 通过 ``AppConfig.raw`` 读取的（[memory.l1] / [memory.l3]
+# 等），不属于旧 dataclass 的 schema，但**有意保留在 config.toml 里**。
+# 把它们登记下来 → _load_section 不再为它们打 warning，启动日志保持安静。
+# 真正的"用户拼错 key"仍然会触发 warning。
+_KNOWN_EXTRAS_BY_DATACLASS: dict[str, frozenset[str]] = {
+    # MemoryConfig — 旧 dataclass 只有 db_path / embedding_model；
+    # P4 三层记忆的子段都通过 AppConfig.raw["memory"] 直读。
+    "MemoryConfig": frozenset({"l1", "l2", "l3", "rrf"}),
+    # LLMRoutingConfig — P4-S6 引入的多 provider 段也走 raw 读。
+    "LLMRoutingConfig": frozenset({"providers", "fallback_chain"}),
+}
+
+
 def _load_section(cls, raw_dict: dict):
     """Build a dataclass from a raw dict, dropping keys the dataclass no
     longer declares.
@@ -170,9 +183,14 @@ def _load_section(cls, raw_dict: dict):
     Rationale: a removed/renamed field in a future release shouldn't lock
     out users whose config.toml still carries the old key. Dataclass
     defaults already cover missing keys; this helper covers extra ones.
+
+    P4-S15: P4 段（如 ``[memory.l1]`` / ``[llm.providers]``）是有意保留的
+    "已知额外字段"，不应每次启动都打 warning —— 它们由 ``AppConfig.raw``
+    兜底读取。
     """
     known = {f.name for f in dc_fields(cls)}
-    unknown = set(raw_dict) - known
+    extras_allowed = _KNOWN_EXTRAS_BY_DATACLASS.get(cls.__name__, frozenset())
+    unknown = set(raw_dict) - known - extras_allowed
     if unknown:
         logger.warning(
             "config section %s ignoring unknown keys: %s",

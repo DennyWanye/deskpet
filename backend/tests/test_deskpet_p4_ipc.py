@@ -449,12 +449,16 @@ class FakeEmbedder:
 
 
 class FakeServiceContextWithEmbedder(FakeServiceContext):
-    """允许测试直接挂 _p4_embedder 私有属性，对齐 main.py 的实现。"""
+    """P4-S16: embedder 走正式注册槽（之前是私有 _p4_embedder 属性）。
+
+    fixture 把 embedder 塞进 _services dict，让 _get_service(sc, "embedder")
+    通过 ``sc.get("embedder")`` 命中。
+    """
 
     def __init__(self, embedder: Any = None, **services: Any) -> None:
-        super().__init__(**services)
         if embedder is not None:
-            self._p4_embedder = embedder
+            services["embedder"] = embedder
+        super().__init__(**services)
 
 
 class TestEmbedderStatus:
@@ -484,7 +488,7 @@ class TestEmbedderStatus:
     @pytest.mark.asyncio
     async def test_graceful_when_embedder_absent(self) -> None:
         ws = FakeWebSocket()
-        sc = FakeServiceContext()  # 没挂 _p4_embedder
+        sc = FakeServiceContext()  # 没注册 embedder
         await p4_ipc.handle(ws, "s1", "embedder_status", {}, sc)
         m = ws.sent[0]
         assert m["type"] == "embedder_status_response"

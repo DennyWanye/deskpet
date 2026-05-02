@@ -293,12 +293,12 @@ async def _handle_embedder_status(
 ) -> None:
     """P4-S16: 查询当前 Embedder 状态供 SettingsPanel 渲染。
 
-    返回 ``{is_ready, is_mock, model_path, reason?}``。Embedder 是私有
-    属性 ``_p4_embedder`` 而不是注册服务（main.py 暂时这么挂），所以走
-    ``getattr(sc, "_p4_embedder", None)`` 直接取。任何阶段失败都退到
-    "未注册" 形态而不是抛错——前端拿到 reason 字段就知道为什么不能用。
+    返回 ``{is_ready, is_mock, model_path, reason?}``。Embedder 走
+    ServiceContext 正式注册路径（``_VALID_SERVICES`` 含 ``embedder``）。
+    任何阶段失败都退到 "未注册" 形态而不是抛错——前端拿到 reason 字段
+    就知道为什么不能用。
     """
-    embedder = getattr(sc, "_p4_embedder", None) if sc is not None else None
+    embedder = _get_service(sc, "embedder")
     if embedder is None:
         await ws.send_json(
             {

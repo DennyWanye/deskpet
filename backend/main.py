@@ -342,15 +342,20 @@ try:
             return await self._primary.get_recent(session_id, limit)
 
         async def append(self, session_id: str, role: str, content: str) -> None:
-            # Primary path drives existing behaviour (P3 contract). Failure
-            # propagates so callers see real errors as before.
+            # Primary path drives existing behaviour (P3 contract): primary
+            # is RedactingMemoryStore wrapping SqliteConversationMemory, so
+            # the secret is rewritten BEFORE hitting disk. Failure propagates.
             await self._primary.append(session_id, role, content)
-            # Mirror to SessionDB; isolate failures.
+            # P4-S16 SECURITY FIX: SessionDB 镜像必须也走同样的 redact，
+            # 否则 ContextAssembler 从 SessionDB 拉 L2 历史时会把原文 secret
+            # 塞回 prompt（见 tests/test_e2e_integration::test_redacting_memory_store_is_active）。
+            # 用同一份 ``redact()`` 函数保证两边内容一致。
+            from memory.sensitive_filter import redact as _redact
             try:
                 await self._session_db.append_message(
                     session_id=session_id,
                     role=role,
-                    content=content,
+                    content=_redact(content),
                 )
             except Exception as exc:  # pragma: no cover — defensive
                 logger.warning(
@@ -397,13 +402,11 @@ try:
     )
     service_context.register("context_assembler", _assembler)
 
-    # Stash worker + session_db on the context so lifespan can drive their
-    # async lifecycle. They aren't part of the public service-context schema,
-    # but ServiceContext is a dataclass with attribute access — ok to
-    # attach helper handles for shutdown.
-    service_context._p4_session_db = _session_db  # type: ignore[attr-defined]
-    service_context._p4_vector_worker = _vector_worker  # type: ignore[attr-defined]
-    service_context._p4_embedder = _embedder  # type: ignore[attr-defined]
+    # P4-S16: 这三个 handle 升级成正式注册服务（之前挂私有 _p4_* 属性）。
+    # context.py 已把名字加进 _VALID_SERVICES。lifespan 通过 sc.get(name) 拉。
+    service_context.register("session_db", _session_db)
+    service_context.register("vector_worker", _vector_worker)
+    service_context.register("embedder", _embedder)
 
     logger.info(
         "p4_services_registered",
@@ -453,7 +456,7 @@ async def lifespan(app: FastAPI):
     # P4-S13: async initialisers for the P4 read-only stack. Each failure is
     # isolated — MemoryManager needing a base dir doesn't prevent SkillLoader
     # from scanning the built-in dir, etc.
-    _sdb = getattr(service_context, "_p4_session_db", None)
+    _sdb = service_context.get("session_db")
     if _sdb is not None:
         try:
             await _sdb.initialize()
@@ -476,7 +479,7 @@ async def lifespan(app: FastAPI):
             logger.warning("p4_skill_loader_start_failed", error=str(exc))
     # P4-S15: Embedder warmup runs in the background so cold-start isn't
     # blocked by 286 MB of BGE-M3 weights. Mock fallback returns instantly.
-    _emb = getattr(service_context, "_p4_embedder", None)
+    _emb = service_context.get("embedder")
     if _emb is not None:
         async def _embedder_warmup_bg() -> None:
             try:
@@ -489,7 +492,7 @@ async def lifespan(app: FastAPI):
     # P4-S15: VectorWorker — starts after SessionDB is initialised so the
     # vec0 schema is in place. After start, wire its enqueue() onto the
     # SessionDB write-hook so new chat turns auto-embed.
-    _vw = getattr(service_context, "_p4_vector_worker", None)
+    _vw = service_context.get("vector_worker")
     if _vw is not None and _sdb is not None:
         try:
             await _vw.start()
@@ -522,7 +525,7 @@ async def lifespan(app: FastAPI):
             await _mcp.stop()
         except Exception as exc:
             logger.warning("p4_mcp_manager_stop_failed", error=str(exc))
-    _vw = getattr(service_context, "_p4_vector_worker", None)
+    _vw = service_context.get("vector_worker")
     if _vw is not None:
         try:
             await _vw.stop()

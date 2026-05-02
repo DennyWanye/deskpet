@@ -18,6 +18,12 @@ _VALID_SERVICES = frozenset({
     "memory_manager",      # L1+L2+L3 MemoryManager facade
     "file_memory",         # Direct L1 handle (also reachable via manager.file_memory)
     "mcp_manager",         # MCPManager (stdio/sse/streamable_http clients)
+    # --- P4-S16 公开化（之前挂在 _p4_* 私有属性上）---------------------------
+    # Embedder / VectorWorker / SessionDB 在 S15 wire-in 时是直接挂私有属性，
+    # 这里转成正式 register 路径，避免 getattr(sc, "_p4_xxx") 这种隐式约定。
+    "embedder",            # BGE-M3 Embedder (with mock fallback)
+    "vector_worker",       # VectorWorker draining embedding queue → vec0
+    "session_db",          # P4 canonical L2 SessionDB (state.db)
 })
 
 @dataclass
@@ -36,6 +42,10 @@ class ServiceContext:
     memory_manager: Any | None = None
     file_memory: Any | None = None
     mcp_manager: Any | None = None
+    # --- P4-S16 公开化 -------------------------------------------------------
+    embedder: Any | None = None
+    vector_worker: Any | None = None
+    session_db: Any | None = None
 
     def register(self, name: str, provider: Any) -> None:
         if name not in _VALID_SERVICES:
