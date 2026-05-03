@@ -460,6 +460,18 @@ async def lifespan(app: FastAPI):
     # logged but don't raise. Only the manager handle is registered; the
     # actual server states are inspectable via manager.server_state().
     try:
+        # P4-S18: ensure workspace dir exists before spawning filesystem MCP
+        # server. Without this, npx @modelcontextprotocol/server-filesystem
+        # spawns OK but its first stat() fails with ENOENT, MCP transport
+        # closes, and our manager spins in reconnect loop forever (logged
+        # every few seconds, polluting startup output). Touching the dir
+        # is idempotent and cheap; agents are still scoped to it.
+        try:
+            _ws_dir = _paths.user_data_dir() / "workspace"
+            _ws_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as _ws_exc:  # pragma: no cover — best-effort
+            logger.warning("workspace_mkdir_failed", error=str(_ws_exc))
+
         from deskpet.mcp.bootstrap import create_and_start_from_config as _mcp_bootstrap
         _mcp_manager = await _mcp_bootstrap(
             app_config=config.raw,

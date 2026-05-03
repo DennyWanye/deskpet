@@ -47,7 +47,34 @@ class FasterWhisperASR:
     async def load(self) -> None:
         if self._model is not None:
             return
-        model_path = self.local_dir if self.local_dir else self.model_name
+
+        # P4-S18 friendly-error: caller (main.py) typically passes
+        # ``local_dir = resolve_model_dir("faster-whisper-large-v3-turbo")``
+        # without checking it exists. faster-whisper then mistakes the
+        # absolute path for a model size and raises ``ValueError("Invalid
+        # model size '...'")`` — confusing message that pollutes startup
+        # log on every dev box without the 5GB weights downloaded.
+        # Fix: stat the dir up front; if missing, fall through to
+        # ``self.model_name`` (so the user gets to choose: download into
+        # local_dir OR let faster-whisper pull from HuggingFace).
+        if self.local_dir:
+            from pathlib import Path as _Path
+            local_dir_p = _Path(self.local_dir)
+            if not local_dir_p.exists():
+                logger.warning(
+                    "asr_local_dir_missing",
+                    local_dir=str(local_dir_p),
+                    fallback_model=self.model_name,
+                    hint="Run scripts/download_faster_whisper.py to install "
+                         "the model locally, or accept the HuggingFace "
+                         "auto-download (5GB on first transcribe).",
+                )
+                model_path = self.model_name
+            else:
+                model_path = str(local_dir_p)
+        else:
+            model_path = self.model_name
+
         logger.info(
             "loading faster-whisper",
             model=model_path,
