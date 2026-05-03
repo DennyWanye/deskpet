@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -108,21 +110,55 @@ class Embedder:
         device: str = "auto",
         *,
         use_mock_when_missing: bool = True,
+        mode: str = "subprocess",
     ) -> None:
+        """Construct an Embedder.
+
+        Parameters
+        ----------
+        model_path:
+            Absolute path to the BGE-M3 model dir.
+        device:
+            ``"auto"`` / ``"cuda"`` / ``"cpu"``.
+        use_mock_when_missing:
+            On model dir missing or load failure, fall back to mock embedder
+            instead of raising.
+        mode:
+            P4-S19 isolation mode:
+
+            - ``"subprocess"`` (default, recommended): spawn a Python
+              subprocess that loads BGE-M3 and exchanges JSON-RPC over
+              stdin/stdout. Avoids the PyTorch+ctranslate2 cross-thread
+              CUDA segfault (P4-S18) since the worker doesn't import
+              ctranslate2.
+            - ``"inprocess"``: legacy in-process FlagEmbedding load with
+              ThreadPoolExecutor. **Will segfault** when faster_whisper /
+              ctranslate2 is also imported in the same process. Kept for
+              standalone test scripts that don't have ctranslate2 around.
+            - ``"mock"``: skip the real model entirely, use md5-hash
+              vectors. Useful for unit tests + CI.
+        """
         self._model_path = Path(model_path) if model_path else _default_model_path()
         self._device_pref = device  # "auto" | "cuda" | "cpu"
         self._use_mock_when_missing = use_mock_when_missing
+        if mode not in ("subprocess", "inprocess", "mock"):
+            raise ValueError(f"unknown mode {mode!r}")
+        self._mode = mode
 
-        self._model: Any = None  # FlagEmbedding BGEM3FlagModel or None
+        self._model: Any = None  # FlagEmbedding BGEM3FlagModel or None (inprocess only)
         self._is_mock = False
         self._is_ready = False
         # 真模型加载 + encode 都跑在单线程 executor 里（FlagEmbedding 非线程安全）
+        # subprocess mode 下用不到 executor。
         self._executor: ThreadPoolExecutor | None = None
-        # async 路径的序列化：确保同时只有一个 encode 任务进 executor，
+        # async 路径的序列化：确保同时只有一个 encode 任务进 executor / 子进程，
         # 避免队列里塞一堆任务把 model 状态交叉污染。
         self._lock = asyncio.Lock()
         # warmup 幂等保护：多次调用只真正加载一次
         self._warmup_started = False
+        # P4-S19 subprocess handle (only used when mode='subprocess')
+        self._proc: Any = None  # asyncio.subprocess.Process or None
+        self._next_request_id = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -157,51 +193,59 @@ class Embedder:
                 "use_mock_when_missing=False"
             )
 
-        # P4-S18 segfault gate: 默认 device='auto' 时跳过真模型加载。
-        # 根因：与 backend 同进程的 ``faster_whisper`` (transitive: ctranslate2)
-        # 触发 PyTorch ``Module._apply::convert`` 在 worker thread 调
-        # ``model.to(device)`` 时撞 native CUDA/CPU state → Windows access
-        # violation (faulthandler 定位 m3.py:345)。
-        # 复现：standalone import faster_whisper.FasterWhisperASR(不 load)
-        # + await emb.encode() = 100% segfault；不 import faster_whisper
-        # 时同样代码不崩。
-        # 影响：当前 BGE-M3 真模型在生产 backend 进程内**完全不可用**。
-        # 缓解：默认走 mock embedder 跳过加载。L3 向量召回降级（mock md5
-        # 哈希，不能跨语言/同义词召回，但 FTS5 / recency / salience 三路
-        # RRF 融合仍工作）。memory_search IPC 不再 crash backend。
-        # 永久修复：等 PyTorch 与 ctranslate2 共存兼容（issue 待跟踪），
-        # 或把 BGE-M3 拆成独立子进程（IPC 通信，开销可接受 ~5ms RPC）。
-        # 显式 device='cuda' / 'cpu' 仍走真模型（用户自担 segfault 风险）。
-        if self._device_pref == "auto" and self._use_mock_when_missing:
-            log.warning(
-                "BGE-M3 real model disabled in this process (P4-S18 PyTorch "
-                "+ ctranslate2 segfault). Falling back to mock embedder. "
-                "Pass device='cuda' or device='cpu' to override (may crash)."
-            )
+        # P4-S19: dispatch by mode.
+        # - mock: skip real load entirely (unit tests, CI)
+        # - subprocess (default): spawn embedder_worker.py for full isolation
+        #   from ctranslate2/PyTorch cross-thread CUDA segfault (P4-S18).
+        # - inprocess: legacy path, in-process FlagEmbedding load (will
+        #   segfault when faster_whisper is also imported; kept for
+        #   standalone scripts only).
+        if self._mode == "mock":
+            log.info("BGE-M3 mock mode (Embedder.mode='mock')")
             self._is_mock = True
             self._is_ready = True
             return
 
-        # 2. 目录存在 + 用户显式 device —— 尝试真加载（用户自担风险）
+        if self._mode == "subprocess":
+            try:
+                await self._spawn_subprocess_worker()
+                self._is_ready = True
+                log.info(
+                    "BGE-M3 subprocess worker ready (path=%s, device=%s)",
+                    self._model_path,
+                    self._resolved_device(),
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                if self._use_mock_when_missing:
+                    log.warning(
+                        "BGE-M3 subprocess worker failed (%s); "
+                        "falling back to mock embedder",
+                        exc,
+                    )
+                    self._is_mock = True
+                    self._is_ready = True
+                    return
+                raise
+
+        # mode == "inprocess" — legacy. Will segfault if ctranslate2 also loaded.
         try:
             await self._load_real_model()
             self._is_ready = True
             log.info(
-                "BGE-M3 embedder ready (path=%s, device=%s)",
+                "BGE-M3 embedder ready (in-process, path=%s, device=%s)",
                 self._model_path,
                 self._resolved_device(),
             )
         except Exception as exc:  # noqa: BLE001
-            # 权重损坏 / torch 缺 DLL / CUDA 不兼容 … 一律降级。
             if self._use_mock_when_missing:
                 log.warning(
-                    "BGE-M3 load failed (%s); falling back to mock embedder",
+                    "BGE-M3 in-process load failed (%s); falling back to mock embedder",
                     exc,
                 )
                 self._is_mock = True
                 self._is_ready = True
                 self._model = None
-                # 关掉可能已建的 executor（_load_real_model 里建的）
                 if self._executor is not None:
                     self._executor.shutdown(wait=False)
                     self._executor = None
@@ -270,6 +314,8 @@ class Embedder:
         async with self._lock:
             if self._is_mock:
                 return self._encode_mock(texts)
+            if self._mode == "subprocess":
+                return await self._encode_subprocess(texts)
             return await self._encode_real(texts)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
@@ -318,6 +364,148 @@ class Embedder:
         return await loop.run_in_executor(self._executor, _sync_encode)
 
     # ------------------------------------------------------------------
+    # P4-S19 subprocess worker (default isolation mode)
+    # ------------------------------------------------------------------
+
+    async def _spawn_subprocess_worker(self) -> None:
+        """Spawn ``deskpet.memory.embedder_worker`` and ``ping`` it ready.
+
+        Raises if the subprocess fails to load the model — caller falls
+        back to mock if ``use_mock_when_missing=True``.
+        """
+        if not self._model_path.exists():
+            raise FileNotFoundError(
+                f"BGE-M3 model dir not found at {self._model_path}"
+            )
+
+        device = self._resolved_device()
+        # Use the same Python interpreter that's running the backend.
+        # Inherit env so HF_HOME / CUDA_VISIBLE_DEVICES propagate.
+        log.info(
+            "Spawning BGE-M3 subprocess worker (path=%s device=%s)",
+            self._model_path, device,
+        )
+        # P4-S19 NOTE: 不能同时 pipe stdout + stderr。Windows ProactorEventLoop
+        # 在两个 PIPE 都 open 时会 race condition 导致 stdout.readline() 永远
+        # 不返回（但 subprocess.Popen 同步模式正常）。验证：去掉 stderr=PIPE
+        # 后 first ready line 6s 内到达。
+        # 后果：worker stderr 直接继承父 backend 的 stderr — transformers 警告
+        # 和 Python traceback 会出现在 backend log，反而方便排查。
+        # P4-S19 LIMIT BUMP: readline() 默认 64KB；100 句 batch 的 base64-f32
+        # JSON ≈ 540KB > 64KB 会 LimitOverrunError。设 16MB 留余量（够 batch
+        # 3000 句）。
+        self._proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-X", "utf8",  # force UTF-8 stdio so JSON of Chinese text round-trips
+            "-m", "deskpet.memory.embedder_worker",
+            "--model-path", str(self._model_path),
+            "--device", device,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            # stderr=不 PIPE — 继承父进程
+            limit=16 * 1024 * 1024,  # 16 MB stdout buffer per readline
+        )
+
+        # First read: heartbeat ("spawned"). Confirms child process started.
+        try:
+            spawn_line = await asyncio.wait_for(
+                self._proc.stdout.readline(),  # type: ignore[union-attr]
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                "embedder worker did not emit spawn heartbeat in 10s"
+            )
+        if not spawn_line:
+            raise RuntimeError(
+                "embedder worker died before spawn heartbeat "
+                "(check parent stderr for traceback)"
+            )
+
+        # Second read: "ready" / "fatal" envelope after model load.
+        first_line = await asyncio.wait_for(
+            self._proc.stdout.readline(),  # type: ignore[union-attr]
+            timeout=120.0,  # BGE-M3 cold load can take ~5-10s, GPU warmup ~30s
+        )
+        if not first_line:
+            raise RuntimeError(
+                "embedder worker died during model load "
+                "(spawn ok, but FlagEmbedding/torch import or .load crashed; "
+                "check parent stderr for worker traceback)"
+            )
+        try:
+            envelope = json.loads(first_line.decode("utf-8").strip())
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"embedder worker emitted non-JSON first line: {first_line!r} ({exc})"
+            ) from exc
+
+        if not envelope.get("ok"):
+            err = envelope.get("error", "unknown")
+            raise RuntimeError(f"embedder worker fatal at load: {err}")
+        if not envelope.get("ready"):
+            raise RuntimeError(f"embedder worker first line not 'ready': {envelope}")
+        log.info(
+            "BGE-M3 worker ready in %.1fms (device=%s)",
+            envelope.get("load_elapsed_ms", 0.0),
+            envelope.get("device", "?"),
+        )
+
+    async def _encode_subprocess(self, texts: list[str]) -> np.ndarray:
+        """Send an ``encode`` request to the subprocess worker via JSON-RPC."""
+        if self._proc is None or self._proc.returncode is not None:
+            # Worker died — try one restart before giving up.
+            log.warning("embedder subprocess gone; trying one respawn")
+            await self._spawn_subprocess_worker()
+
+        self._next_request_id += 1
+        req_id = self._next_request_id
+        request = {
+            "id": req_id,
+            "method": "encode",
+            "texts": list(texts),
+            "batch_size": 8,
+            "max_length": 512,
+        }
+        line = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+        try:
+            self._proc.stdin.write(line)  # type: ignore[union-attr]
+            await self._proc.stdin.drain()  # type: ignore[union-attr]
+            response_line = await asyncio.wait_for(
+                self._proc.stdout.readline(),  # type: ignore[union-attr]
+                timeout=60.0,
+            )
+        except (asyncio.TimeoutError, BrokenPipeError, ConnectionResetError) as exc:
+            raise RuntimeError(f"embedder subprocess RPC failed: {exc}") from exc
+
+        if not response_line:
+            raise RuntimeError(
+                "embedder subprocess returned empty response "
+                "(check parent stderr for worker output)"
+            )
+
+        envelope = json.loads(response_line.decode("utf-8").strip())
+        if envelope.get("id") != req_id:
+            raise RuntimeError(
+                f"embedder RPC id mismatch: sent={req_id} got={envelope.get('id')}"
+            )
+        if not envelope.get("ok"):
+            raise RuntimeError(
+                f"embedder encode failed: {envelope.get('error_type')}: "
+                f"{envelope.get('error')}"
+            )
+
+        # P4-S19: prefer compact base64-f32 (~4KB/sentence). Fall back to
+        # legacy list-of-floats payload for back-compat with older workers.
+        if envelope.get("encoding") == "base64-f32":
+            import base64
+
+            shape = tuple(envelope["shape"])
+            raw = base64.b64decode(envelope["vectors_b64"])
+            return np.frombuffer(raw, dtype=np.float32).reshape(shape).copy()
+        return np.asarray(envelope["vectors"], dtype=np.float32)
+
+    # ------------------------------------------------------------------
     # Status / lifecycle
     # ------------------------------------------------------------------
 
@@ -330,7 +518,30 @@ class Embedder:
         return self._is_mock
 
     async def close(self) -> None:
-        """释放 executor + model。幂等。"""
+        """释放 executor + model + subprocess worker。幂等。"""
+        # P4-S19: 优雅停 subprocess worker
+        if self._proc is not None and self._proc.returncode is None:
+            try:
+                # Try graceful shutdown command first
+                if self._proc.stdin is not None and not self._proc.stdin.is_closing():
+                    self._proc.stdin.write(
+                        (json.dumps({"method": "shutdown"}) + "\n").encode("utf-8")
+                    )
+                    try:
+                        await asyncio.wait_for(self._proc.stdin.drain(), timeout=1.0)
+                    except (asyncio.TimeoutError, BrokenPipeError, ConnectionResetError):
+                        pass
+                # Wait briefly for it to exit on its own
+                try:
+                    await asyncio.wait_for(self._proc.wait(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    self._proc.kill()
+                    await self._proc.wait()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("embedder subprocess close failed: %s", exc)
+            finally:
+                self._proc = None
+
         if self._executor is not None:
             self._executor.shutdown(wait=True)
             self._executor = None
