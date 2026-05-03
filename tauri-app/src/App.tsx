@@ -53,6 +53,17 @@ function App() {
   // effects on the backend process. Safe to replay on HMR, F5, and the
   // backend-restarted supervisor event.
   const refreshSecret = useCallback(async () => {
+    // P4-S18 dev hatch: `?secret=xxx` URL param lets us run the SPA in
+    // a plain browser (Tauri runtime absent → no get_shared_secret).
+    // No effect inside the real Tauri shell because the URL there has
+    // no query string. Only honoured in dev (import.meta.env.DEV).
+    if (import.meta.env.DEV) {
+      const urlSecret = new URLSearchParams(window.location.search).get("secret");
+      if (urlSecret) {
+        setSecret(urlSecret);
+        return;
+      }
+    }
     const core = await import("@tauri-apps/api/core").catch(() => null);
     if (!core) return;
     for (let i = 0; i < 60; i++) {

@@ -46,7 +46,6 @@
         "type": "embedBootstrapper"
       },
       "wix": {
-        "// rc2-T1": "MSI/WiX requires X.Y.Z.W 4-segment numeric version. SemVer pre-release (`-phase4-rc3`) is not accepted, so we override here. Encoding: phase4 → minor 6, rc3 → build 3. Bump on every rc.",
         "version": "0.6.0.3"
       }
     },
