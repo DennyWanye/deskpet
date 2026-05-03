@@ -408,6 +408,160 @@ class SessionDB:
 
         await self._with_retry(_do)
 
+    # ---- P4-S17 MemoryStore Protocol compatibility --------------------
+
+    async def get_recent(
+        self, session_id: str, limit: int = 10
+    ) -> list["ConversationTurn"]:
+        """Implement ``MemoryStore.get_recent`` via ``get_messages``."""
+        from memory.base import ConversationTurn
+
+        rows = await self.get_messages(session_id, limit=limit)
+        return [
+            ConversationTurn(
+                role=str(row.get("role", "")),
+                content=str(row.get("content", "")),
+                created_at=float(row.get("created_at") or 0.0),
+            )
+            for row in rows
+        ]
+
+    async def append(self, session_id: str, role: str, content: str) -> None:
+        """Implement ``MemoryStore.append`` via ``append_message``."""
+        await self.append_message(session_id=session_id, role=role, content=content)
+
+    async def clear(self, session_id: str) -> None:
+        """Implement ``MemoryStore.clear`` for one session."""
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do():
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    await db.execute(
+                        "DELETE FROM messages WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    await db.commit()
+
+        await self._with_retry(_do)
+
+    # ---- S14 admin surface --------------------------------------------
+
+    async def list_turns(
+        self,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list["StoredTurn"]:
+        """List messages for one session, or all sessions, as StoredTurn."""
+        from memory.base import StoredTurn
+
+        if not self._initialized:
+            await self.initialize()
+        async with aiosqlite.connect(self._db_path) as db:
+            if session_id is None:
+                sql = (
+                    "SELECT id, session_id, role, content, created_at "
+                    "FROM messages ORDER BY created_at ASC, id ASC"
+                )
+                params: tuple = ()
+            else:
+                sql = (
+                    "SELECT id, session_id, role, content, created_at "
+                    "FROM messages WHERE session_id = ? "
+                    "ORDER BY created_at ASC, id ASC"
+                )
+                params = (session_id,)
+            if limit is not None and limit > 0:
+                sql += " LIMIT ?"
+                params = (*params, int(limit))
+            cursor = await db.execute(sql, params)
+            rows = await cursor.fetchall()
+            await cursor.close()
+        return [
+            StoredTurn(
+                id=int(row[0]),
+                session_id=str(row[1]),
+                role=str(row[2]),
+                content=str(row[3]),
+                created_at=float(row[4] or 0.0),
+            )
+            for row in rows
+        ]
+
+    async def delete_turn(self, turn_id: int) -> bool:
+        """Delete one message row and return whether a row was removed."""
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do():
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    cursor = await db.execute(
+                        "DELETE FROM messages WHERE id = ?",
+                        (int(turn_id),),
+                    )
+                    await db.commit()
+                    removed = cursor.rowcount or 0
+                    await cursor.close()
+                    try:
+                        await db.execute(
+                            "DELETE FROM messages_vec WHERE message_id = ?",
+                            (int(turn_id),),
+                        )
+                        await db.commit()
+                    except Exception:
+                        pass
+                    return removed
+
+        return (await self._with_retry(_do)) > 0
+
+    async def list_sessions(self) -> list["SessionSummary"]:
+        """List all sessions that have messages, newest first."""
+        from memory.base import SessionSummary
+
+        if not self._initialized:
+            await self.initialize()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT session_id, COUNT(*), MAX(created_at) "
+                "FROM messages GROUP BY session_id ORDER BY MAX(created_at) DESC"
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+        return [
+            SessionSummary(
+                session_id=str(row[0]),
+                turn_count=int(row[1] or 0),
+                last_message_at=float(row[2] or 0.0),
+            )
+            for row in rows
+        ]
+
+    async def clear_all(self) -> int:
+        """Delete all messages and return the number of removed rows."""
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do():
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    cursor = await db.execute("DELETE FROM messages")
+                    await db.commit()
+                    removed = cursor.rowcount or 0
+                    await cursor.close()
+                    try:
+                        await db.execute("DELETE FROM messages_vec")
+                        await db.commit()
+                    except Exception:
+                        pass
+                    return removed
+
+        return await self._with_retry(_do)
+
 
 # ----------------------------------------------------------------------
 # Row mapping helpers

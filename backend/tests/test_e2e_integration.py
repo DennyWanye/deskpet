@@ -200,6 +200,16 @@ def test_redacting_memory_store_is_active(fake_llm_agent):
     assert "REDACTED" in serialized
 
 
+def test_memory_store_is_redacting_session_db():
+    """P4-S17 keeps one canonical conversation store: redacted SessionDB."""
+    from deskpet.memory.session_db import SessionDB
+    from memory.sensitive_filter import RedactingMemoryStore
+
+    store = service_context.get("memory_store")
+    assert isinstance(store, RedactingMemoryStore)
+    assert isinstance(store._inner, SessionDB)
+
+
 def test_tool_registry_denies_high_risk_by_default():
     """S6 fail-closed: a requires_confirmation=True tool is blocked unless
     an explicit confirm callback approves it. We test via the public

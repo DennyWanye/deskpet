@@ -21,6 +21,7 @@ import pytest
 import pytest_asyncio
 
 from deskpet.memory.session_db import SessionDB
+from memory.base import ConversationTurn, MemoryStore, StoredTurn
 
 
 @pytest_asyncio.fixture
@@ -82,6 +83,46 @@ async def test_append_and_get_messages(db: SessionDB):
     assert msgs[0]["id"] == id1
     # salience 默认 0.5
     assert msgs[0]["salience"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_memory_store_protocol_and_admin_surface(db: SessionDB):
+    assert isinstance(db, MemoryStore)
+
+    await db.append("proto-a", "user", "hello from protocol")
+    await db.append("proto-a", "assistant", "reply from protocol")
+    await db.append("proto-b", "user", "other session")
+
+    recent = await db.get_recent("proto-a", limit=10)
+    assert all(isinstance(turn, ConversationTurn) for turn in recent)
+    assert [(turn.role, turn.content) for turn in recent] == [
+        ("user", "hello from protocol"),
+        ("assistant", "reply from protocol"),
+    ]
+    assert recent[0].created_at <= recent[1].created_at
+
+    turns = await db.list_turns("proto-a")
+    assert all(isinstance(turn, StoredTurn) for turn in turns)
+    assert [turn.content for turn in turns] == [
+        "hello from protocol",
+        "reply from protocol",
+    ]
+
+    assert await db.delete_turn(turns[0].id) is True
+    assert await db.delete_turn(turns[0].id) is False
+    assert [turn.content for turn in await db.list_turns("proto-a")] == [
+        "reply from protocol"
+    ]
+
+    sessions = await db.list_sessions()
+    by_id = {session.session_id: session for session in sessions}
+    assert by_id["proto-a"].turn_count == 1
+    assert by_id["proto-b"].turn_count == 1
+
+    await db.clear("proto-a")
+    assert await db.get_recent("proto-a") == []
+    assert await db.clear_all() == 1
+    assert await db.list_turns(None) == []
 
 
 @pytest.mark.asyncio

@@ -91,6 +91,13 @@ class VectorWorker:
         self._dropped = 0       # queue 满被丢弃的条数
         self._last_flush_ts: float | None = None
 
+        # P4-S16: 测试同步钩。每次 _flush() 跑完（成功或失败）都 notify。
+        # 取代旧测试 ``await asyncio.sleep(0.8)`` 的 fixed-sleep 约定 ——
+        # 后者在并发跑 / 慢机器下偶发挂（"timing flake"）。
+        # _flush_count 单调递增；wait_for_flushes 用 Condition 精确唤醒。
+        self._flush_count = 0
+        self._flush_cond = asyncio.Condition()
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -279,44 +286,111 @@ class VectorWorker:
         """对一个 batch 跑 embedder + 写 messages_vec + messages.embedding。
 
         任何失败只 log + 累计 failed 计数，不抛——保持"失败隔离"契约。
+
+        P4-S16: 末尾用 try/finally 保证 ``_notify_flush_done()`` 一定会跑，
+        哪怕 encode/write 中途 return early —— 测试用 ``wait_for_flushes()``
+        精确同步，不再依赖 ``asyncio.sleep`` 猜时长。
         """
         if not batch:
+            # 空 batch 不算"真处理过一次" —— 测试关心的是有数据被消费。
             return
-        msg_ids = [mid for mid, _ in batch]
-        texts = [t for _, t in batch]
         try:
-            vecs = await self._embedder.encode(texts)
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "embedder.encode failed for %d messages (%s); skipping batch",
-                len(batch),
-                exc,
-            )
-            self._failed += len(batch)
-            return
+            msg_ids = [mid for mid, _ in batch]
+            texts = [t for _, t in batch]
+            try:
+                vecs = await self._embedder.encode(texts)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "embedder.encode failed for %d messages (%s); skipping batch",
+                    len(batch),
+                    exc,
+                )
+                self._failed += len(batch)
+                return
 
-        if vecs.shape != (len(batch), EMBEDDING_DIM):
-            log.error(
-                "embedder returned unexpected shape %s (expected (%d, %d)); "
-                "skipping batch",
-                vecs.shape,
-                len(batch),
-                EMBEDDING_DIM,
-            )
-            self._failed += len(batch)
-            return
+            if vecs.shape != (len(batch), EMBEDDING_DIM):
+                log.error(
+                    "embedder returned unexpected shape %s (expected (%d, %d)); "
+                    "skipping batch",
+                    vecs.shape,
+                    len(batch),
+                    EMBEDDING_DIM,
+                )
+                self._failed += len(batch)
+                return
+
+            try:
+                await self._write_rows(msg_ids, vecs)
+                self._written += len(batch)
+                self._last_flush_ts = time.time()
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "vector_worker write failed for %d messages (%s)",
+                    len(batch),
+                    exc,
+                )
+                self._failed += len(batch)
+        finally:
+            await self._notify_flush_done()
+
+    async def _notify_flush_done(self) -> None:
+        """+1 _flush_count 并唤醒 ``wait_for_flushes`` 的等待者。"""
+        async with self._flush_cond:
+            self._flush_count += 1
+            self._flush_cond.notify_all()
+
+    async def wait_for_flushes(
+        self,
+        count: int = 1,
+        *,
+        timeout: float = 5.0,
+        absolute: bool = False,
+    ) -> bool:
+        """测试钩：等到 ``_flush()`` 跑够指定次数（成功或失败都算）。
+
+        - ``absolute=False``（默认，相对模式）：等到再发生 ``count`` 次 flush
+          后返回。**有 race**：调用时如果已经 flush 过几次，counter 不算。
+        - ``absolute=True``：等到 ``self._flush_count >= count``。适合
+          enqueue → wait 之间可能已经 flush 的场景（避免 race miss）。
+
+        Returns ``True`` 达到，``False`` 超时。生产代码**不应**调用。
+
+        替代了之前测试里 ``await asyncio.sleep(0.6)`` 这种 fixed-time 等待，
+        在 CI / 慢机器并发跑下不再 flake。
+        """
+        target = count if absolute else self._flush_count + count
+
+        async def _wait_internal() -> None:
+            async with self._flush_cond:
+                await self._flush_cond.wait_for(
+                    lambda: self._flush_count >= target
+                )
 
         try:
-            await self._write_rows(msg_ids, vecs)
-            self._written += len(batch)
-            self._last_flush_ts = time.time()
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "vector_worker write failed for %d messages (%s)",
-                len(batch),
-                exc,
-            )
-            self._failed += len(batch)
+            await asyncio.wait_for(_wait_internal(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def wait_for_drain(self, *, timeout: float = 5.0) -> bool:
+        """测试钩：等到 queue 空 + 最后一次 in-flight flush 完成。
+
+        最准确反映"所有 enqueue 的内容都已处理"的语义。比
+        ``wait_for_flushes`` 更稳，因为不需要测试自己算 batch 数。
+        """
+        deadline = asyncio.get_event_loop().time() + timeout
+        # 1) 等 queue 空（poll 50ms）
+        while not self._queue.empty():
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(0.05, remaining))
+        # 2) 再等一次 flush 完成 — queue 空但 _run_loop 可能正好把最后一批
+        # 拉出来还没 flush 完，cushion 一下。允许 timeout 但不当失败：
+        # 即使没有进一步 flush 也代表已 drain。
+        remaining = max(0.0, deadline - asyncio.get_event_loop().time())
+        await self.wait_for_flushes(count=1, timeout=min(0.5, remaining))
+        return True
 
     async def _write_rows(self, msg_ids: list[int], vecs: np.ndarray) -> None:
         """写入两张表：messages_vec (虚拟) + messages.embedding (BLOB)。

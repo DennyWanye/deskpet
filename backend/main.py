@@ -104,7 +104,6 @@ from providers.edge_tts_provider import EdgeTTSProvider
 from providers.cosyvoice_tts import CosyVoice2Provider
 from agent.providers.simple_llm import SimpleLLMAgent
 from agent.providers.tool_using import ToolUsingAgent
-from memory.conversation import SqliteConversationMemory
 from memory.sensitive_filter import RedactingMemoryStore
 from tools.registry import ToolRegistry
 from tools.get_time import get_time_tool
@@ -167,12 +166,10 @@ llm = HybridRouter(
 )
 service_context.register("llm_engine", llm)
 
-# S2: memory store — short-term conversation history (SQLite).
-# Path from config.toml; falls back to ./data/memory.db if unset.
-# S6 (R13): wrap with RedactingMemoryStore so secrets/PII never hit disk.
-raw_memory = SqliteConversationMemory(db_path=config.memory.db_path)
-memory_store = RedactingMemoryStore(raw_memory)
-service_context.register("memory_store", memory_store)
+# P4-S17: SessionDB is the single conversation source of truth.
+# The P4 wire-in below wraps it in RedactingMemoryStore, then agent_engine
+# is constructed with that final memory_store.
+memory_store = None
 
 # V5 §2.3: agent_engine 与 llm_engine 分层。
 # 组装栈:ToolUsingAgent(S3) 包装 SimpleLLMAgent(S2 + S0), memory 在内层。
@@ -194,10 +191,6 @@ logger.info(
     recommended_tts=_tier.tts_model,
     recommended_asr=_tier.asr_model,
 )
-
-base_agent = SimpleLLMAgent(llm, memory=memory_store)
-agent = ToolUsingAgent(base=base_agent, registry=tool_registry)
-service_context.register("agent_engine", agent)
 
 vad = SileroVAD(
     threshold=config.vad.threshold,
@@ -315,10 +308,8 @@ try:
         embedder=_embedder,
     )
 
-    # P4-S15: MemoryManager now uses SessionDB as L2 (Retriever needs it)
-    # and ships with the live Retriever. Legacy `memory_store` stays in
-    # service_context for agent_engine; a dual-write adapter below mirrors
-    # writes to SessionDB so L3 search has data to find.
+    # P4-S17: MemoryManager and agent memory share SessionDB as the
+    # canonical L2/conversation store.
     _memory_manager = _MemoryManager(
         file_memory=_file_memory,
         session_db=_session_db,
@@ -326,50 +317,9 @@ try:
     )
     service_context.register("memory_manager", _memory_manager)
 
-    # P4-S15: dual-write adapter — every chat turn that goes through
-    # `memory_store.append()` ALSO lands in SessionDB so L3 search/recall
-    # has content to retrieve. Failures only log; the legacy path is
-    # never blocked. Replace the registered memory_store with the
-    # adapter so SimpleLLMAgent sees both stores transparently.
-    class _DualWriteMemoryStore:
-        """Wrap the legacy memory_store to also fan-out to SessionDB."""
-
-        def __init__(self, primary: Any, session_db: Any) -> None:
-            self._primary = primary
-            self._session_db = session_db
-
-        async def get_recent(self, session_id: str, limit: int = 10):
-            return await self._primary.get_recent(session_id, limit)
-
-        async def append(self, session_id: str, role: str, content: str) -> None:
-            # Primary path drives existing behaviour (P3 contract): primary
-            # is RedactingMemoryStore wrapping SqliteConversationMemory, so
-            # the secret is rewritten BEFORE hitting disk. Failure propagates.
-            await self._primary.append(session_id, role, content)
-            # P4-S16 SECURITY FIX: SessionDB 镜像必须也走同样的 redact，
-            # 否则 ContextAssembler 从 SessionDB 拉 L2 历史时会把原文 secret
-            # 塞回 prompt（见 tests/test_e2e_integration::test_redacting_memory_store_is_active）。
-            # 用同一份 ``redact()`` 函数保证两边内容一致。
-            from memory.sensitive_filter import redact as _redact
-            try:
-                await self._session_db.append_message(
-                    session_id=session_id,
-                    role=role,
-                    content=_redact(content),
-                )
-            except Exception as exc:  # pragma: no cover — defensive
-                logger.warning(
-                    "p4_session_db_mirror_failed",
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                )
-
-        # Pass through any other attribute lookups so admin endpoints
-        # (list_turns / delete_turn / etc.) keep working unchanged.
-        def __getattr__(self, name: str) -> Any:
-            return getattr(self._primary, name)
-
-    memory_store = _DualWriteMemoryStore(memory_store, _session_db)
+    # P4-S17: RedactingMemoryStore remains the only write path exposed to
+    # the agent/admin API, but the inner store is now the canonical state.db.
+    memory_store = RedactingMemoryStore(_session_db)
     service_context.register("memory_store", memory_store)
 
     # SkillLoader: explicitly point dir[0] at the package-data builtin dir so
@@ -427,6 +377,11 @@ except Exception as _p4_exc:
         error=str(_p4_exc),
         error_type=type(_p4_exc).__name__,
     )
+
+
+base_agent = SimpleLLMAgent(llm, memory=memory_store)
+agent = ToolUsingAgent(base=base_agent, registry=tool_registry)
+service_context.register("agent_engine", agent)
 
 
 @asynccontextmanager

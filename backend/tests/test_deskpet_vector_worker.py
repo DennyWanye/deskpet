@@ -116,8 +116,9 @@ async def test_enqueue_triggers_batch_flush_when_full(
         ids.append(mid)
         await worker.enqueue(mid, f"msg-{i}")
 
-    # 等 interval 触发把最后一批也刷掉
-    await asyncio.sleep(0.8)
+    # P4-S16 root-cause flake fix: 不再 ``sleep(0.8)`` 猜时长。
+    # wait_for_drain 等 queue 空 + 最后一次 flush 完成。
+    assert await worker.wait_for_drain(timeout=5.0), worker.stats()
     stats = worker.stats()
     assert stats["written"] == 10, stats
     assert stats["failed"] == 0
@@ -135,8 +136,9 @@ async def test_enqueue_small_batch_flushes_on_interval(
         mid = await session_db.append_message(sid, "user", f"small-{i}")
         await worker.enqueue(mid, f"small-{i}")
 
-    # 等超过 interval
-    await asyncio.sleep(0.6)
+    # P4-S16: 2 条 < batch_size=4，靠 flush_interval timer 触发。
+    # wait_for_drain 等 queue 空 + 最后一次 flush 完成。
+    assert await worker.wait_for_drain(timeout=5.0), worker.stats()
     stats = worker.stats()
     assert stats["written"] == 2
     assert _count_vec_rows(session_db._db_path) == 2
@@ -170,7 +172,8 @@ async def test_encode_failure_does_not_crash_worker(
         for i in range(4):
             mid = await session_db.append_message(sid, "user", f"fail-{i}")
             await w.enqueue(mid, f"fail-{i}")
-        await asyncio.sleep(0.5)
+        # P4-S16: 4 条都被处理（即使失败），等 queue 空。
+        assert await w.wait_for_drain(timeout=5.0), w.stats()
         stats = w.stats()
         assert stats["failed"] == 4
         assert stats["written"] == 0
@@ -288,6 +291,8 @@ async def test_enqueue_idempotent_overwrite(
     mid = await session_db.append_message(sid, "user", "duplicate test")
     await worker.enqueue(mid, "duplicate test")
     await worker.enqueue(mid, "duplicate test v2")
-    await asyncio.sleep(0.6)
+
+    # P4-S16: 两次 enqueue 都被处理，等 queue 空。
+    assert await worker.wait_for_drain(timeout=5.0), worker.stats()
 
     assert _count_vec_rows(session_db._db_path) == 1
