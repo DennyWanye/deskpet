@@ -157,7 +157,32 @@ class Embedder:
                 "use_mock_when_missing=False"
             )
 
-        # 2. 目录存在 —— 尝试真加载
+        # P4-S18 segfault gate: 默认 device='auto' 时跳过真模型加载。
+        # 根因：与 backend 同进程的 ``faster_whisper`` (transitive: ctranslate2)
+        # 触发 PyTorch ``Module._apply::convert`` 在 worker thread 调
+        # ``model.to(device)`` 时撞 native CUDA/CPU state → Windows access
+        # violation (faulthandler 定位 m3.py:345)。
+        # 复现：standalone import faster_whisper.FasterWhisperASR(不 load)
+        # + await emb.encode() = 100% segfault；不 import faster_whisper
+        # 时同样代码不崩。
+        # 影响：当前 BGE-M3 真模型在生产 backend 进程内**完全不可用**。
+        # 缓解：默认走 mock embedder 跳过加载。L3 向量召回降级（mock md5
+        # 哈希，不能跨语言/同义词召回，但 FTS5 / recency / salience 三路
+        # RRF 融合仍工作）。memory_search IPC 不再 crash backend。
+        # 永久修复：等 PyTorch 与 ctranslate2 共存兼容（issue 待跟踪），
+        # 或把 BGE-M3 拆成独立子进程（IPC 通信，开销可接受 ~5ms RPC）。
+        # 显式 device='cuda' / 'cpu' 仍走真模型（用户自担 segfault 风险）。
+        if self._device_pref == "auto" and self._use_mock_when_missing:
+            log.warning(
+                "BGE-M3 real model disabled in this process (P4-S18 PyTorch "
+                "+ ctranslate2 segfault). Falling back to mock embedder. "
+                "Pass device='cuda' or device='cpu' to override (may crash)."
+            )
+            self._is_mock = True
+            self._is_ready = True
+            return
+
+        # 2. 目录存在 + 用户显式 device —— 尝试真加载（用户自担风险）
         try:
             await self._load_real_model()
             self._is_ready = True
