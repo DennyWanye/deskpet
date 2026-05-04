@@ -1190,6 +1190,10 @@ async def control_channel(ws: WebSocket):
                 # P4-S20: tool_use loop path. Routes through AgentLoop +
                 # ToolRegistry v2 + PermissionGate. Streams events to
                 # frontend so it can render tool steps + popups.
+                # CRITICAL: run in a background task so the WS recv
+                # loop keeps draining permission_response messages —
+                # otherwise the gate's responder Future never gets
+                # set_result and times out (see permission-gate spec).
                 text = raw.get("payload", {}).get("text", "")
                 if (
                     deskpet_tool_registry_v2 is None
@@ -1200,84 +1204,81 @@ async def control_channel(ws: WebSocket):
                         "payload": {"error": "v2 stack not initialized"},
                     })
                     continue
-                try:
-                    from agent.agent_loop import (
-                        AgentLoop as _AgentLoop,
-                        AssistantMessageEvent as _AsstEv,
-                        ToolCallEvent as _TCEv,
-                        ToolResultEvent as _TREv,
-                        FinalEvent as _FinEv,
-                        ErrorEvent as _ErrEv,
-                    )
-                    from agent.tool_use_shim import OpenAICompatibleAgentLLM as _Shim
-                    # Pick cloud first if available, else local. Both
-                    # are OpenAICompatibleProvider instances.
-                    _provider = cloud_llm or local_llm
-                    _shim = _Shim(provider=_provider)
-                    _agent_v2 = _AgentLoop(
-                        llm_registry=_shim,
-                        tool_registry=deskpet_tool_registry_v2,
-                        max_iterations=8,
-                    )
-                    _msgs_v2 = [{"role": "user", "content": text}]
-                    async for ev in _agent_v2.run(
-                        _msgs_v2, session_id=session_id
-                    ):
-                        if isinstance(ev, _AsstEv):
-                            if ev.content:
-                                await ws.send_json({
-                                    "type": "chat_response",
+
+                async def _run_chat_v2(_ws, _text, _sid):
+                    try:
+                        from agent.agent_loop import (
+                            AgentLoop as _AgentLoop,
+                            AssistantMessageEvent as _AsstEv,
+                            ToolCallEvent as _TCEv,
+                            ToolResultEvent as _TREv,
+                            FinalEvent as _FinEv,
+                            ErrorEvent as _ErrEv,
+                        )
+                        from agent.tool_use_shim import OpenAICompatibleAgentLLM as _Shim
+                        _provider = cloud_llm or local_llm
+                        _shim = _Shim(provider=_provider)
+                        _agent_v2 = _AgentLoop(
+                            llm_registry=_shim,
+                            tool_registry=deskpet_tool_registry_v2,
+                            max_iterations=8,
+                        )
+                        _msgs_v2 = [{"role": "user", "content": _text}]
+                        async for ev in _agent_v2.run(_msgs_v2, session_id=_sid):
+                            if isinstance(ev, _AsstEv):
+                                if ev.content:
+                                    await _ws.send_json({
+                                        "type": "chat_response",
+                                        "payload": {"text": ev.content, "provider": "v2"},
+                                    })
+                            elif isinstance(ev, _TCEv) and ev.tool_call:
+                                await _ws.send_json({
+                                    "type": "tool_use_event",
                                     "payload": {
-                                        "text": ev.content,
-                                        "provider": "v2",
+                                        "kind": "request",
+                                        "tool_name": ev.tool_call.name,
+                                        "params": ev.tool_call.arguments,
+                                        "turn": ev.iteration,
                                     },
                                 })
-                        elif isinstance(ev, _TCEv) and ev.tool_call:
-                            await ws.send_json({
-                                "type": "tool_use_event",
-                                "payload": {
-                                    "kind": "request",
-                                    "tool_name": ev.tool_call.name,
-                                    "params": ev.tool_call.arguments,
-                                    "turn": ev.iteration,
-                                },
-                            })
-                        elif isinstance(ev, _TREv):
-                            try:
-                                _parsed = json.loads(ev.result)
-                            except Exception:
-                                _parsed = ev.result
-                            await ws.send_json({
-                                "type": "tool_use_event",
-                                "payload": {
-                                    "kind": "result",
-                                    "tool_name": ev.tool_name,
-                                    "result": _parsed,
-                                    "turn": ev.iteration,
-                                },
-                            })
-                        elif isinstance(ev, _FinEv):
-                            await ws.send_json({
-                                "type": "chat_v2_final",
-                                "payload": {
-                                    "text": ev.content,
-                                    "iterations": ev.iteration,
-                                },
-                            })
-                        elif isinstance(ev, _ErrEv):
-                            await ws.send_json({
+                            elif isinstance(ev, _TREv):
+                                try:
+                                    _parsed = json.loads(ev.result)
+                                except Exception:
+                                    _parsed = ev.result
+                                await _ws.send_json({
+                                    "type": "tool_use_event",
+                                    "payload": {
+                                        "kind": "result",
+                                        "tool_name": ev.tool_name,
+                                        "result": _parsed,
+                                        "turn": ev.iteration,
+                                    },
+                                })
+                            elif isinstance(ev, _FinEv):
+                                await _ws.send_json({
+                                    "type": "chat_v2_final",
+                                    "payload": {"text": ev.content, "iterations": ev.iteration},
+                                })
+                            elif isinstance(ev, _ErrEv):
+                                await _ws.send_json({
+                                    "type": "chat_v2_error",
+                                    "payload": {"reason": ev.reason, "detail": ev.detail},
+                                })
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("chat_v2_failed", error=str(exc), error_type=type(exc).__name__)
+                        try:
+                            await _ws.send_json({
                                 "type": "chat_v2_error",
-                                "payload": {
-                                    "reason": ev.reason,
-                                    "detail": ev.detail,
-                                },
+                                "payload": {"error": str(exc)},
                             })
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("chat_v2_failed", error=str(exc), error_type=type(exc).__name__)
-                    await ws.send_json({
-                        "type": "chat_v2_error",
-                        "payload": {"error": str(exc)},
-                    })
+                        except Exception:
+                            pass
+
+                # Fire-and-forget — the recv loop continues immediately
+                # so permission_response can drain the pending Future.
+                asyncio.create_task(_run_chat_v2(ws, text, session_id))
+
 
             elif msg_type == "chat":
                 text = raw.get("payload", {}).get("text", "")

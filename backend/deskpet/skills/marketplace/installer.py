@@ -1,5 +1,12 @@
 """P4-S20 Stage C — skill installer (git clone → stage → confirm → finalize).
 
+Windows note: ``shutil.rmtree`` on a freshly-cloned ``.git`` directory
+sometimes hits ``PermissionError`` because git left a packfile open or
+a lockfile read-only. We use a ``_force_rmtree`` helper that retries
+with ``stat.S_IWRITE`` permission fix and a brief delay before giving
+up. Without this, repeat-install runs see "destination already exists"
+errors from git clone.
+
 Three URL forms:
   - ``github:owner/repo[/tree/branch/path]``
   - ``https://github.com/owner/repo[/tree/branch/path]``
@@ -23,8 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
+import stat
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -112,6 +122,35 @@ def parse_github_url(url: str) -> GithubSpec:
 # ---------------------------------------------------------------------
 
 
+def _force_rmtree(path: Path, attempts: int = 3) -> bool:
+    """rmtree that handles Windows .git read-only files.
+
+    Returns True on success, False if the dir still exists after all
+    attempts. ``shutil.rmtree(ignore_errors=True)`` swallows real
+    errors silently and leaves the dir; this version retries with the
+    permission fix from python docs:
+    https://docs.python.org/3/library/shutil.html#rmtree-example
+    """
+    def _onerror(func, p, exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except Exception:  # noqa: BLE001
+            pass
+
+    for i in range(attempts):
+        if not path.exists():
+            return True
+        try:
+            shutil.rmtree(path, onerror=_onerror)
+        except Exception:  # noqa: BLE001
+            pass
+        if not path.exists():
+            return True
+        time.sleep(0.2 * (i + 1))
+    return not path.exists()
+
+
 async def _default_clone(spec: GithubSpec, dest: Path) -> None:
     """Run ``git clone --depth 1`` into ``dest``."""
     args = ["git", "clone", "--depth", "1"]
@@ -173,7 +212,7 @@ class SkillInstaller:
         full_staging = self.staging_dir / spec.repo
         # Wipe any leftover from a prior abandoned stage
         if full_staging.exists():
-            shutil.rmtree(full_staging, ignore_errors=True)
+            _force_rmtree(full_staging)
         try:
             await self.clone_fn(spec, full_staging)
             # If subpath specified, the actual skill lives under that dir
@@ -187,10 +226,10 @@ class SkillInstaller:
             manifest = self._read_manifest(skill_root)
             validate_manifest(manifest, known_tools=self.known_tools)
         except SafetyError:
-            shutil.rmtree(full_staging, ignore_errors=True)
+            _force_rmtree(full_staging)
             raise
         except Exception:
-            shutil.rmtree(full_staging, ignore_errors=True)
+            _force_rmtree(full_staging)
             raise
 
         return StagedSkill(
@@ -207,21 +246,19 @@ class SkillInstaller:
     def finalize(self, staged: StagedSkill) -> Path:
         target = self.skills_dir / staged.name
         if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
+            _force_rmtree(target)
         # Move staging → final
         staging_root = staged.staging_path
         if staging_root.parent != self.staging_dir:
             # subpath case: copy only the subpath dir to final
             shutil.copytree(staging_root, target)
-            shutil.rmtree(
-                self._top_staging_dir(staged), ignore_errors=True
-            )
+            _force_rmtree(self._top_staging_dir(staged))
         else:
             shutil.move(str(staging_root), str(target))
         return target
 
     def cancel(self, staged: StagedSkill) -> None:
-        shutil.rmtree(self._top_staging_dir(staged), ignore_errors=True)
+        _force_rmtree(self._top_staging_dir(staged))
 
     def uninstall(self, name: str) -> None:
         # Reject path traversal — name must be a simple skill dir name
@@ -235,7 +272,7 @@ class SkillInstaller:
             target.resolve().relative_to(self.skills_dir.resolve())
         except ValueError as exc:
             raise ValueError(f"path escape attempt: {name!r}") from exc
-        shutil.rmtree(target, ignore_errors=True)
+        _force_rmtree(target)
 
     # -----------------------------------------------------------------
     # Internal
