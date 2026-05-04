@@ -217,8 +217,31 @@ function App() {
   const liveRef = useRef<Live2DHandle>(null);
 
   // Control channel (text chat + interrupt + emotion/action events)
-  const { state, lastMessage, sendChat, sendInterrupt, getChannel: getControlChannel } =
+  const { state, lastMessage, sendChat, sendChatV2, sendInterrupt, getChannel: getControlChannel } =
     useControlChannel(8100, secret);
+
+  // P4-S20: toggle to route chat through the new tool_use loop
+  // (chat_v2). Persisted in localStorage so a refresh keeps the
+  // user's preference. Defaults to off so existing behavior is
+  // unchanged for users who haven't opted in.
+  const [useToolUseLoop, setUseToolUseLoop] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("deskpet:useToolUseLoop") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleToolUseLoop = useCallback(() => {
+    setUseToolUseLoop((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("deskpet:useToolUseLoop", next ? "1" : "0");
+      } catch {
+        /* ignore quota errors */
+      }
+      return next;
+    });
+  }, []);
 
   // Reset route kind when disconnected.
   useEffect(() => {
@@ -285,24 +308,66 @@ function App() {
   // Handle control channel messages (text chat + emotion/action drive)
   useEffect(() => {
     if (!lastMessage) return;
-    switch (lastMessage.type) {
+    const t = (lastMessage as { type?: string }).type;
+    switch (t) {
       case "chat_response":
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", text: lastMessage.payload.text },
+          { role: "assistant", text: (lastMessage as any).payload.text },
         ]);
         // Update route indicator based on which provider actually served.
-        if (lastMessage.payload.provider) {
-          setRouteKind(lastMessage.payload.provider);
+        if ((lastMessage as any).payload.provider) {
+          setRouteKind((lastMessage as any).payload.provider);
         }
         break;
       case "emotion_change":
         // Push named expression to Live2D. Unknown names silently no-op.
-        liveRef.current?.setExpression(lastMessage.payload.value);
+        liveRef.current?.setExpression((lastMessage as any).payload.value);
         break;
       case "action_trigger":
         // Trigger named motion group. Unknown names silently no-op.
-        liveRef.current?.playMotion(lastMessage.payload.value);
+        liveRef.current?.playMotion((lastMessage as any).payload.value);
+        break;
+      // P4-S20 chat_v2 stream events
+      case "tool_use_event": {
+        const payload = (lastMessage as any).payload || {};
+        const kind = payload.kind || "";
+        const tool = payload.tool_name || "";
+        if (kind === "request") {
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              text: `🔧 调用 ${tool}(${JSON.stringify(payload.params || {})})`,
+            },
+          ]);
+        } else if (kind === "result") {
+          const r = payload.result;
+          const ok = (r && typeof r === "object" && (r as any).ok === false) ? "❌" : "✅";
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", text: `${ok} ${tool} 结果` },
+          ]);
+        }
+        break;
+      }
+      case "chat_v2_final":
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            text: (lastMessage as any).payload.text || "(完成)",
+          },
+        ]);
+        break;
+      case "chat_v2_error":
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            text: `⚠ chat_v2 错误: ${(lastMessage as any).payload.error || (lastMessage as any).payload.detail || "unknown"}`,
+          },
+        ]);
         break;
     }
   }, [lastMessage]);
@@ -383,7 +448,11 @@ function App() {
     // 触发 UserBubble —— 每次用新对象 ref 重置淡出计时，避免相同文本重发时
     // React 因为字符串相等不重置 state（追加零宽空格保证每次 text prop 唯一）。
     setLatestUserInput(chatText + "\u200B".repeat(messages.length));
-    sendChat(chatText);
+    if (useToolUseLoop) {
+      sendChatV2(chatText);
+    } else {
+      sendChat(chatText);
+    }
     setChatText("");
   };
 
@@ -660,6 +729,27 @@ function App() {
           }}
         >
           ⚙
+        </button>
+        {/* P4-S20 — chat_v2 (tool_use loop) toggle */}
+        <button
+          data-testid="tool-use-toggle"
+          onClick={toggleToolUseLoop}
+          title={
+            useToolUseLoop
+              ? "已启用工具调用回路 (chat_v2) — 点击关闭"
+              : "启用工具调用回路 (chat_v2) — 点击开启"
+          }
+          style={{
+            fontSize: "10px",
+            background: useToolUseLoop ? "rgba(34,197,94,0.85)" : "rgba(0,0,0,0.5)",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            padding: "2px 6px",
+            cursor: "pointer",
+          }}
+        >
+          {useToolUseLoop ? "🛠 ON" : "🛠 OFF"}
         </button>
         {/* P4-S20 Stage C — Skill Store */}
         <button

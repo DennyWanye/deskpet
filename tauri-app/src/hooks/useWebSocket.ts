@@ -28,6 +28,10 @@ export function useControlChannel(port: number = 8100, secret: string = "") {
     channelRef.current?.sendChat(text);
   }, []);
 
+  const sendChatV2 = useCallback((text: string) => {
+    channelRef.current?.sendChatV2(text);
+  }, []);
+
   const sendInterrupt = useCallback(() => {
     channelRef.current?.sendInterrupt();
   }, []);
@@ -37,5 +41,5 @@ export function useControlChannel(port: number = 8100, secret: string = "") {
   // into the control-channel transport directly.
   const getChannel = useCallback(() => channelRef.current, []);
 
-  return { state, lastMessage, sendChat, sendInterrupt, getChannel };
+  return { state, lastMessage, sendChat, sendChatV2, sendInterrupt, getChannel };
 }

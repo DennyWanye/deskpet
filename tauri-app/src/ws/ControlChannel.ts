@@ -84,6 +84,11 @@ export class ControlChannel {
     this.send({ type: "chat", payload: { text } });
   }
 
+  /** P4-S20: send via the new tool_use loop path. */
+  sendChatV2(text: string) {
+    this.send({ type: "chat_v2", payload: { text } });
+  }
+
   sendInterrupt() {
     this.send({ type: "interrupt" });
   }
