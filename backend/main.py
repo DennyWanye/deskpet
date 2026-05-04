@@ -212,6 +212,32 @@ try:
     # Module-level globals (service_context has a pre-declared key list
     # we don't want to extend just for this).
     # Accessed by the chat handler when it instantiates AgentLoop.
+
+    # P4-S20 Stage C — marketplace installer + registry client.
+    from deskpet.skills.marketplace import (
+        RegistryClient as _RegistryClient,
+        SkillInstaller as _SkillInstaller,
+        SafetyError as _MarketplaceSafetyError,
+    )
+    _user_skills_dir = _paths.user_data_dir() / "skills"
+    _staging_dir = _paths.user_data_dir() / "_skill_staging"
+    _user_skills_dir.mkdir(parents=True, exist_ok=True)
+    _staging_dir.mkdir(parents=True, exist_ok=True)
+    _registry_url = (
+        getattr(getattr(config, "marketplace", None), "registry_url", None)
+        or "https://raw.githubusercontent.com/deskpet-org/skills-registry/main/registry.json"
+    )
+    skill_registry_client = _RegistryClient(
+        url=_registry_url,
+        cache_ttl_s=3600.0,
+    )
+    skill_installer = _SkillInstaller(
+        skills_dir=_user_skills_dir,
+        staging_dir=_staging_dir,
+        known_tools=set(deskpet_tool_registry_v2.list_tools()),
+    )
+    # In-memory pending stage map — UI confirms by staging_id.
+    _skill_staged: dict[str, "Any"] = {}
     # Per-session pending request map: request_id → asyncio.Future.
     # Filled by the gate responder, drained by the WS handler when
     # a permission_response arrives.
@@ -253,6 +279,9 @@ except Exception as _v2_exc:  # noqa: BLE001 — non-fatal, log + degrade
     deskpet_tool_registry_v2 = None
     permission_gate_v2 = None
     _permission_pending = {}
+    skill_registry_client = None
+    skill_installer = None
+    _skill_staged = {}
 
 # S8 (R9): log the current hardware tier once so the dispatch decision is
 # visible in the startup banner. The tier itself doesn't force provider
@@ -938,6 +967,150 @@ async def control_channel(ws: WebSocket):
                         "permission_response_no_pending",
                         request_id=rid,
                     )
+
+            elif msg_type == "skill_marketplace_list":
+                # P4-S20 Stage C — fetch + cache the official registry.
+                if skill_registry_client is None:
+                    await ws.send_json({
+                        "type": "skill_marketplace_list_response",
+                        "payload": {"skills": [], "error": "marketplace not initialized"},
+                    })
+                    continue
+                _data = await skill_registry_client.fetch()
+                await ws.send_json({
+                    "type": "skill_marketplace_list_response",
+                    "payload": _data,
+                })
+
+            elif msg_type == "skill_list_installed":
+                # P4-S20 Stage C — list user-installed skills.
+                if skill_installer is None:
+                    await ws.send_json({
+                        "type": "skill_list_installed_response",
+                        "payload": {"skills": [], "error": "marketplace not initialized"},
+                    })
+                    continue
+                _installed = []
+                for sk in skill_installer.skills_dir.iterdir():
+                    if not sk.is_dir():
+                        continue
+                    sm = sk / "SKILL.md"
+                    if not sm.exists():
+                        continue
+                    try:
+                        from deskpet.skills.parser import parse_skill_md
+                        meta = parse_skill_md(sm)
+                        _installed.append({
+                            "name": meta.name,
+                            "description": meta.description,
+                            "version": meta.version,
+                            "path": str(sk),
+                            "allowed_tools": list(meta.allowed_tools),
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("skill_list_parse_failed", path=str(sm), error=str(exc))
+                await ws.send_json({
+                    "type": "skill_list_installed_response",
+                    "payload": {"skills": _installed},
+                })
+
+            elif msg_type == "skill_install_from_url":
+                # P4-S20 Stage C — stage clone, return manifest for confirm.
+                payload = raw.get("payload", {}) or {}
+                url = payload.get("url", "")
+                if skill_installer is None:
+                    await ws.send_json({
+                        "type": "skill_install_pending",
+                        "payload": {"ok": False, "error": "marketplace not initialized"},
+                    })
+                    continue
+                try:
+                    staged = await skill_installer.stage(url)
+                    _skill_staged[staged.staging_id] = staged
+                    await ws.send_json({
+                        "type": "skill_install_pending",
+                        "payload": {
+                            "ok": True,
+                            "staging_id": staged.staging_id,
+                            "name": staged.name,
+                            "manifest": staged.manifest,
+                            "permission_categories": list(staged.permission_categories),
+                        },
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    await ws.send_json({
+                        "type": "skill_install_pending",
+                        "payload": {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                    })
+
+            elif msg_type == "skill_install_confirm":
+                # P4-S20 Stage C — finalize or cancel a staged install.
+                payload = raw.get("payload", {}) or {}
+                staging_id = payload.get("staging_id", "")
+                approve = bool(payload.get("approve", False))
+                if skill_installer is None or staging_id not in _skill_staged:
+                    await ws.send_json({
+                        "type": "skill_install_confirm_response",
+                        "payload": {"ok": False, "error": "no such staging_id"},
+                    })
+                    continue
+                staged = _skill_staged.pop(staging_id)
+                if not approve:
+                    skill_installer.cancel(staged)
+                    await ws.send_json({
+                        "type": "skill_install_confirm_response",
+                        "payload": {"ok": False, "reason": "user denied"},
+                    })
+                    continue
+                try:
+                    final_path = skill_installer.finalize(staged)
+                    # Trigger SkillLoader hot-reload best-effort
+                    try:
+                        loader = service_context.get("skill_loader")
+                        if loader is not None and hasattr(loader, "reload"):
+                            loader.reload()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("skill_loader_reload_failed", error=str(exc))
+                    await ws.send_json({
+                        "type": "skill_install_confirm_response",
+                        "payload": {
+                            "ok": True,
+                            "name": staged.name,
+                            "path": str(final_path),
+                        },
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    await ws.send_json({
+                        "type": "skill_install_confirm_response",
+                        "payload": {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                    })
+
+            elif msg_type == "skill_uninstall":
+                payload = raw.get("payload", {}) or {}
+                name = payload.get("name", "")
+                if skill_installer is None:
+                    await ws.send_json({
+                        "type": "skill_uninstall_response",
+                        "payload": {"ok": False, "error": "marketplace not initialized"},
+                    })
+                    continue
+                try:
+                    skill_installer.uninstall(name)
+                    try:
+                        loader = service_context.get("skill_loader")
+                        if loader is not None and hasattr(loader, "reload"):
+                            loader.reload()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("skill_loader_reload_failed", error=str(exc))
+                    await ws.send_json({
+                        "type": "skill_uninstall_response",
+                        "payload": {"ok": True, "name": name},
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    await ws.send_json({
+                        "type": "skill_uninstall_response",
+                        "payload": {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                    })
 
             elif msg_type == "chat_v2":
                 # P4-S20: tool_use loop path. Routes through AgentLoop +

@@ -11,6 +11,7 @@ import { useBudgetToast } from "./hooks/useBudgetToast";
 import { useControlChannel } from "./hooks/useWebSocket";
 import { usePermissionRequests } from "./hooks/usePermissionRequests";
 import { PermissionPopup } from "./components/PermissionPopup";
+import { SkillStorePanel } from "./components/SkillStorePanel";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
@@ -252,6 +253,9 @@ function App() {
   const { current: permissionCurrent, resolve: resolvePermission } =
     usePermissionRequests(permissionChannel);
 
+  // P4-S20 Stage C — skill store panel toggle
+  const [skillStoreOpen, setSkillStoreOpen] = useState(false);
+
   // VN 底栏 —— 最新用户输入（驱动 UserBubble 淡出计时）+ 历史面板开关。
   const [latestUserInput, setLatestUserInput] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -471,6 +475,13 @@ function App() {
         onResolve={resolvePermission}
       />
 
+      {/* P4-S20 Stage C — 技能商店 */}
+      <SkillStorePanel
+        open={skillStoreOpen}
+        channel={permissionChannel}
+        onClose={() => setSkillStoreOpen(false)}
+      />
+
       {/* VN 底栏：只展示最新一条助手回复 */}
       <DialogBar
         latestAssistant={latestAssistant ? stripMarkdown(latestAssistant) : null}
@@ -649,6 +660,23 @@ function App() {
           }}
         >
           ⚙
+        </button>
+        {/* P4-S20 Stage C — Skill Store */}
+        <button
+          data-testid="skill-store-toggle"
+          onClick={() => setSkillStoreOpen(true)}
+          title="技能商店 SkillStore"
+          style={{
+            fontSize: "10px",
+            background: "rgba(0,0,0,0.5)",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            padding: "2px 6px",
+            cursor: "pointer",
+          }}
+        >
+          🏪
         </button>
         {/* Autostart toggle — only render when the plugin is reachable. */}
         {autostart.ready && (
