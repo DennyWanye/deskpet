@@ -9,6 +9,8 @@ import { UserBubble } from "./components/UserBubble";
 import { StartupOverlay, type BootState } from "./components/StartupOverlay";
 import { useBudgetToast } from "./hooks/useBudgetToast";
 import { useControlChannel } from "./hooks/useWebSocket";
+import { usePermissionRequests } from "./hooks/usePermissionRequests";
+import { PermissionPopup } from "./components/PermissionPopup";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
@@ -242,6 +244,14 @@ function App() {
   }, [budgetToast]);
   useBudgetToast(getControlChannel, showBudgetToast);
 
+  // P4-S20 Wave 1c — permission popup IPC wiring. Runs only when the
+  // control channel is open; backend sends `permission_request`, hook
+  // queues them and shows one at a time. ESC denies.
+  const permissionChannel =
+    state === "connected" ? getControlChannel() : null;
+  const { current: permissionCurrent, resolve: resolvePermission } =
+    usePermissionRequests(permissionChannel);
+
   // VN 底栏 —— 最新用户输入（驱动 UserBubble 淡出计时）+ 历史面板开关。
   const [latestUserInput, setLatestUserInput] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -453,6 +463,12 @@ function App() {
         modelPath="/assets/live2d/hiyori/Hiyori.model3.json"
         onFpsUpdate={handleFpsUpdate}
         mouthOpenY={mouthOpenY}
+      />
+
+      {/* P4-S20 — 权限请求弹窗（最高 zIndex） */}
+      <PermissionPopup
+        request={permissionCurrent}
+        onResolve={resolvePermission}
       />
 
       {/* VN 底栏：只展示最新一条助手回复 */}

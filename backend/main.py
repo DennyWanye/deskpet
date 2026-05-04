@@ -180,6 +180,80 @@ tool_registry.register(read_clipboard_tool)
 tool_registry.register(list_reminders_tool)
 service_context.register("tool_router", tool_registry)
 
+# P4-S20: v2 deskpet.tools.registry singleton — full schema-aware
+# registry used by the new tool_use agent loop. Hosts the 7 OS tools
+# (read/write/edit/list/shell/web/desktop_create_file) plus the
+# auto-discovered file/web/memory tools from earlier slices.
+# PermissionGate is wired with the control-WS responder so user
+# popups appear before any sensitive op runs.
+try:
+    from deskpet.tools.registry import registry as deskpet_tool_registry_v2
+    from deskpet.tools.os_tools import register_os_tools as _register_os_tools_v2
+    from deskpet.permissions.gate import (
+        PermissionGate as _PermissionGate,
+        PermissionGateConfig as _PermissionGateConfig,
+    )
+    from deskpet.types.skill_platform import (
+        PermissionResponse as _PermissionResponse,
+    )
+    _register_os_tools_v2(deskpet_tool_registry_v2)
+    _shell_deny = list(getattr(getattr(config, "permissions", None), "deny", {}).get("shell_patterns", []) or [
+        "rm -rf /",
+        "format c:",
+        "del /f /s /q c:",
+    ])
+    permission_gate_v2 = _PermissionGate(
+        config=_PermissionGateConfig(
+            timeout_s=60.0,
+            shell_deny_patterns=_shell_deny,
+        )
+    )
+    deskpet_tool_registry_v2.set_permission_gate(permission_gate_v2)
+    # Module-level globals (service_context has a pre-declared key list
+    # we don't want to extend just for this).
+    # Accessed by the chat handler when it instantiates AgentLoop.
+    # Per-session pending request map: request_id → asyncio.Future.
+    # Filled by the gate responder, drained by the WS handler when
+    # a permission_response arrives.
+    _permission_pending: dict[str, "asyncio.Future"] = {}
+
+    async def _permission_responder(req):  # PermissionRequest → PermissionResponse
+        """Broadcast permission_request via the control WS for the request's session,
+        await matching permission_response. Falls back to deny on timeout/disconnect."""
+        ws = _control_connections.get(req.session_id) or _control_connections.get("default")
+        if ws is None:
+            return _PermissionResponse(request_id=req.request_id, decision="deny")
+        loop = asyncio.get_running_loop()
+        fut: "asyncio.Future[_PermissionResponse]" = loop.create_future()
+        _permission_pending[req.request_id] = fut
+        try:
+            await ws.send_json({
+                "type": "permission_request",
+                "payload": {
+                    "request_id": req.request_id,
+                    "category": req.category,
+                    "summary": req.summary,
+                    "params": req.params,
+                    "default_action": req.default_action,
+                    "dangerous": req.dangerous,
+                    "session_id": req.session_id,
+                },
+            })
+            return await fut
+        finally:
+            _permission_pending.pop(req.request_id, None)
+
+    permission_gate_v2.set_responder(_permission_responder)
+    logger.info(
+        "p4_s20_tool_registry_v2_ready",
+        os_tools=len(deskpet_tool_registry_v2.list_tools(source="builtin")),
+    )
+except Exception as _v2_exc:  # noqa: BLE001 — non-fatal, log + degrade
+    logger.warning("p4_s20_v2_init_failed", error=str(_v2_exc))
+    deskpet_tool_registry_v2 = None
+    permission_gate_v2 = None
+    _permission_pending = {}
+
 # S8 (R9): log the current hardware tier once so the dispatch decision is
 # visible in the startup banner. The tier itself doesn't force provider
 # swaps yet — that's Phase 2 work when we ship multiple LLM/TTS binaries.
@@ -843,6 +917,27 @@ async def control_channel(ws: WebSocket):
 
             if msg_type == "ping":
                 await ws.send_json({"type": "pong"})
+
+            elif msg_type == "permission_response":
+                # P4-S20: drain a pending PermissionGate request.
+                payload = raw.get("payload", {}) or {}
+                rid = payload.get("request_id", "")
+                decision = payload.get("decision", "deny")
+                fut = _permission_pending.get(rid) if "_permission_pending" in dir() or True else None
+                # Note: above expression always reads the module-level
+                # name; ``_permission_pending`` is initialized at import.
+                fut = _permission_pending.get(rid)
+                if fut is not None and not fut.done():
+                    try:
+                        from deskpet.types.skill_platform import PermissionResponse as _Resp
+                        fut.set_result(_Resp(request_id=rid, decision=decision))
+                    except Exception as _e:
+                        logger.warning("permission_response_set_result_failed", error=str(_e))
+                else:
+                    logger.info(
+                        "permission_response_no_pending",
+                        request_id=rid,
+                    )
 
             elif msg_type == "chat":
                 text = raw.get("payload", {}).get("text", "")

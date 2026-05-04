@@ -121,21 +121,26 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
         dangerous=True,
     )
 
-    registry.register(
-        name="web_fetch",
-        toolset="os",
-        schema=_schema(
-            "web_fetch",
-            "Fetch HTTP(S) URL and return readable text (HTML stripped). Max 1MB by default.",
-            {
-                "url": {"type": "string"},
-                "max_bytes": {"type": "integer", "default": 1_000_000},
-            },
-            ["url"],
-        ),
-        handler=web_fetch,
-        permission_category="network",
-    )
+    # NOTE: ``web_fetch`` is intentionally NOT registered here — the
+    # full-featured implementation lives in ``deskpet/tools/web_tools.py``
+    # (with robots.txt, rate-limiting, and 429 block-cache). We patch
+    # *that* spec to set the network permission_category instead of
+    # overwriting it with our minimal version.
+    existing = registry.get("web_fetch")
+    if existing is not None and existing.permission_category != "network":
+        # Re-register through the public API so the warning appears
+        # once per startup (matches the existing convention).
+        registry.register(
+            name="web_fetch",
+            toolset=existing.toolset,
+            schema=existing.schema,
+            handler=existing.handler,
+            check_fn=existing.check_fn,
+            requires_env=list(existing.requires_env),
+            permission_category="network",
+            source=existing.source,
+            dangerous=existing.dangerous,
+        )
 
     registry.register(
         name="desktop_create_file",

@@ -283,6 +283,13 @@ export interface EmbedderStatusResponse {
   };
 }
 
+// P4-S20: skill platform — re-exported from skillPlatform.ts to keep
+// the wire-contract definition close to the rest of the platform types.
+import type {
+  PermissionRequest,
+  ToolUseEvent,
+} from "./skillPlatform";
+
 export type IncomingMessage =
   | ChatResponse
   | PongMessage
@@ -301,6 +308,8 @@ export type IncomingMessage =
   | MemorySearchResponse
   | MemoryL1ListResponse
   | MemoryL1DeleteAck
-  | EmbedderStatusResponse;
+  | EmbedderStatusResponse
+  | PermissionRequest
+  | ToolUseEvent;
 
 export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | TTSBargeInMessage | ErrorMessage;
