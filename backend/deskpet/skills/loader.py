@@ -55,7 +55,15 @@ _REQUIRED_FIELDS: tuple[str, ...] = ("name", "description", "version", "author")
 
 @dataclass
 class SkillMeta:
-    """Parsed SKILL.md metadata (single skill)."""
+    """Parsed SKILL.md metadata (single skill).
+
+    P4-S20 v1 additions (all optional with defaults so legacy callers
+    are unaffected): ``when_to_use``, ``disable_model_invocation``,
+    ``user_invocable``, ``allowed_tools``, ``paths``,
+    ``argument_hint``, ``source_format``. ``version`` + ``author``
+    keep their slots but legacy parsing now defaults them to ""
+    when the frontmatter omits them — that's the v1 contract.
+    """
 
     name: str
     description: str
@@ -68,6 +76,14 @@ class SkillMeta:
     # Any frontmatter keys beyond the known set land here so the UI
     # (P4-S11 MemoryPanel) can surface them without a loader change.
     meta: dict[str, Any] = field(default_factory=dict)
+    # P4-S20 v1 fields
+    when_to_use: str = ""
+    disable_model_invocation: bool = False
+    user_invocable: bool = True
+    allowed_tools: list[str] = field(default_factory=list)
+    paths: list[str] = field(default_factory=list)
+    argument_hint: str = ""
+    source_format: str = "deskpet-legacy"  # "deskpet-legacy" | "claude-code-v1"
 
     @property
     def summary(self) -> str:
@@ -87,6 +103,14 @@ class SkillMeta:
             "requires_script": bool(self.requires_script),
             # meta preserves unknown keys without leaking internals.
             "meta": dict(self.meta),
+            # P4-S20 v1 fields
+            "when_to_use": self.when_to_use,
+            "disable_model_invocation": self.disable_model_invocation,
+            "user_invocable": self.user_invocable,
+            "allowed_tools": list(self.allowed_tools),
+            "paths": list(self.paths),
+            "argument_hint": self.argument_hint,
+            "source_format": self.source_format,
         }
 
 
@@ -304,6 +328,23 @@ class SkillLoader:
         if fm is None:
             logger.warning("skill.invalid_frontmatter", path=str(skill_md), error="missing")
             return None
+
+        # P4-S20: dispatch by frontmatter shape.
+        # - Has both `version` AND `author` → legacy DeskPet skill format
+        #   (strict required-field validation kept for backward compat)
+        # - Else → Claude Code v1 (only `description` required;
+        #   `name` defaults to directory name)
+        is_legacy = bool(fm.get("version")) and bool(fm.get("author"))
+        if is_legacy:
+            return self._load_single_legacy(fm, skill_md, scope)
+        return self._load_single_v1(skill_md, scope)
+
+    # -----------------------------------------------------------------
+    # Legacy (DeskPet built-in) format loader
+    # -----------------------------------------------------------------
+    def _load_single_legacy(
+        self, fm: dict[str, Any], skill_md: Path, scope: str
+    ) -> Optional[SkillMeta]:
         missing = [f for f in _REQUIRED_FIELDS if not fm.get(f)]
         if missing:
             logger.warning(
@@ -327,6 +368,46 @@ class SkillLoader:
             task_types=[str(t) for t in task_types],
             requires_script=bool(fm.get("requires_script", False)),
             meta=extra,
+            source_format="deskpet-legacy",
+        )
+
+    # -----------------------------------------------------------------
+    # Claude Code v1 format loader (delegates to parser package)
+    # -----------------------------------------------------------------
+    def _load_single_v1(
+        self, skill_md: Path, scope: str
+    ) -> Optional[SkillMeta]:
+        try:
+            from .parser import parse_skill_md, SkillParseError
+        except ImportError as exc:
+            logger.warning("skill.parser_missing", path=str(skill_md), error=str(exc))
+            return None
+        try:
+            cm = parse_skill_md(skill_md)
+        except SkillParseError as exc:
+            logger.warning(
+                "skill.invalid_frontmatter",
+                path=str(skill_md),
+                error=str(exc),
+            )
+            return None
+        return SkillMeta(
+            name=cm.name,
+            description=cm.description,
+            version=cm.version or "",
+            author="",  # not in v1 spec
+            scope=scope,
+            path=cm.path,
+            task_types=[],
+            requires_script=False,
+            meta=dict(cm.raw_frontmatter),
+            when_to_use=cm.when_to_use,
+            disable_model_invocation=cm.disable_model_invocation,
+            user_invocable=cm.user_invocable,
+            allowed_tools=list(cm.allowed_tools),
+            paths=list(cm.paths),
+            argument_hint=cm.argument_hint,
+            source_format="claude-code-v1",
         )
 
     # ------------------------------------------------------------------

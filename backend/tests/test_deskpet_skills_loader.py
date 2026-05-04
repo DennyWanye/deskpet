@@ -368,6 +368,14 @@ def test_list_skills_shape_for_ui(dirs: tuple[Path, Path]) -> None:
         "task_types",
         "requires_script",
         "meta",
+        # P4-S20: v1 surface (always present, defaults for legacy)
+        "when_to_use",
+        "disable_model_invocation",
+        "user_invocable",
+        "allowed_tools",
+        "paths",
+        "argument_hint",
+        "source_format",
     }
     assert set(item.keys()) == expected_keys
     assert item["scope"] == "built-in"
