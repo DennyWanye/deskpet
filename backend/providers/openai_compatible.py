@@ -131,6 +131,95 @@ class OpenAICompatibleProvider:
                     if token:
                         yield token
 
+    async def chat_with_tools(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        max_tokens: int = 2048,
+        temperature: float | None = None,
+    ) -> dict:
+        """P4-S20: non-streaming chat with optional tool_calls.
+
+        Returns the parsed OpenAI choice payload:
+            {
+              "content": str,
+              "tool_calls": [{id, name, arguments(dict)}],
+              "stop_reason": "end_turn" | "tool_use" | "max_tokens" | "error",
+              "model": str,
+              "usage": {input_tokens, output_tokens, ...},
+            }
+
+        Tool_calls' ``arguments`` are pre-parsed from the JSON string the
+        OpenAI protocol returns; agent loop can dispatch directly.
+        """
+        temp = temperature if temperature is not None else self.temperature
+        payload: dict = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "temperature": temp,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        async with self._client(timeout=self.timeout) as client:
+            r = await client.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+            )
+            r.raise_for_status()
+            data = r.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return {
+                "content": "",
+                "tool_calls": [],
+                "stop_reason": "error",
+                "model": data.get("model", self.model),
+                "usage": data.get("usage") or {},
+            }
+        c0 = choices[0]
+        msg = c0.get("message") or {}
+        finish = c0.get("finish_reason", "stop")
+        # OpenAI returns finish_reason="tool_calls" when tools were called.
+        stop_reason = (
+            "tool_use"
+            if finish == "tool_calls" or msg.get("tool_calls")
+            else ("end_turn" if finish == "stop" else finish)
+        )
+        tcs_raw = msg.get("tool_calls") or []
+        tcs: list[dict] = []
+        for tc in tcs_raw:
+            fn = tc.get("function") or {}
+            args_raw = fn.get("arguments", "{}")
+            try:
+                args = (
+                    json.loads(args_raw)
+                    if isinstance(args_raw, str)
+                    else dict(args_raw or {})
+                )
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            tcs.append(
+                {
+                    "id": tc.get("id", ""),
+                    "name": fn.get("name", ""),
+                    "arguments": args,
+                }
+            )
+        usage = data.get("usage") or {}
+        # Stash so billing.ledger can debit (matches stream behavior).
+        self.last_usage = usage
+        return {
+            "content": msg.get("content") or "",
+            "tool_calls": tcs,
+            "stop_reason": stop_reason,
+            "model": data.get("model", self.model),
+            "usage": usage,
+        }
+
     async def health_check(self) -> bool:
         try:
             # 15s timeout: Sealos scale-to-zero cold start can exceed 5s,
