@@ -5,6 +5,82 @@ All notable changes to DeskPet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — P4-S20 skill platform v1
+
+**General-purpose AI assistant + extensible skill marketplace.**
+
+DeskPet evolves from a voice/chat desktop pet into an AI assistant that
+can install community skills from GitHub and execute real OS-level
+operations under user permission. Four stages shipped end-to-end:
+
+### Stage A — true function calling + OS tools + permission gate
+- New `OpenAICompatibleProvider.chat_with_tools()` — non-streaming
+  chat with `tools=` parameter, parses OpenAI `tool_calls`. Verified
+  live against local Ollama `gemma4:e4b` (LOCAL probe PASS).
+- `AgentLoop` (P4-S6) extended to route through `ToolRegistry.execute_tool`
+  when the registry advertises v2 protocol; legacy `dispatch()` path
+  preserved for backward compat (existing 17 hardcoded tools unchanged).
+- `PermissionGate` with three layers (sensitive-path upgrade →
+  config deny patterns → user popup with 60s timeout). Session-scoped
+  allow cache keyed by `(session_id, category, params-keyset hash)`.
+- 7 new OS tools: `read_file`, `write_file`, `edit_file`,
+  `list_directory`, `run_shell`, `web_fetch`, `desktop_create_file`
+  with correct `permission_category` mapping.
+- Frontend `PermissionPopup` modal with 3 buttons + ESC-to-deny + IPC
+  wiring (`permission_request` ⇄ `permission_response`).
+- New `chat_v2` IPC handler runs the tool_use loop and streams
+  `tool_use_event` to the frontend.
+- **Live demo PASS**: prompt `"create todo.txt with 吃饭买菜 on my
+  desktop"` → tool_call → popup → file written (12 UTF-8 bytes) on
+  hermetic Desktop. Evidence: `docs/EVIDENCE/skill-platform-v1.md`.
+
+### Stage B — Claude Code SKILL.md v1 compat
+- New `deskpet/skills/parser/parse_skill_md.py` parses YAML
+  frontmatter (description / when_to_use / allowed-tools /
+  disable-model-invocation / paths / hooks / version), with
+  paren-aware `allowed-tools` string splitter.
+- `render_body()` does invocation-time substitution of
+  `${CLAUDE_SKILL_DIR}`, `${CLAUDE_SESSION_ID}`, `$ARGUMENTS`, `$N`,
+  and inline `` !`shell` `` injection (cwd=skill_dir, 10s timeout,
+  failures inlined as `[command failed: ...]`).
+- `SkillLoader._load_single` dispatches by frontmatter shape: legacy
+  (version+author) → strict path; else → Claude Code v1 path. Both
+  formats coexist; existing P4-S10 loader tests stay green.
+
+### Stage C — skill marketplace UI + safety
+- 4 new control-WS handlers: `skill_marketplace_list`,
+  `skill_list_installed`, `skill_install_from_url` (stage),
+  `skill_install_confirm` (finalize), `skill_uninstall`.
+- `SkillInstaller` clones via `git clone --depth 1` into a staging
+  dir, validates manifest.json against the known-tool allowlist
+  (rejects unknown tools), enforces 7-category permission allowlist,
+  rejects path traversal on uninstall.
+- 3 GitHub URL forms supported: `github:owner/repo`,
+  `https://github.com/owner/repo`, `git@github.com:owner/repo`,
+  with optional `tree/branch/subpath`.
+- `SkillStorePanel.tsx` 3-tab UI (Installed / Marketplace / Add by
+  URL) with sensitive-permission red badges in confirm modal.
+
+### Stage D — plugin system
+- `PluginManager` discovers `%APPDATA%/deskpet/plugins/<name>/` with
+  semver-validated `plugin.json`. Aggregates skills + MCP servers
+  from enabled plugins, namespaces same-name skills by
+  `plugin:<name>`.
+- `scripts/scaffold_plugin.py <name>` generates a working starter
+  layout (plugin.json + README + skills/example/SKILL.md). E2E smoke
+  proves the scaffolded plugin discovers and parses cleanly.
+- 3 IPC handlers: `plugin_list`, `plugin_enable`, `plugin_disable`,
+  with best-effort SkillLoader hot-reload after toggle.
+
+### System-wide
+- `backend/deskpet/types/skill_platform.py` + TS mirror in
+  `tauri-app/src/types/skillPlatform.ts` pin the wire contract.
+- 92 new backend tests; total backend regression: 785 pass / 1 skip /
+  0 fail. Frontend `tsc --noEmit` clean.
+- New docs: `docs/PERMISSIONS.md`, `docs/SKILLS.md`,
+  `docs/PLUGINS.md`, `docs/EVIDENCE/skill-platform-v1.md`.
+- OpenSpec change `deskpet-skill-platform` validated `--strict`.
+
 ## [0.6.0-phase4-rc3] — 2026-04-27
 
 **真 BGE-M3 语义嵌入激活 + EmbedderStatusCard 前端可见。**
