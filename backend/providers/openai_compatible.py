@@ -137,7 +137,28 @@ class OpenAICompatibleProvider:
             # causing health_check to return False and cloud_first to
             # silently fall back to local for the next 30s (cache TTL).
             async with self._client(timeout=15.0) as client:
+                # Primary probe: GET /models (OpenAI standard, cheap, no token cost).
                 resp = await client.get(f"{self.base_url}/models")
-                return resp.status_code == 200
+                if resp.status_code == 200:
+                    return True
+
+                # Fallback: many third-party OpenAI-compatible relays
+                # (chinzy.com, some sealos endpoints, certain proxies)
+                # only implement /chat/completions and return 404/501 on
+                # /models. Try a 1-token chat probe so users can still use
+                # those services. Costs ~prompt_tokens charge but proves
+                # the key + model are valid.
+                if resp.status_code in (404, 405, 501):
+                    chat_resp = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        json={
+                            "model": self.model,
+                            "messages": [{"role": "user", "content": "."}],
+                            "max_tokens": 1,
+                            "temperature": 0,
+                        },
+                    )
+                    return chat_resp.status_code == 200
+                return False
         except Exception:
             return False
