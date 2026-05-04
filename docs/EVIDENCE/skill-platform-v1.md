@@ -82,12 +82,55 @@ cc915b2 feat(p4-s20 wave 2): chat_v2 IPC + tool-use shim + Stage A E2E smoke
 
 ## Stage B — SKILL.md parser + dual loader
 
-(pending)
+**Status:** ✅ Tests + parser smoke PASS (commit `4673f68`).
+
+- `parse_skill_md` correctly handles all v1 frontmatter fields,
+  variable substitution (`${CLAUDE_SKILL_DIR}`, `$ARGUMENTS`, `$N`),
+  and inline `` !`shell` `` injection (success + failure inline).
+- `SkillLoader` dispatches:
+  - has `version` AND `author` → legacy DeskPet path (preserves
+    existing 17 P4-S10 tests including strict missing-name skip)
+  - else → Claude Code v1 path
+- Mixed-format tests prove both formats coexist in the same loader.
 
 ## Stage C — Marketplace UI + safety
 
-(pending)
+**Status:** ✅ Backend IPC + UI shipped (commit `6407544`).
+
+- 4 control-WS handlers wire end-to-end: `skill_marketplace_list`,
+  `skill_list_installed`, `skill_install_from_url` (stage),
+  `skill_install_confirm` (finalize), `skill_uninstall`.
+- `SkillInstaller` enforces safety:
+  - manifest.json validated against the known-tool allowlist
+  - permission_categories must be one of the 7 PermissionGate cats
+  - path-traversal rejected on uninstall
+  - staging cleanup on safety/network failures
+- `SkillStorePanel` (3-tab UI) wired to App.tsx via 🏪 button next
+  to the ⚙ settings.
+- 17 unit tests cover URL parsing (3 forms), registry caching,
+  installer flow, safety violations.
 
 ## Stage D — Plugin system
 
-(pending)
+**Status:** ✅ Backend + scaffold + E2E PASS (this commit).
+
+E2E run output:
+```
+[e2e-stage-d] scaffold ok at .../plugins/demo-plugin
+[e2e-stage-d] discovered: {'name': 'demo-plugin', 'version': '0.1.0', ...}
+[e2e-stage-d] skill parsed: name=example, source=claude-code-v1
+[e2e-stage-d] enable/disable cycle ok
+[e2e-stage-d] PASS — full Stage D lifecycle works
+```
+
+Coverage:
+- `scripts/scaffold_plugin.py <name>` generates valid `plugin.json` +
+  README + `skills/example/SKILL.md`
+- `PluginManager` parses semver, rejects malformed manifests
+- `collect_skill_paths()` namespaces by plugin name
+  (`plugin:notion` vs `plugin:slack`)
+- `collect_mcp_servers()` annotates each server with
+  `source: plugin:<name>` for MCPManager provenance + clean uninstall
+- 3 IPC handlers wired in main.py: `plugin_list`, `plugin_enable`,
+  `plugin_disable`, with hot-reload of SkillLoader after toggle
+- 10 unit tests cover all 6 spec requirements

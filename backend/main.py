@@ -238,6 +238,24 @@ try:
     )
     # In-memory pending stage map — UI confirms by staging_id.
     _skill_staged: dict[str, "Any"] = {}
+
+    # P4-S20 Stage D — plugin system.
+    from deskpet.plugins import PluginManager as _PluginManager
+    _plugins_dir = _paths.user_data_dir() / "plugins"
+    _plugins_dir.mkdir(parents=True, exist_ok=True)
+    _enabled_plugins = list(
+        getattr(getattr(config, "plugins", None), "enabled", []) or []
+    )
+    plugin_manager = _PluginManager(
+        plugins_dir=_plugins_dir,
+        enabled=_enabled_plugins or None,  # None → default-enable all
+    )
+    plugin_manager.discover()
+    logger.info(
+        "p4_s20_plugins_discovered",
+        plugins_dir=str(_plugins_dir),
+        plugins=[p["name"] for p in plugin_manager.list_plugins()],
+    )
     # Per-session pending request map: request_id → asyncio.Future.
     # Filled by the gate responder, drained by the WS handler when
     # a permission_response arrives.
@@ -282,6 +300,7 @@ except Exception as _v2_exc:  # noqa: BLE001 — non-fatal, log + degrade
     skill_registry_client = None
     skill_installer = None
     _skill_staged = {}
+    plugin_manager = None
 
 # S8 (R9): log the current hardware tier once so the dispatch decision is
 # visible in the startup banner. The tier itself doesn't force provider
@@ -967,6 +986,61 @@ async def control_channel(ws: WebSocket):
                         "permission_response_no_pending",
                         request_id=rid,
                     )
+
+            elif msg_type == "plugin_list":
+                # P4-S20 Stage D — list all discovered plugins with enabled status.
+                if plugin_manager is None:
+                    await ws.send_json({
+                        "type": "plugin_list_response",
+                        "payload": {"plugins": [], "error": "plugin manager not initialized"},
+                    })
+                    continue
+                await ws.send_json({
+                    "type": "plugin_list_response",
+                    "payload": {"plugins": plugin_manager.list_plugins()},
+                })
+
+            elif msg_type == "plugin_enable":
+                payload = raw.get("payload", {}) or {}
+                name = payload.get("name", "")
+                if plugin_manager is None or not plugin_manager.enable(name):
+                    await ws.send_json({
+                        "type": "plugin_enable_response",
+                        "payload": {"ok": False, "name": name, "error": "unknown plugin"},
+                    })
+                    continue
+                # Best-effort SkillLoader hot-reload so the plugin's skills appear.
+                try:
+                    loader = service_context.get("skill_loader")
+                    if loader is not None and hasattr(loader, "reload"):
+                        loader.reload()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("skill_loader_reload_failed", error=str(exc))
+                await ws.send_json({
+                    "type": "plugin_enable_response",
+                    "payload": {"ok": True, "name": name},
+                })
+
+            elif msg_type == "plugin_disable":
+                payload = raw.get("payload", {}) or {}
+                name = payload.get("name", "")
+                if plugin_manager is None:
+                    await ws.send_json({
+                        "type": "plugin_disable_response",
+                        "payload": {"ok": False, "name": name, "error": "plugin manager not initialized"},
+                    })
+                    continue
+                plugin_manager.disable(name)
+                try:
+                    loader = service_context.get("skill_loader")
+                    if loader is not None and hasattr(loader, "reload"):
+                        loader.reload()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("skill_loader_reload_failed", error=str(exc))
+                await ws.send_json({
+                    "type": "plugin_disable_response",
+                    "payload": {"ok": True, "name": name},
+                })
 
             elif msg_type == "skill_marketplace_list":
                 # P4-S20 Stage C — fetch + cache the official registry.
