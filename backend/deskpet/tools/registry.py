@@ -63,6 +63,16 @@ class ToolSpec:
 
     Kept ``frozen=True`` so a stray ``spec.handler = ...`` typo at call
     site fails loudly instead of silently replacing a registered tool.
+
+    P4-S20 v2 additions (all optional, backward-compatible defaults):
+
+    * ``permission_category`` — one of the 7 categories from the
+      permission-gate spec. Defaults to ``"read_file"`` (the safest
+      default-allow category) so legacy tools registered without the
+      kwarg keep dispatching unchanged.
+    * ``source`` — provenance string used by audit + uninstall. Format:
+      ``"builtin"`` | ``"plugin:<name>"`` | ``"mcp:<server>"``.
+    * ``dangerous`` — UI hint to render the popup in red.
     """
 
     name: str
@@ -71,10 +81,25 @@ class ToolSpec:
     handler: ToolHandler
     check_fn: Optional[CheckFn] = None
     requires_env: list[str] = field(default_factory=list)
+    permission_category: str = "read_file"
+    source: str = "builtin"
+    dangerous: bool = False
 
     def env_satisfied(self) -> bool:
         """True iff every ``requires_env`` var is present AND non-empty."""
         return all(os.environ.get(e) for e in self.requires_env)
+
+    @property
+    def description_for_llm(self) -> str:
+        """Convenience accessor — pulls ``description`` out of the OpenAI
+        function schema. v2 callers can read this without poking into the
+        schema dict."""
+        return str(self.schema.get("description", ""))
+
+    @property
+    def input_schema_json(self) -> dict[str, Any]:
+        """Convenience accessor — pulls ``parameters`` out of the schema."""
+        return dict(self.schema.get("parameters", {}))
 
 
 class ToolRegistry:
@@ -88,6 +113,14 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
         self._lock = threading.Lock()
+        # P4-S20: optional permission gate. When set, ``execute_tool``
+        # awaits ``gate.check(...)`` before running the handler. Tests
+        # and legacy ``dispatch()`` paths leave it unset (no gating).
+        self._gate = None  # type: Optional[Any]  # PermissionGate
+
+    def set_permission_gate(self, gate) -> None:  # type: ignore[no-untyped-def]
+        """Wire a PermissionGate. Called once at backend startup."""
+        self._gate = gate
 
     # ------------------------------------------------------------------
     # Registration
@@ -101,6 +134,9 @@ class ToolRegistry:
         *,
         check_fn: Optional[CheckFn] = None,
         requires_env: Optional[list[str]] = None,
+        permission_category: str = "read_file",
+        source: str = "builtin",
+        dangerous: bool = False,
     ) -> None:
         """Register a single tool. Idempotent replace on duplicate name
         (with a log warning — usually a symptom of module reload during
@@ -127,6 +163,9 @@ class ToolRegistry:
             handler=handler,
             check_fn=check_fn,
             requires_env=list(requires_env or []),
+            permission_category=permission_category,
+            source=source,
+            dangerous=dangerous,
         )
         with self._lock:
             if name in self._tools:
@@ -249,16 +288,141 @@ class ToolRegistry:
             )
 
     # ------------------------------------------------------------------
+    # P4-S20 v2: tool_use protocol schema generation + gated execution
+    # ------------------------------------------------------------------
+    def to_openai_schema(
+        self,
+        names: Optional[list[str]] = None,
+        filter_categories: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """OpenAI function-calling schema list.
+
+        Equivalent to ``schemas()`` but with v2 filters:
+        * ``names`` — explicit allowlist by tool name
+        * ``filter_categories`` — restrict to tools whose
+          ``permission_category`` is in this list (used by safe-mode)
+        """
+        with self._lock:
+            specs = list(self._tools.values())
+        out: list[dict[str, Any]] = []
+        name_set = set(names) if names is not None else None
+        cat_set = set(filter_categories) if filter_categories is not None else None
+        for spec in specs:
+            if not spec.env_satisfied():
+                continue
+            if name_set is not None and spec.name not in name_set:
+                continue
+            if cat_set is not None and spec.permission_category not in cat_set:
+                continue
+            out.append({"type": "function", "function": dict(spec.schema)})
+        return out
+
+    def to_anthropic_schema(
+        self,
+        names: Optional[list[str]] = None,
+        filter_categories: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """Anthropic Messages API tool schema list.
+
+        Anthropic uses ``input_schema`` (not OpenAI's ``parameters``).
+        """
+        with self._lock:
+            specs = list(self._tools.values())
+        out: list[dict[str, Any]] = []
+        name_set = set(names) if names is not None else None
+        cat_set = set(filter_categories) if filter_categories is not None else None
+        for spec in specs:
+            if not spec.env_satisfied():
+                continue
+            if name_set is not None and spec.name not in name_set:
+                continue
+            if cat_set is not None and spec.permission_category not in cat_set:
+                continue
+            out.append(
+                {
+                    "name": spec.name,
+                    "description": spec.description_for_llm,
+                    "input_schema": spec.input_schema_json,
+                }
+            )
+        return out
+
+    # Ollama uses the OpenAI-compatible shape; alias for clarity.
+    to_ollama_schema = to_openai_schema
+
+    async def execute_tool(
+        self,
+        name: str,
+        params: dict[str, Any],
+        session_id: str,
+        task_id: str = "",
+    ) -> dict[str, Any]:
+        """Permission-gated async tool execution.
+
+        Wraps the legacy ``dispatch()`` with three guarantees:
+          1. Looks up the spec; unknown tool → ``{ok: False, error: ...}``
+          2. Awaits ``PermissionGate.check`` (if a gate is wired). Deny
+             → handler is NOT called.
+          3. Runs the handler under a try/except so handler exceptions
+             surface as ``{ok: False, error: "..."}`` rather than
+             propagating.
+
+        Return shape: ``{"ok": bool, "result": str | None, "error": str | None}``.
+        ``result`` is whatever the handler returned (typically a JSON string).
+        """
+        with self._lock:
+            spec = self._tools.get(name)
+        if spec is None:
+            return {"ok": False, "result": None, "error": f"unknown tool: {name}"}
+
+        if self._gate is not None:
+            decision = await self._gate.check(
+                category=spec.permission_category,
+                params=params,
+                session_id=session_id,
+            )
+            if not decision.allow:
+                return {
+                    "ok": False,
+                    "result": None,
+                    "error": f"permission denied (source={decision.source})",
+                }
+
+        try:
+            result = spec.handler(dict(params or {}), task_id)
+        except Exception as exc:  # noqa: BLE001 — uniform error envelope
+            err = f"{type(exc).__name__}: {exc}"
+            logger.info("execute_tool %r raised: %s", name, err)
+            return {"ok": False, "result": None, "error": err}
+
+        if not isinstance(result, str):
+            try:
+                result = json.dumps(result, ensure_ascii=False)
+            except (TypeError, ValueError) as exc:
+                return {
+                    "ok": False,
+                    "result": None,
+                    "error": f"handler returned non-JSON value: {exc}",
+                }
+        return {"ok": True, "result": result, "error": None}
+
+    # ------------------------------------------------------------------
     # Introspection helpers (tests + tool_search)
     # ------------------------------------------------------------------
-    def list_tools(self) -> list[str]:
+    def list_tools(self, source: Optional[str] = None) -> list[str]:
         """All registered tool names (env-hidden tools INCLUDED).
 
         Distinct from ``schemas()`` which filters — this is the raw
         inventory, used by tests and by the observability dashboard.
+
+        P4-S20: pass ``source="plugin:notion"`` to filter by provenance.
         """
         with self._lock:
-            return sorted(self._tools.keys())
+            if source is None:
+                return sorted(self._tools.keys())
+            return sorted(
+                n for n, s in self._tools.items() if s.source == source
+            )
 
     def get(self, name: str) -> Optional[ToolSpec]:
         """Return the full spec for one tool, or None if absent.
