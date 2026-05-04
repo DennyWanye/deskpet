@@ -242,17 +242,24 @@ class AgentLoop:
                 return
 
             # Append assistant turn with tool_calls so next LLM turn sees it.
+            # OpenAI requires arguments to be a JSON STRING, not a dict.
+            # Some adapters (anthropic_adapter) want the dict form. We
+            # encode here as a string since the OpenAI-compat path is
+            # the most common downstream.
+            import json as _json_at
             working_messages.append(
                 {
                     "role": "assistant",
-                    "content": response.content,
+                    "content": response.content or "",
                     "tool_calls": [
                         {
                             "id": tc.id,
                             "type": "function",
                             "function": {
                                 "name": tc.name,
-                                "arguments": tc.arguments,
+                                "arguments": _json_at.dumps(
+                                    tc.arguments, ensure_ascii=False
+                                ),
                             },
                         }
                         for tc in response.tool_calls
