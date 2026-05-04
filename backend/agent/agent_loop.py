@@ -149,6 +149,11 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.budget_checker = budget_checker
         self.default_model = default_model
+        # P4-S20: detect v2 ToolRegistry (has async execute_tool with
+        # built-in permission gating). When present, dispatch routes
+        # through it so user-permission popups work end-to-end. Legacy
+        # registries (only `dispatch`) keep working unchanged.
+        self._supports_execute_tool = callable(getattr(tool_registry, "execute_tool", None))
 
     async def run(
         self,
@@ -157,6 +162,7 @@ class AgentLoop:
         task_id: Optional[str] = None,
         tools_filter: Optional[list[str]] = None,
         model: Optional[str] = None,
+        session_id: str = "default",
         **llm_kwargs: Any,
     ) -> AsyncIterator[AgentEvent]:
         """Drive the ReAct loop. See module docstring for event contract."""
@@ -264,7 +270,7 @@ class AgentLoop:
                     iteration=iteration,
                     tool_call=tc,
                 )
-                tool_coros.append(self._dispatch_tool(tc, tid))
+                tool_coros.append(self._dispatch_tool(tc, tid, session_id))
                 call_order.append(tc)
 
             results = await asyncio.gather(*tool_coros, return_exceptions=True)
@@ -308,23 +314,34 @@ class AgentLoop:
             detail=f"exceeded {self.max_iterations} iterations without terminal stop_reason",
         )
 
-    async def _dispatch_tool(self, tc: ToolCall, task_id: str) -> str:
-        """Call tool_registry.dispatch with graceful error shaping.
+    async def _dispatch_tool(
+        self, tc: ToolCall, task_id: str, session_id: str = "default"
+    ) -> str:
+        """Call tool_registry to run a tool with graceful error shaping.
 
-        Handles two dispatch styles:
-            - async def dispatch(...)
-            - def dispatch(...)  (run via asyncio.to_thread)
-
-        Converts any exception into the spec §5 error JSON contract:
-            {"error": "<msg>", "retriable": <bool>}
+        P4-S20 routing:
+          - v2 registry (has ``execute_tool``) → permission-gated async
+            path. Returns ``{"ok", "result", "error"}`` envelope as JSON
+            string so the LLM tool_result turn sees structured outcome
+            (and can apologize on permission denial instead of
+            hallucinating success).
+          - legacy registry → ``dispatch()`` per spec §5 error contract.
         """
+        import json as _json
         try:
+            if self._supports_execute_tool:
+                envelope = await self.tools.execute_tool(  # type: ignore[attr-defined]
+                    tc.name, tc.arguments, session_id, task_id
+                )
+                # Pass through envelope to LLM as JSON. Tools that
+                # succeeded already encoded their domain result inside
+                # `result` (typically a JSON string); we don't
+                # double-encode.
+                return _json.dumps(envelope, ensure_ascii=False)
             result = self.tools.dispatch(tc.name, tc.arguments, task_id)
             if inspect.isawaitable(result):
                 result = await result
         except Exception as exc:  # noqa: BLE001
-            import json as _json
-
             return _json.dumps(
                 {
                     "error": f"{type(exc).__name__}: {exc}",
@@ -333,8 +350,6 @@ class AgentLoop:
                 ensure_ascii=False,
             )
         if isinstance(result, (dict, list)):
-            import json as _json
-
             return _json.dumps(result, ensure_ascii=False)
         return str(result)
 
