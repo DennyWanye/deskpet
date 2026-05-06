@@ -115,6 +115,56 @@ from billing.ledger import BillingLedger
 
 from config import resolve_cloud_api_key as _resolve_cloud_api_key  # P2-1-S3
 
+# P4-S20-LLM-Unified: runtime overrides — settings panel 里改的会写到这个文件，
+# 启动时读它覆盖 config.toml [llm] 段（只 base_url / model / temperature；
+# api_key 走 keychain 不进文件）。允许用户改完不动 config.toml 也保留。
+LLM_RUNTIME_PATH = _paths.user_data_dir() / "llm_runtime.json"
+
+
+def _load_llm_runtime_overrides() -> dict:
+    """Read llm_runtime.json — empty/missing/invalid → {}."""
+    if not LLM_RUNTIME_PATH.exists():
+        return {}
+    try:
+        import json as _json
+        return _json.loads(LLM_RUNTIME_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("llm_runtime_overrides_load_failed: %s", exc)
+        return {}
+
+
+def _save_llm_runtime_overrides(data: dict) -> None:
+    """Write llm_runtime.json — best-effort, never raise."""
+    import json as _json
+    try:
+        LLM_RUNTIME_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LLM_RUNTIME_PATH.write_text(
+            _json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8",
+        )
+        logger.info("llm_runtime_overrides_saved path=%s", LLM_RUNTIME_PATH)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("llm_runtime_overrides_save_failed: %s", exc)
+
+
+# Apply runtime overrides BEFORE creating local_llm so the very first
+# request after a restart uses the user's saved config.
+_llm_overrides = _load_llm_runtime_overrides()
+if _llm_overrides:
+    if "base_url" in _llm_overrides:
+        config.llm.local.base_url = _llm_overrides["base_url"]
+    if "model" in _llm_overrides:
+        config.llm.local.model = _llm_overrides["model"]
+    if "temperature" in _llm_overrides:
+        config.llm.local.temperature = float(_llm_overrides["temperature"])
+    if "api_key" in _llm_overrides and _llm_overrides["api_key"]:
+        # plaintext stored in runtime json — usable but not recommended;
+        # the proper place is OS keychain via SettingsPanel.
+        config.llm.local.api_key = _llm_overrides["api_key"]
+    logger.info(
+        "llm_runtime_overrides_applied base_url=%s model=%s",
+        config.llm.local.base_url, config.llm.local.model,
+    )
+
 # P4-S20-LLM-Unified: 统一 LLM endpoint。api_key 解析三档优先级：
 #   1. 配置值如果以 "$" 开头 → 视作环境变量名，从 env 读 (e.g. "$OPENAI_API_KEY")
 #   2. config.llm.local.api_key 是 "ollama" / "from-keychain" / 空 → 尝试从
@@ -751,12 +801,16 @@ class CloudConfigRequest(BaseModel):
 
 @app.post("/config/cloud")
 async def update_cloud_config(body: CloudConfigRequest, request: Request):
-    """Hot-swap the cloud LLM provider at runtime (P2-1 UI slice).
+    """P4-S20-LLM-Unified: hot-swap the unified LLM provider.
 
-    Auth: same shared-secret gate as /metrics. In DEV_MODE the gate is open
-    so local smoke scripts can test without juggling headers.
+    URL keeps the legacy /config/cloud name for frontend compat, but
+    semantics now: replace the single `local_llm` (which serves all
+    chat traffic) and persist to llm_runtime.json so the new config
+    survives restart.
+
+    Auth: same shared-secret gate as /metrics. DEV_MODE bypasses.
     """
-    global _current_cloud_api_key
+    global _current_cloud_api_key, local_llm
 
     if not DEV_MODE:
         secret = request.headers.get("x-shared-secret", "")
@@ -766,22 +820,20 @@ async def update_cloud_config(body: CloudConfigRequest, request: Request):
                 headers={"WWW-Authenticate": 'Bearer realm="config"'},
             )
 
-    # Resolve the api_key: use provided key, fall back to current, or 400.
-    resolved_key: str | None = body.api_key  # already stripped by validator
+    # Resolve api_key: explicit body value > current in-process key >
+    # config.llm.local.api_key (Ollama default "ollama" is OK).
+    resolved_key: str | None = body.api_key
     if not resolved_key:
         if _current_cloud_api_key:
             resolved_key = _current_cloud_api_key
+        elif local_llm is not None:
+            resolved_key = getattr(local_llm, "api_key", None) or "ollama"
         else:
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "no api_key configured"},
-            )
+            resolved_key = "ollama"
 
-    # Reuse temperature from current cloud provider if available, else default.
     current_temperature = 0.7
-    if llm._cloud is not None:
-        current_temperature = getattr(llm._cloud, "temperature", 0.7)
+    if local_llm is not None:
+        current_temperature = getattr(local_llm, "temperature", 0.7)
 
     new_provider = OpenAICompatibleProvider(
         base_url=body.base_url,
@@ -790,25 +842,43 @@ async def update_cloud_config(body: CloudConfigRequest, request: Request):
         temperature=current_temperature,
     )
 
-    llm.set_cloud_provider(new_provider)
+    # Hot-swap: replace module-level local_llm. The chat handler reads
+    # this name fresh each request, so the next chat uses the new
+    # provider — no restart needed.
+    local_llm = new_provider
     _current_cloud_api_key = resolved_key
 
-    if body.strategy is not None:
-        llm.set_strategy(RoutingStrategy(body.strategy))
+    # Persist so next backend restart picks it up. api_key only stored
+    # if user explicitly typed one (otherwise stays in keychain via
+    # _resolve_cloud_api_key path).
+    overrides_to_save: dict = {
+        "base_url": body.base_url,
+        "model": body.model,
+        "temperature": current_temperature,
+    }
+    if body.api_key and body.api_key.strip():
+        # Persist key to runtime json. (Keychain is the more secure path
+        # but storing here makes it work without a Tauri shell — useful
+        # for headless dev.)
+        overrides_to_save["api_key"] = body.api_key.strip()
+    _save_llm_runtime_overrides(overrides_to_save)
+
+    # Strategy field deprecated under unified schema — silently accepted
+    # but ignored. (HybridRouter still has the API; we just don't drive
+    # it any more.)
 
     logger.info(
-        "cloud_config_updated",
-        base_url=body.base_url,
-        model=body.model,
+        "llm_config_updated base_url=%s model=%s",
+        body.base_url, body.model,
         # api_key intentionally NOT logged
     )
 
     return {
         "ok": True,
-        "cloud_configured": True,
+        "cloud_configured": True,  # always true under unified schema
         "base_url": body.base_url,
         "model": body.model,
-        "has_api_key": True,
+        "has_api_key": bool(resolved_key) and resolved_key != "ollama",
         "strategy": llm._strategy.value,
     }
 

@@ -75,6 +75,7 @@ function readStrategyLS(): Strategy {
   return DEFAULT_STRATEGY;
 }
 
+// @ts-expect-error — kept for backward-compat docs / future restoration; unused under unified schema
 const STRATEGY_LABELS: Record<Strategy, string> = {
   local_first: "local_first（本地优先）",
   cloud_first: "cloud_first（云端优先）",
@@ -149,7 +150,10 @@ export function SettingsPanel({
   const [testMessage, setTestMessage] = useState<string>("");
 
   // ----- Routing strategy section --------------------------------------------
-  const [strategy, setStrategy] = useState<Strategy>(() => readStrategyLS());
+  // P4-S20-LLM-Unified: strategy 在统一 schema 下无意义，但保留 state 以
+  // 维持 updateCloudConfig 调用形状，避免后端反向兼容代码路径影响。
+  const [strategy] = useState<Strategy>(() => readStrategyLS());
+  // setStrategy intentionally unused — see comment above.
 
   // ----- Daily budget section ------------------------------------------------
   const [budget, setBudget] = useState<DailyBudgetStatus | null>(null);
@@ -348,35 +352,45 @@ export function SettingsPanel({
           </button>
         </header>
 
-        {/* ================ 云端账号 ================ */}
+        {/* ================ LLM 配置 ================ */}
         <section style={sectionStyle}>
-          <h3 style={h3Style}>云端账号</h3>
+          <h3 style={h3Style}>LLM 配置</h3>
+          <p style={{ fontSize: 11, color: "#6b7280", margin: "0 0 8px" }}>
+            任何 OpenAI 兼容 API 都用这一段 — 本地 Ollama / OpenAI / Anthropic / Sealos / chinzy 等。
+            保存后立即生效，重启也保留。
+          </p>
           <label style={labelStyle}>
-            <span>baseUrl</span>
+            <span>API 端点 (base_url)</span>
             <input
               style={inputStyle}
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="http://localhost:11434/v1  或  https://chinzy.com/v1"
               spellCheck={false}
             />
           </label>
           <label style={labelStyle}>
-            <span>model</span>
+            <span>模型 (model)</span>
             <input
               style={inputStyle}
               value={model}
               onChange={(e) => setModel(e.target.value)}
+              placeholder="gemma4:e4b  或  gpt-5.5  或  claude-sonnet-4-5"
               spellCheck={false}
             />
           </label>
           <label style={labelStyle}>
-            <span>apiKey</span>
+            <span>API Key</span>
             <input
               style={inputStyle}
               type="password"
               value={apiKeyInput}
               onChange={(e) => setApiKeyInput(e.target.value)}
-              placeholder={hasKey ? "已配置（输入新值替换）" : "未配置"}
+              placeholder={
+                hasKey
+                  ? "已配置（输入新值替换；本地 Ollama 填 ollama 占位）"
+                  : "本地 Ollama 填 ollama；云端填真 key"
+              }
               autoComplete="off"
             />
           </label>
@@ -420,27 +434,7 @@ export function SettingsPanel({
           )}
         </section>
 
-        {/* ================ 路由策略 ================ */}
-        <section style={sectionStyle}>
-          <h3 style={h3Style}>路由策略</h3>
-          <label style={labelStyle}>
-            <span>strategy</span>
-            <select
-              style={inputStyle}
-              value={strategy}
-              onChange={(e) => setStrategy(e.target.value as Strategy)}
-            >
-              {(Object.keys(STRATEGY_LABELS) as Strategy[]).map((s) => (
-                <option key={s} value={s}>
-                  {STRATEGY_LABELS[s]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p style={hintStyle}>
-            S3: UI only — backend strategy switching lands with S6.
-          </p>
-        </section>
+        {/* P4-S20-LLM-Unified: 路由策略章节移除 — 单 endpoint 无意义。 */}
 
         {/* ================ 今日使用 ================ */}
         <section style={sectionStyle}>
