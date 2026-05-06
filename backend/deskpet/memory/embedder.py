@@ -158,6 +158,7 @@ class Embedder:
         self._warmup_started = False
         # P4-S19 subprocess handle (only used when mode='subprocess')
         self._proc: Any = None  # asyncio.subprocess.Process or None
+        self._stderr_task: Any = None  # asyncio.Task draining worker stderr
         self._next_request_id = 0
 
     # ------------------------------------------------------------------
@@ -207,26 +208,53 @@ class Embedder:
             return
 
         if self._mode == "subprocess":
-            try:
-                await self._spawn_subprocess_worker()
-                self._is_ready = True
-                log.info(
-                    "BGE-M3 subprocess worker ready (path=%s, device=%s)",
-                    self._model_path,
-                    self._resolved_device(),
-                )
-                return
-            except Exception as exc:  # noqa: BLE001
-                if self._use_mock_when_missing:
+            # Retry once with a short delay — when backend is restarted
+            # quickly (Tauri supervisor respawn after kill), the previous
+            # worker's CUDA context can take a few seconds to be reaped
+            # by the driver. First spawn may hit a transient CUDA init
+            # error; second attempt usually succeeds.
+            last_exc: Exception | None = None
+            for attempt in (1, 2):
+                try:
+                    await self._spawn_subprocess_worker()
+                    self._is_ready = True
+                    log.info(
+                        "BGE-M3 subprocess worker ready (path=%s, device=%s, attempt=%d)",
+                        self._model_path,
+                        self._resolved_device(),
+                        attempt,
+                    )
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
                     log.warning(
-                        "BGE-M3 subprocess worker failed (%s); "
-                        "falling back to mock embedder",
+                        "BGE-M3 worker spawn attempt %d/2 failed: %s",
+                        attempt,
                         exc,
                     )
-                    self._is_mock = True
-                    self._is_ready = True
-                    return
-                raise
+                    if attempt == 1:
+                        # Best-effort cleanup of failed proc + brief
+                        # delay so CUDA context reaper can complete.
+                        if self._proc is not None:
+                            try:
+                                if self._proc.returncode is None:
+                                    self._proc.kill()
+                                await self._proc.wait()
+                            except Exception:
+                                pass
+                            self._proc = None
+                        await asyncio.sleep(3.0)
+            # Both attempts failed
+            if self._use_mock_when_missing:
+                log.warning(
+                    "BGE-M3 subprocess worker failed twice (%s); "
+                    "falling back to mock embedder",
+                    last_exc,
+                )
+                self._is_mock = True
+                self._is_ready = True
+                return
+            raise last_exc  # type: ignore[misc]
 
         # mode == "inprocess" — legacy. Will segfault if ctranslate2 also loaded.
         try:
@@ -402,9 +430,31 @@ class Embedder:
             "--device", device,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            # stderr=不 PIPE — 继承父进程
+            # P4-S20 fix: stderr also PIPE'd. Previous concern was that
+            # ProactorEventLoop deadlocks when both stdout+stderr have
+            # pending readline; we avoid that by draining stderr on a
+            # SEPARATE task (below) so the stdout protocol coroutine
+            # doesn't share a thread with stderr drainage.
+            # Without this, worker tracebacks (CUDA init failure etc.)
+            # are lost into Tauri's stderr sink and we can't diagnose.
+            stderr=asyncio.subprocess.PIPE,
             limit=16 * 1024 * 1024,  # 16 MB stdout buffer per readline
         )
+
+        # Drain worker stderr into backend log on a background task so
+        # we always see tracebacks. Never raise from the drainer.
+        async def _drain_stderr() -> None:
+            try:
+                if self._proc is None or self._proc.stderr is None:
+                    return
+                async for line in self._proc.stderr:  # type: ignore[union-attr]
+                    text = line.decode("utf-8", errors="replace").rstrip()
+                    if text:
+                        log.warning("[embedder-worker stderr] %s", text)
+            except Exception as drain_exc:  # noqa: BLE001
+                log.debug("embedder-worker stderr drain ended: %s", drain_exc)
+
+        self._stderr_task = asyncio.create_task(_drain_stderr())
 
         # First read: heartbeat ("spawned"). Confirms child process started.
         try:
@@ -541,6 +591,17 @@ class Embedder:
                 log.warning("embedder subprocess close failed: %s", exc)
             finally:
                 self._proc = None
+
+        # P4-S20: cancel stderr drainer (its async-for ends naturally
+        # when the pipe closes, but on Windows ProactorEventLoop the
+        # cancel is the cleaner shutdown path).
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._stderr_task = None
 
         if self._executor is not None:
             self._executor.shutdown(wait=True)
