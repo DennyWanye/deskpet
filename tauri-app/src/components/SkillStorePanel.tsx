@@ -58,7 +58,19 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
       const payload = (msg as { payload?: Record<string, unknown> }).payload || {};
       if (t === "skill_marketplace_list_response") {
         setMarketplace((payload.skills as MarketplaceSkill[]) || []);
-        if (payload.error) setErrorMsg(String(payload.error));
+        if (payload.error) {
+          // Friendlier message for the most common case: a 404 from the
+          // registry URL just means it hasn't been published yet — not
+          // a real error the user can do anything about.
+          const raw = String(payload.error);
+          if (raw.includes("404")) {
+            setErrorMsg(
+              "官方注册表暂未发布。请使用「通过 URL 安装」直接装 GitHub 上的技能。"
+            );
+          } else {
+            setErrorMsg(`注册表加载失败：${raw}`);
+          }
+        }
         setLoading(false);
       } else if (t === "skill_list_installed_response") {
         setInstalled((payload.skills as SkillMeta[]) || []);

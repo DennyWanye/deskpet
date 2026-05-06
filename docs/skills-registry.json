@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "updated_at": "2026-05-06",
+  "description": "DeskPet official skills registry — curated list of community skills compatible with Claude Code SKILL.md v1 format. Sources are cloned via git clone --depth 1 on install.",
+  "skills": [
+    {
+      "name": "algorithmic-art",
+      "description": "Creating algorithmic art using p5.js with seeded randomness and interactive parameter exploration. Use when users request flow fields, particle systems, or generative art.",
+      "source_url": "github:anthropics/skills/tree/main/skills/algorithmic-art",
+      "author": "anthropics",
+      "permission_categories": ["read_file", "write_file"]
+    },
+    {
+      "name": "canvas-design",
+      "description": "Create beautiful visual art in .png and .pdf documents using design philosophy. Use when the user asks to create a poster, piece of art, or static design.",
+      "source_url": "github:anthropics/skills/tree/main/skills/canvas-design",
+      "author": "anthropics",
+      "permission_categories": ["read_file", "write_file"]
+    },
+    {
+      "name": "pdf",
+      "description": "PDF handling: read/extract text or tables, merge/split, rotate, watermark, create, fill forms, OCR scanned PDFs.",
+      "source_url": "github:anthropics/skills/tree/main/skills/pdf",
+      "author": "anthropics",
+      "permission_categories": ["read_file", "write_file"]
+    },
+    {
+      "name": "docx",
+      "description": "Create, read, edit, or manipulate Word documents (.docx). Triggers on mentions of 'word doc', '.docx', or requests for formatted reports/memos/letters.",
+      "source_url": "github:anthropics/skills/tree/main/skills/docx",
+      "author": "anthropics",
+      "permission_categories": ["read_file", "write_file"]
+    },
+    {
+      "name": "xlsx",
+      "description": "Spreadsheet handling for .xlsx/.xlsm/.csv/.tsv files: read, edit, fix, format, chart, clean messy data, or create new spreadsheets.",
+      "source_url": "github:anthropics/skills/tree/main/skills/xlsx",
+      "author": "anthropics",
+      "permission_categories": ["read_file", "write_file"]
+    },
+    {
+      "name": "pptx",
+      "description": "PowerPoint handling: create slide decks, parse/extract text, edit existing presentations, work with templates and speaker notes.",
+      "source_url": "github:anthropics/skills/tree/main/skills/pptx",
+      "author": "anthropics",
+      "permission_categories": ["read_file", "write_file"]
+    },
+    {
+      "name": "mcp-builder",
+      "description": "Guide for creating high-quality MCP (Model Context Protocol) servers in Python (FastMCP) or Node/TypeScript (MCP SDK).",
+      "source_url": "github:anthropics/skills/tree/main/skills/mcp-builder",
+      "author": "anthropics",
+      "permission_categories": ["read_file", "write_file"]
+    },
+    {
+      "name": "skill-creator",
+      "description": "Create new skills, modify and improve existing skills, run evals, benchmark performance, optimize skill descriptions.",
+      "source_url": "github:anthropics/skills/tree/main/skills/skill-creator",
+      "author": "anthropics",
+      "permission_categories": ["read_file", "write_file"]
+    }
+  ]
+}

@@ -225,7 +225,7 @@ try:
     _staging_dir.mkdir(parents=True, exist_ok=True)
     _registry_url = (
         getattr(getattr(config, "marketplace", None), "registry_url", None)
-        or "https://raw.githubusercontent.com/deskpet-org/skills-registry/main/registry.json"
+        or "https://raw.githubusercontent.com/DennyWanye/deskpet/master/docs/skills-registry.json"
     )
     skill_registry_client = _RegistryClient(
         url=_registry_url,
