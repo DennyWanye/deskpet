@@ -113,19 +113,53 @@ from observability.vram import classify_tier, recommend_asr_device
 from router.hybrid_router import HybridRouter, LLMUnavailableError, RoutingStrategy
 from billing.ledger import BillingLedger
 
+from config import resolve_cloud_api_key as _resolve_cloud_api_key  # P2-1-S3
+
+# P4-S20-LLM-Unified: 统一 LLM endpoint。api_key 解析三档优先级：
+#   1. 配置值如果以 "$" 开头 → 视作环境变量名，从 env 读 (e.g. "$OPENAI_API_KEY")
+#   2. config.llm.local.api_key 是 "ollama" / "from-keychain" / 空 → 尝试从
+#      keychain 通过 DESKPET_CLOUD_API_KEY env 读（向后兼容 P2-1-S3 的 Tauri
+#      keychain 注入路径）；拿不到就用配置原值
+#   3. 其它情况（用户写了真 key 在 config）→ 直接用配置值
+def _resolve_llm_api_key(configured: str) -> str:
+    if configured.startswith("$"):
+        env_name = configured[1:]
+        val = os.environ.get(env_name, "")
+        if val:
+            logger.info("llm_api_key_from_env env=%s", env_name)
+            return val
+        logger.warning(
+            "llm_api_key_env_not_set env=%s — falling back to placeholder",
+            env_name,
+        )
+        return configured  # placeholder; provider call will 401 if used
+    # 占位符触发 keychain 读取
+    placeholders = {"ollama", "from-keychain", "from-env", "", "your-key-here"}
+    if configured in placeholders:
+        keychain_key = _resolve_cloud_api_key()
+        if keychain_key:
+            logger.info("llm_api_key_from_keychain")
+            return keychain_key
+        # 占位符 + 没 env → 保持占位符（Ollama 会接受任何值；云端会 401）
+    return configured
+
+_resolved_api_key = _resolve_llm_api_key(config.llm.local.api_key)
+
 local_llm = OpenAICompatibleProvider(
     base_url=config.llm.local.base_url,
-    api_key=config.llm.local.api_key,
+    api_key=_resolved_api_key,
     model=config.llm.local.model,
     temperature=config.llm.local.temperature,
 )
 
-from config import resolve_cloud_api_key as _resolve_cloud_api_key  # P2-1-S3
-
-_current_cloud_api_key: str | None = None
-
+# Keep cloud_llm symbol around for legacy code paths but it's None now —
+# config.llm.cloud is no longer set under the unified [llm] schema.
 cloud_llm = None
+_current_cloud_api_key: str | None = (
+    _resolved_api_key if "localhost" not in config.llm.local.base_url else None
+)
 if config.llm.cloud is not None:
+    # 兼容旧 [llm.cloud] schema — 新部署不会走这里。
     _cloud_key = _resolve_cloud_api_key()
     if _cloud_key:
         _current_cloud_api_key = _cloud_key
@@ -134,13 +168,6 @@ if config.llm.cloud is not None:
             api_key=_cloud_key,
             model=config.llm.cloud.model,
             temperature=config.llm.cloud.temperature,
-        )
-    else:
-        # No env var = user hasn't saved a key yet. Local-only is a
-        # perfectly valid mode; don't spam the user at ERROR.
-        logger.info(
-            "cloud_llm_skipped",
-            reason="DESKPET_CLOUD_API_KEY env not set — cloud provider disabled",
         )
 
 # P2-1-S8: BillingLedger — SQLite ledger of every chat_stream call + its
