@@ -1218,6 +1218,26 @@ async def control_channel(ws: WebSocket):
                     continue
 
                 async def _run_chat(_ws, _text, _sid):
+                    # P4-S20-LLM-Unified-fix: 持久化用户消息到 SessionDB
+                    # 并入向量库。老 chat 路径靠 SimpleLLMAgent.chat_stream
+                    # 内部写入；新路径直接调 AgentLoop 绕过了 SimpleLLMAgent，
+                    # 这里必须显式补回，否则下次召回什么都没。
+                    _mm = service_context.get("memory_manager")
+                    _vw = service_context.get("vector_worker")
+                    _sdb = service_context.get("session_db")
+                    _user_msg_id: int | None = None
+                    if _sdb is not None:
+                        try:
+                            _user_msg_id = await _sdb.append_message(
+                                session_id=_sid, role="user", content=_text,
+                            )
+                            if _vw is not None and _user_msg_id is not None:
+                                await _vw.enqueue(_user_msg_id, _text)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "chat_persist_user_failed", error=str(exc),
+                            )
+
                     # ContextAssembler — 把长期记忆 / 技能 / MCP 工具描述
                     # 装入 message stack（继承自原 chat 路径，丢失就降级
                     # 到只发用户原话，永远不让 chat 因 assembler 异常炸）。
@@ -1312,6 +1332,24 @@ async def control_channel(ws: WebSocket):
                                     "type": "chat_v2_error",
                                     "payload": {"reason": ev.reason, "detail": ev.detail},
                                 })
+
+                        # P4-S20-LLM-Unified-fix: 持久化 assistant 回复 +
+                        # 入向量库。final_text 可能为空（譬如 LLM 只调
+                        # tool 没生成最终 text），这种情况就跳过。
+                        if final_text and _sdb is not None:
+                            try:
+                                _asst_id = await _sdb.append_message(
+                                    session_id=_sid,
+                                    role="assistant",
+                                    content=final_text,
+                                )
+                                if _vw is not None and _asst_id is not None:
+                                    await _vw.enqueue(_asst_id, final_text)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "chat_persist_assistant_failed",
+                                    error=str(exc),
+                                )
 
                         # ContextAssembler feedback — 写入这一轮最终
                         # 响应到决策表，让 ContextTracePanel 能看到时长。
