@@ -12,6 +12,7 @@ import { useControlChannel } from "./hooks/useWebSocket";
 import { usePermissionRequests } from "./hooks/usePermissionRequests";
 import { PermissionPopup } from "./components/PermissionPopup";
 import { SkillStorePanel } from "./components/SkillStorePanel";
+import { Toolbar } from "./components/Toolbar";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
@@ -226,9 +227,14 @@ function App() {
   // unchanged for users who haven't opted in.
   const [useToolUseLoop, setUseToolUseLoop] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("deskpet:useToolUseLoop") === "1";
+      // P4-S20: default ON during testing so users get the new tool_use
+      // loop without hunting for the toolbar toggle. Explicit "0" in
+      // localStorage opts out.
+      const stored = localStorage.getItem("deskpet:useToolUseLoop");
+      if (stored === "0") return false;
+      return true;
     } catch {
-      return false;
+      return true;
     }
   });
   const toggleToolUseLoop = useCallback(() => {
@@ -570,61 +576,70 @@ function App() {
       <div
         style={{
           position: "absolute",
-          bottom: "6px",
-          left: "6px",
-          right: "6px",
+          bottom: 8,
+          left: 8,
+          right: 8,
           display: "flex",
-          gap: "4px",
+          alignItems: "center",
+          gap: 6,
           zIndex: 20,
+          background: "rgba(15, 18, 28, 0.55)",
+          padding: "6px 8px",
+          borderRadius: 24,
+          border: "1px solid rgba(148, 163, 184, 0.14)",
+          backdropFilter: "blur(12px)",
         }}
       >
-        {/* Mic button */}
+        {/* Mic button — pulses while recording */}
         <button
           data-testid="mic-button"
           onClick={toggleRecording}
           disabled={audioState !== "connected" && state !== "connected"}
           style={{
-            width: "32px",
-            height: "32px",
-            borderRadius: "50%",
+            width: 34,
+            height: 34,
+            borderRadius: 17,
             border: "none",
-            backgroundColor: isRecording
+            background: isRecording
               ? "#ef4444"
               : vadStatus === "speaking"
                 ? "#f59e0b"
-                : "#6b7280",
+                : "rgba(255,255,255,0.12)",
             color: "white",
-            fontSize: "14px",
+            fontSize: 14,
             cursor: "pointer",
             animation: isRecording ? "pulse 1.5s infinite" : "none",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
+            flexShrink: 0,
+            transition: "background 120ms ease",
           }}
-          title={isRecording ? "Stop recording" : "Start recording"}
+          title={isRecording ? "停止录音" : "按住录音"}
         >
           {isRecording ? "⏹" : "🎤"}
         </button>
 
-        {/* Interrupt button — appears only while TTS is playing */}
+        {/* Interrupt button — TTS playing */}
         {isPlaying && (
           <button
             data-testid="interrupt-button"
             onClick={handleInterrupt}
             style={{
-              width: "32px",
-              height: "32px",
-              borderRadius: "50%",
+              width: 34,
+              height: 34,
+              borderRadius: 17,
               border: "none",
-              backgroundColor: "#dc2626",
+              background: "#dc2626",
               color: "white",
-              fontSize: "14px",
+              fontSize: 14,
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
+              flexShrink: 0,
             }}
-            title="Interrupt (Esc)"
+            title="打断 (Esc)"
           >
             ✋
           </button>
@@ -637,17 +652,21 @@ function App() {
           onChange={(e) => setChatText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={
-            state === "connected" ? "Say something..." : "Connecting..."
+            state === "connected" ? "和桌宠说点什么…" : "连接中…"
           }
           disabled={state !== "connected"}
           style={{
             flex: 1,
-            padding: "5px 10px",
-            borderRadius: "16px",
-            border: "1px solid #ddd",
-            fontSize: "12px",
-            backgroundColor: "rgba(255,255,255,0.95)",
+            minWidth: 0,
+            height: 34,
+            padding: "0 14px",
+            borderRadius: 17,
+            border: "1px solid rgba(148, 163, 184, 0.16)",
+            fontSize: 13,
+            background: "rgba(255, 255, 255, 0.95)",
+            color: "#0f172a",
             outline: "none",
+            fontFamily: "inherit",
           }}
         />
         <button
@@ -655,216 +674,55 @@ function App() {
           onClick={handleSend}
           disabled={state !== "connected" || !chatText.trim()}
           style={{
-            padding: "5px 12px",
-            borderRadius: "16px",
+            padding: "0 16px",
+            height: 34,
+            borderRadius: 17,
             border: "none",
-            backgroundColor: state === "connected" ? "#3b82f6" : "#ccc",
+            background:
+              state === "connected" && chatText.trim()
+                ? "#3b82f6"
+                : "rgba(148, 163, 184, 0.4)",
             color: "white",
-            fontSize: "12px",
-            cursor: state === "connected" ? "pointer" : "default",
+            fontSize: 13,
+            fontWeight: 600,
+            cursor:
+              state === "connected" && chatText.trim() ? "pointer" : "not-allowed",
+            transition: "background 120ms ease",
+            flexShrink: 0,
+          }}
+          onMouseEnter={(e) => {
+            if (state === "connected" && chatText.trim()) {
+              (e.currentTarget as HTMLButtonElement).style.background = "#2563eb";
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (state === "connected" && chatText.trim()) {
+              (e.currentTarget as HTMLButtonElement).style.background = "#3b82f6";
+            }
           }}
         >
-          Send
+          发送
         </button>
       </div>
 
-      {/* Status indicators */}
-      <div
-        style={{
-          position: "absolute",
-          top: "4px",
-          right: "4px",
-          display: "flex",
-          gap: "6px",
-          zIndex: 20,
-        }}
-      >
-        {/* Memory management panel toggle (S14) */}
-        <button
-          data-testid="memory-toggle"
-          onClick={() => setMemoryOpen(true)}
-          title="记忆管理"
-          style={{
-            fontSize: "10px",
-            background: "rgba(0,0,0,0.5)",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            padding: "2px 6px",
-            cursor: "pointer",
-          }}
-        >
-          🗂
-        </button>
-        {/* P4-S11 §16.5 — ContextTrace panel toggle */}
-        <button
-          data-testid="trace-toggle"
-          onClick={() => setTraceOpen(true)}
-          title="ContextTrace"
-          style={{
-            fontSize: "10px",
-            background: "rgba(0,0,0,0.5)",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            padding: "2px 6px",
-            cursor: "pointer",
-          }}
-        >
-          🧭
-        </button>
-        {/* Settings panel toggle (P2-1-S3) */}
-        <button
-          data-testid="settings-toggle"
-          onClick={() => setSettingsOpen(true)}
-          title="设置"
-          style={{
-            fontSize: "10px",
-            background: "rgba(0,0,0,0.5)",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            padding: "2px 6px",
-            cursor: "pointer",
-          }}
-        >
-          ⚙
-        </button>
-        {/* P4-S20 — chat_v2 (tool_use loop) toggle */}
-        <button
-          data-testid="tool-use-toggle"
-          onClick={toggleToolUseLoop}
-          title={
-            useToolUseLoop
-              ? "已启用工具调用回路 (chat_v2) — 点击关闭"
-              : "启用工具调用回路 (chat_v2) — 点击开启"
-          }
-          style={{
-            fontSize: "10px",
-            background: useToolUseLoop ? "rgba(34,197,94,0.85)" : "rgba(0,0,0,0.5)",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            padding: "2px 6px",
-            cursor: "pointer",
-          }}
-        >
-          {useToolUseLoop ? "🛠 ON" : "🛠 OFF"}
-        </button>
-        {/* P4-S20 Stage C — Skill Store */}
-        <button
-          data-testid="skill-store-toggle"
-          onClick={() => setSkillStoreOpen(true)}
-          title="技能商店 SkillStore"
-          style={{
-            fontSize: "10px",
-            background: "rgba(0,0,0,0.5)",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            padding: "2px 6px",
-            cursor: "pointer",
-          }}
-        >
-          🏪
-        </button>
-        {/* Autostart toggle — only render when the plugin is reachable. */}
-        {autostart.ready && (
-          <button
-            onClick={autostart.toggle}
-            title={
-              autostart.enabled
-                ? "Click to disable run-on-login"
-                : "Click to enable run-on-login"
-            }
-            style={{
-              fontSize: "10px",
-              background: autostart.enabled ? "#10b981" : "rgba(0,0,0,0.5)",
-              color: "white",
-              border: "none",
-              borderRadius: "4px",
-              padding: "2px 6px",
-              cursor: "pointer",
-            }}
-          >
-            {autostart.enabled ? "⏻ auto" : "⏻"}
-          </button>
-        )}
-        {vadStatus === "thinking" && !isPlaying && (
-          <span
-            style={{
-              fontSize: "10px",
-              color: "#fbbf24",
-              backgroundColor: "rgba(0,0,0,0.5)",
-              padding: "2px 6px",
-              borderRadius: "4px",
-            }}
-          >
-            思考中
-          </span>
-        )}
-        {isPlaying && (
-          <span
-            style={{
-              fontSize: "10px",
-              color: "#a78bfa",
-              backgroundColor: "rgba(0,0,0,0.5)",
-              padding: "2px 6px",
-              borderRadius: "4px",
-            }}
-          >
-            TTS
-          </span>
-        )}
-        {isRecording && (
-          <span
-            style={{
-              fontSize: "10px",
-              color: "#ef4444",
-              backgroundColor: "rgba(0,0,0,0.5)",
-              padding: "2px 6px",
-              borderRadius: "4px",
-            }}
-          >
-            REC
-          </span>
-        )}
-        <span
-          style={{
-            fontSize: "10px",
-            color: fps >= 30 ? "lime" : "red",
-            backgroundColor: "rgba(0,0,0,0.5)",
-            padding: "2px 6px",
-            borderRadius: "4px",
-          }}
-        >
-          {fps} FPS
-        </span>
-        <span
-          style={{
-            fontSize: "10px",
-            color:
-              state !== "connected"
-                ? "orange"
-                : routeKind === "cloud"
-                  ? "#60a5fa"
-                  : routeKind === "local"
-                    ? "lime"
-                    // 已连接但还不知道路由到本地/云端（首条消息前，或纯语音
-                    // 交互 transcript 里暂缺 provider 字段）—— 按"其他情况"
-                    // 的灰色处理，等首条 chat_response / 带 provider 的 transcript
-                    // 到来再切到绿色(local) / 蓝色(cloud)。
-                    : "#9ca3af",
-            backgroundColor: "rgba(0,0,0,0.5)",
-            padding: "2px 6px",
-            borderRadius: "4px",
-          }}
-        >
-          {state === "connected" && routeKind
-            ? `${routeKind}`
-            : state}
-        </span>
-      </div>
+      {/* Toolbar — P4-S20-UI revamp: token-based, grouped, hover/focus states */}
+      <Toolbar
+        useToolUseLoop={useToolUseLoop}
+        toggleToolUseLoop={toggleToolUseLoop}
+        onMemory={() => setMemoryOpen(true)}
+        onTrace={() => setTraceOpen(true)}
+        onSettings={() => setSettingsOpen(true)}
+        onSkillStore={() => setSkillStoreOpen(true)}
+        autostartReady={autostart.ready}
+        autostartEnabled={autostart.enabled}
+        onToggleAutostart={autostart.toggle}
+        vadStatus={vadStatus}
+        isPlaying={isPlaying}
+        isRecording={isRecording}
+        fps={fps}
+        connectionState={state}
+        routeKind={routeKind}
+      />
 
       {/* S14 memory management overlay */}
       <MemoryPanel

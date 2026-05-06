@@ -1,3 +1,12 @@
+/**
+ * VN-style dialog bar — P4-S20-UI revamp.
+ *
+ * 设计：
+ * - 玻璃质地（深色半透明 + blur）
+ * - 助手回复用 13.5px / 1.55 line-height，柔和留白
+ * - 空态文案右下用极弱的提示色（不和真实回复争夺视觉注意）
+ * - 历史按钮悬浮态高亮
+ */
 import type { CSSProperties } from "react";
 
 type Props = {
@@ -7,26 +16,12 @@ type Props = {
   onOpenHistory: () => void;
 };
 
-// 留白时的引导文案。空字符串版本在盲测里被误以为"坏了"，所以 P2-0-S5
-// 起改成软提示；长度压在两行内，避免底栏在 TTS 第一个 token 到达前就
-// 先抖一下。保持 muted 色（opacity<1）以跟真实助手回复区分。
 const EMPTY_PLACEHOLDER = "按住下方按钮说话，或输入消息开始聊天…";
 
-/**
- * VN 风格底栏对话框。
- *
- * 设计原则：
- * - 固定高度 60px，不随内容弹跳（避免挡 Live2D）
- * - 单条渲染 —— 旧消息直接被新消息替换，无动画（TTS 串流期间闪烁会晕）
- * - 文本超出时在内部 textStyle 区域 scroll，外框高度不变
- */
 export function DialogBar({ latestAssistant, onOpenHistory }: Props) {
   const isEmpty = latestAssistant === null || latestAssistant === "";
   return (
-    <div
-      style={barStyle}
-      data-testid="dialog-bar"
-    >
+    <div style={barStyle} data-testid="dialog-bar">
       <div
         data-testid="dialog-bar-assistant"
         data-empty={isEmpty ? "true" : "false"}
@@ -40,6 +35,14 @@ export function DialogBar({ latestAssistant, onOpenHistory }: Props) {
         style={historyBtnStyle}
         title="查看完整对话历史"
         aria-label="查看完整对话历史"
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background =
+            "rgba(255, 255, 255, 0.16)";
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background =
+            "rgba(255, 255, 255, 0.06)";
+        }}
       >
         💬
       </button>
@@ -49,21 +52,24 @@ export function DialogBar({ latestAssistant, onOpenHistory }: Props) {
 
 const barStyle: CSSProperties = {
   position: "absolute",
-  bottom: "44px",
-  left: "5px",
-  right: "5px",
-  height: "60px",
-  backgroundColor: "rgba(20, 20, 35, 0.92)",
-  borderRadius: "10px",
-  border: "1px solid rgba(129,140,248,0.35)",
-  padding: "8px 34px 8px 12px",
-  color: "white",
-  fontSize: "13px",
-  lineHeight: "1.5",
+  bottom: 56,
+  left: 8,
+  right: 8,
+  minHeight: 64,
+  maxHeight: 96,
+  background: "rgba(15, 18, 28, 0.85)",
+  borderRadius: 14,
+  border: "1px solid rgba(148, 163, 184, 0.14)",
+  padding: "10px 44px 10px 14px",
+  color: "#e2e8f0",
+  fontSize: 13.5,
+  lineHeight: 1.55,
   zIndex: 10,
   overflow: "hidden",
   display: "flex",
   alignItems: "center",
+  backdropFilter: "blur(14px)",
+  boxShadow: "0 4px 24px rgba(0, 0, 0, 0.18)",
 };
 
 const textStyle: CSSProperties = {
@@ -72,29 +78,30 @@ const textStyle: CSSProperties = {
   maxHeight: "100%",
   whiteSpace: "pre-wrap",
   wordBreak: "break-word",
+  letterSpacing: 0.1,
 };
 
-// Muted + italic 让空态提示从真实助手回复里视觉区分出来，
-// 同时 data-empty="true" 给 E2E 一个稳定的断言钩子。
 const placeholderStyle: CSSProperties = {
-  opacity: 0.5,
+  opacity: 0.55,
   fontStyle: "italic",
+  color: "#94a3b8",
 };
 
 const historyBtnStyle: CSSProperties = {
   position: "absolute",
-  top: "4px",
-  right: "6px",
-  width: "22px",
-  height: "22px",
-  background: "rgba(0,0,0,0.4)",
-  color: "white",
-  border: "none",
-  borderRadius: "4px",
-  fontSize: "12px",
+  top: 8,
+  right: 8,
+  width: 28,
+  height: 28,
+  background: "rgba(255, 255, 255, 0.06)",
+  color: "#e2e8f0",
+  border: "1px solid rgba(148, 163, 184, 0.14)",
+  borderRadius: 8,
+  fontSize: 13,
   cursor: "pointer",
   padding: 0,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
+  transition: "background 120ms ease",
 };

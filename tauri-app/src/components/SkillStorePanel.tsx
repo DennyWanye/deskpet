@@ -1,15 +1,17 @@
 /**
- * P4-S20 Stage C — SkillStorePanel
+ * P4-S20 Stage C — SkillStorePanel (UI-revamp)
  *
  * Three tabs: Installed / Marketplace / Add by URL.
- * Talks to backend via the control WS:
- *   - skill_marketplace_list / skill_marketplace_list_response
- *   - skill_list_installed / skill_list_installed_response
- *   - skill_install_from_url / skill_install_pending
- *   - skill_install_confirm / skill_install_confirm_response
- *   - skill_uninstall / skill_uninstall_response
+ * 全部样式走 design tokens；列表卡片化 + 错误分级 (info / warn / error)。
  *
- * Spec: openspec/changes/deskpet-skill-platform/specs/skill-marketplace/spec.md
+ * 后端 IPC：
+ *   skill_marketplace_list / skill_marketplace_list_response
+ *   skill_list_installed / skill_list_installed_response
+ *   skill_install_from_url / skill_install_pending
+ *   skill_install_confirm / skill_install_confirm_response
+ *   skill_uninstall / skill_uninstall_response
+ *
+ * 规格：openspec/specs/skill-marketplace/spec.md
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -19,8 +21,24 @@ import type {
   SkillMeta,
   PermissionCategory,
 } from "../types/skillPlatform";
+import {
+  badgeStyle,
+  bannerStyle,
+  buttonStyle,
+  cardStyle,
+  inputStyle,
+  surfaceLight,
+  tabStyle,
+} from "../theme/components";
+import { tokens } from "../theme/tokens";
 
 type Tab = "installed" | "marketplace" | "add-url";
+
+type AlertLevel = "info" | "warning" | "error";
+interface AlertState {
+  level: AlertLevel;
+  message: string;
+}
 
 interface Props {
   open: boolean;
@@ -41,16 +59,22 @@ const SENSITIVE_CATS: PermissionCategory[] = [
   "read_file_sensitive",
 ];
 
+const TAB_LABEL: Record<Tab, string> = {
+  installed: "已安装",
+  marketplace: "市场",
+  "add-url": "通过 URL 安装",
+};
+
 export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => {
   const [tab, setTab] = useState<Tab>("installed");
   const [installed, setInstalled] = useState<SkillMeta[]>([]);
   const [marketplace, setMarketplace] = useState<MarketplaceSkill[]>([]);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [alert, setAlert] = useState<AlertState | null>(null);
   const [urlInput, setUrlInput] = useState("");
   const [staged, setStaged] = useState<StagedSkill | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Listen for backend responses
+  // 监听 backend response
   useEffect(() => {
     if (!open || !channel) return undefined;
     const off = channel.onMessage((msg) => {
@@ -59,22 +83,27 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
       if (t === "skill_marketplace_list_response") {
         setMarketplace((payload.skills as MarketplaceSkill[]) || []);
         if (payload.error) {
-          // Friendlier message for the most common case: a 404 from the
-          // registry URL just means it hasn't been published yet — not
-          // a real error the user can do anything about.
           const raw = String(payload.error);
+          // 404 = registry 还没发布 — info 级，不要红
           if (raw.includes("404")) {
-            setErrorMsg(
-              "官方注册表暂未发布。请使用「通过 URL 安装」直接装 GitHub 上的技能。"
-            );
+            setAlert({
+              level: "info",
+              message:
+                "官方注册表暂未发布。请使用「通过 URL 安装」直接安装 GitHub 上的技能。",
+            });
           } else {
-            setErrorMsg(`注册表加载失败：${raw}`);
+            setAlert({
+              level: "warning",
+              message: `注册表加载失败：${raw}`,
+            });
           }
         }
         setLoading(false);
       } else if (t === "skill_list_installed_response") {
         setInstalled((payload.skills as SkillMeta[]) || []);
-        if (payload.error) setErrorMsg(String(payload.error));
+        if (payload.error) {
+          setAlert({ level: "warning", message: String(payload.error) });
+        }
         setLoading(false);
       } else if (t === "skill_install_pending") {
         setLoading(false);
@@ -87,35 +116,51 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
               (payload.permission_categories as PermissionCategory[]) || [],
           });
         } else {
-          setErrorMsg(String(payload.error || "install failed"));
+          setAlert({
+            level: "error",
+            message: String(payload.error || "安装失败"),
+          });
         }
       } else if (t === "skill_install_confirm_response") {
         setLoading(false);
         if (payload.ok) {
           setStaged(null);
           setUrlInput("");
-          // refresh installed
+          setAlert({
+            level: "info",
+            message: `已安装：${payload.name as string}`,
+          });
           channel.send({ type: "skill_list_installed" });
           setTab("installed");
         } else {
-          setErrorMsg(String(payload.error || payload.reason || "install failed"));
+          setAlert({
+            level: "error",
+            message: String(payload.error || payload.reason || "安装失败"),
+          });
         }
       } else if (t === "skill_uninstall_response") {
         setLoading(false);
         if (payload.ok) {
           channel.send({ type: "skill_list_installed" });
+          setAlert({
+            level: "info",
+            message: `已卸载：${payload.name as string}`,
+          });
         } else {
-          setErrorMsg(String(payload.error || "uninstall failed"));
+          setAlert({
+            level: "error",
+            message: String(payload.error || "卸载失败"),
+          });
         }
       }
     });
     return () => off();
   }, [open, channel]);
 
-  // Refresh on tab change / panel open
+  // tab 切换 / 打开时刷新
   useEffect(() => {
     if (!open || !channel) return;
-    setErrorMsg(null);
+    setAlert(null);
     setLoading(true);
     if (tab === "installed") {
       channel.send({ type: "skill_list_installed" });
@@ -129,7 +174,7 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
   const installFromUrl = useCallback(
     (url: string) => {
       if (!channel || !url.trim()) return;
-      setErrorMsg(null);
+      setAlert(null);
       setLoading(true);
       channel.send({
         type: "skill_install_from_url",
@@ -154,7 +199,7 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
   const uninstall = useCallback(
     (name: string) => {
       if (!channel) return;
-      if (!confirm(`Uninstall '${name}'?`)) return;
+      if (!confirm(`确认卸载 “${name}” 吗？`)) return;
       setLoading(true);
       channel.send({ type: "skill_uninstall", payload: { name } });
     },
@@ -175,11 +220,13 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.5)",
-        zIndex: 9000,
+        background: tokens.color.surface.lightBackdrop,
+        backdropFilter: "blur(2px)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        zIndex: 9000,
+        animation: `bp-fade-in ${tokens.duration.base}ms ${tokens.easing.out}`,
       }}
       onClick={onClose}
       role="dialog"
@@ -188,77 +235,138 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
     >
       <div
         style={{
-          background: "white",
-          borderRadius: 12,
-          padding: 20,
+          ...surfaceLight,
           width: 720,
           maxWidth: "94vw",
           maxHeight: "86vh",
           display: "flex",
           flexDirection: "column",
+          animation: `bp-pop-in ${tokens.duration.base}ms ${tokens.easing.out}`,
+          position: "relative",
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <h2 id="skill-store-title" style={{ margin: 0, fontSize: 18 }}>
-            技能商店 SkillStore
-          </h2>
+        {/* Header */}
+        <div
+          style={{
+            padding: `${tokens.space.lg}px ${tokens.space.lg}px 0`,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: tokens.space.md,
+          }}
+        >
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                fontSize: tokens.text.xs.size,
+                color: tokens.color.neutral[500],
+                fontWeight: tokens.weight.medium,
+                marginBottom: 2,
+              }}
+            >
+              SkillStore
+            </div>
+            <h2
+              id="skill-store-title"
+              style={{
+                margin: 0,
+                fontSize: tokens.text.xl.size,
+                fontWeight: tokens.weight.semibold,
+                color: tokens.color.neutral[900],
+              }}
+            >
+              技能商店
+            </h2>
+          </div>
           <button
             type="button"
+            className="bp-btn-ghost"
             onClick={onClose}
             style={{
-              marginLeft: "auto",
-              border: "none",
-              background: "transparent",
-              fontSize: 18,
-              cursor: "pointer",
+              ...buttonStyle("ghost", "sm"),
+              width: 32,
+              height: 32,
+              padding: 0,
+              fontSize: tokens.text.xl.size,
+              color: tokens.color.neutral[500],
             }}
             aria-label="关闭"
           >
-            ×
+            ✕
           </button>
         </div>
-        <div style={{ display: "flex", gap: 4, marginTop: 12 }}>
-          {(["installed", "marketplace", "add-url"] as Tab[]).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              style={{
-                padding: "6px 12px",
-                border: "1px solid #d1d5db",
-                background: tab === t ? "#3b82f6" : "white",
-                color: tab === t ? "white" : "#1f2937",
-                borderRadius: 6,
-                cursor: "pointer",
-              }}
-            >
-              {t === "installed"
-                ? "已安装"
-                : t === "marketplace"
-                ? "市场"
-                : "通过 URL 安装"}
-            </button>
-          ))}
+
+        {/* Tabs */}
+        <div
+          style={{
+            padding: `${tokens.space.md}px ${tokens.space.lg}px 0`,
+            display: "flex",
+            gap: tokens.space.xs,
+          }}
+        >
+          {(Object.keys(TAB_LABEL) as Tab[]).map((t) => {
+            const active = tab === t;
+            return (
+              <button
+                key={t}
+                type="button"
+                className={`bp-tab ${active ? "bp-tab-active" : ""}`}
+                onClick={() => setTab(t)}
+                style={tabStyle(active)}
+              >
+                {TAB_LABEL[t]}
+              </button>
+            );
+          })}
         </div>
 
-        {errorMsg && (
+        {/* Alert */}
+        {alert && (
           <div
             style={{
-              marginTop: 8,
-              padding: 8,
-              background: "#fee2e2",
-              color: "#991b1b",
-              borderRadius: 4,
-              fontSize: 12,
+              margin: `${tokens.space.md}px ${tokens.space.lg}px 0`,
             }}
-            role="alert"
           >
-            {errorMsg}
+            <div
+              style={{
+                ...bannerStyle(
+                  alert.level === "warning" ? "warning" : alert.level === "error" ? "error" : "info"
+                ),
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: tokens.space.sm,
+              }}
+              role={alert.level === "error" ? "alert" : "status"}
+            >
+              <span>{alert.message}</span>
+              <button
+                type="button"
+                className="bp-btn-ghost"
+                onClick={() => setAlert(null)}
+                style={{
+                  ...buttonStyle("ghost", "sm"),
+                  padding: "0 6px",
+                  fontSize: tokens.text.md.size,
+                  color: "currentColor",
+                  opacity: 0.6,
+                }}
+                aria-label="关闭提示"
+              >
+                ✕
+              </button>
+            </div>
           </div>
         )}
 
-        <div style={{ overflow: "auto", flex: 1, marginTop: 12 }}>
+        {/* Body */}
+        <div
+          style={{
+            overflow: "auto",
+            flex: 1,
+            padding: `${tokens.space.md}px ${tokens.space.lg}px ${tokens.space.lg}px`,
+          }}
+        >
           {tab === "installed" && (
             <InstalledList
               skills={installed}
@@ -296,84 +404,231 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
   );
 };
 
+// ---------- Installed list ----------
+
+const EmptyState: React.FC<{ icon?: string; title: string; hint?: string }> = ({
+  icon,
+  title,
+  hint,
+}) => (
+  <div
+    style={{
+      padding: `${tokens.space.xxl}px ${tokens.space.lg}px`,
+      textAlign: "center",
+      color: tokens.color.neutral[500],
+    }}
+  >
+    {icon && <div style={{ fontSize: 32, marginBottom: tokens.space.sm }}>{icon}</div>}
+    <div
+      style={{
+        fontSize: tokens.text.md.size,
+        color: tokens.color.neutral[700],
+        fontWeight: tokens.weight.medium,
+      }}
+    >
+      {title}
+    </div>
+    {hint && (
+      <div
+        style={{
+          fontSize: tokens.text.sm.size,
+          color: tokens.color.neutral[500],
+          marginTop: tokens.space.xs,
+        }}
+      >
+        {hint}
+      </div>
+    )}
+  </div>
+);
+
+const LoadingState: React.FC<{ label?: string }> = ({ label = "加载中…" }) => (
+  <div
+    style={{
+      padding: `${tokens.space.xxl}px ${tokens.space.lg}px`,
+      textAlign: "center",
+      color: tokens.color.neutral[500],
+      fontSize: tokens.text.sm.size,
+    }}
+  >
+    <span className="bp-spinner" style={{ marginRight: tokens.space.sm }} />
+    {label}
+  </div>
+);
+
 const InstalledList: React.FC<{
   skills: SkillMeta[];
   loading: boolean;
   onUninstall: (name: string) => void;
 }> = ({ skills, loading, onUninstall }) => {
-  if (loading) return <p>加载中…</p>;
-  if (!skills.length) return <p style={{ color: "#6b7280" }}>暂无已安装技能。</p>;
+  if (loading) return <LoadingState />;
+  if (!skills.length)
+    return (
+      <EmptyState
+        icon="📭"
+        title="暂无已安装技能"
+        hint="切换到「市场」或「通过 URL 安装」试试"
+      />
+    );
   return (
-    <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: tokens.space.sm }}>
       {skills.map((s) => (
-        <li
+        <div
           key={s.name}
+          className="bp-card"
           style={{
+            ...cardStyle,
             display: "flex",
             alignItems: "center",
-            gap: 12,
-            padding: "10px 0",
-            borderBottom: "1px solid #e5e7eb",
+            gap: tokens.space.md,
           }}
         >
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600 }}>{s.name}</div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              {s.description}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: tokens.text.md.size,
+                fontWeight: tokens.weight.semibold,
+                color: tokens.color.neutral[900],
+                display: "flex",
+                alignItems: "center",
+                gap: tokens.space.xs,
+              }}
+            >
+              {s.name}
+              {s.version && (
+                <span
+                  style={{
+                    fontSize: tokens.text.xs.size,
+                    color: tokens.color.neutral[500],
+                    fontWeight: tokens.weight.regular,
+                  }}
+                >
+                  v{s.version}
+                </span>
+              )}
             </div>
-            {s.version && (
-              <div style={{ fontSize: 11, color: "#9ca3af" }}>v{s.version}</div>
+            {s.description && (
+              <div
+                style={{
+                  fontSize: tokens.text.sm.size,
+                  color: tokens.color.neutral[600],
+                  marginTop: 2,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical",
+                }}
+              >
+                {s.description}
+              </div>
             )}
           </div>
           <button
             type="button"
+            className="bp-btn-secondary"
             onClick={() => onUninstall(s.name)}
-            style={btnGhostStyle("#dc2626")}
+            style={{
+              ...buttonStyle("secondary", "sm"),
+              color: tokens.color.danger.bg,
+              borderColor: tokens.color.danger.border,
+            }}
           >
             卸载
           </button>
-        </li>
+        </div>
       ))}
-    </ul>
+    </div>
   );
 };
+
+// ---------- Marketplace list ----------
 
 const MarketplaceList: React.FC<{
   skills: MarketplaceSkill[];
   loading: boolean;
   onInstall: (s: MarketplaceSkill) => void;
 }> = ({ skills, loading, onInstall }) => {
-  if (loading) return <p>加载中…</p>;
-  if (!skills.length) return <p style={{ color: "#6b7280" }}>暂无可用技能。</p>;
+  if (loading) return <LoadingState />;
+  if (!skills.length)
+    return (
+      <EmptyState
+        icon="🛒"
+        title="暂无可用技能"
+        hint="官方注册表暂未发布，可使用「通过 URL 安装」"
+      />
+    );
   return (
-    <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: tokens.space.sm }}>
       {skills.map((s) => (
-        <li
+        <div
           key={s.source_url}
+          className="bp-card"
           style={{
+            ...cardStyle,
             display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "10px 0",
-            borderBottom: "1px solid #e5e7eb",
+            alignItems: "flex-start",
+            gap: tokens.space.md,
           }}
         >
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600 }}>{s.name}</div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>{s.description}</div>
-            <div style={{ fontSize: 11, color: "#9ca3af" }}>{s.source_url}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: tokens.text.md.size,
+                fontWeight: tokens.weight.semibold,
+                color: tokens.color.neutral[900],
+              }}
+            >
+              {s.name}
+              {s.author && (
+                <span
+                  style={{
+                    fontSize: tokens.text.xs.size,
+                    color: tokens.color.neutral[500],
+                    fontWeight: tokens.weight.regular,
+                    marginLeft: tokens.space.xs,
+                  }}
+                >
+                  · {s.author}
+                </span>
+              )}
+            </div>
+            <div
+              style={{
+                fontSize: tokens.text.sm.size,
+                color: tokens.color.neutral[600],
+                marginTop: 4,
+                lineHeight: 1.5,
+              }}
+            >
+              {s.description}
+            </div>
+            <div
+              style={{
+                fontSize: tokens.text.xs.size,
+                color: tokens.color.neutral[400],
+                marginTop: 6,
+                fontFamily: tokens.font.mono,
+                wordBreak: "break-all",
+              }}
+            >
+              {s.source_url}
+            </div>
             {(s.permission_categories || []).length > 0 && (
-              <div style={{ marginTop: 4, display: "flex", gap: 4, flexWrap: "wrap" }}>
+              <div
+                style={{
+                  marginTop: tokens.space.sm,
+                  display: "flex",
+                  gap: tokens.space.xs,
+                  flexWrap: "wrap",
+                }}
+              >
                 {(s.permission_categories || []).map((c) => (
                   <span
                     key={c}
-                    style={{
-                      fontSize: 10,
-                      padding: "2px 6px",
-                      borderRadius: 4,
-                      background: SENSITIVE_CATS.includes(c) ? "#fee2e2" : "#fef3c7",
-                      color: SENSITIVE_CATS.includes(c) ? "#991b1b" : "#92400e",
-                    }}
+                    style={badgeStyle(
+                      SENSITIVE_CATS.includes(c) ? "error" : "warning"
+                    )}
                   >
                     {c}
                   </span>
@@ -383,16 +638,19 @@ const MarketplaceList: React.FC<{
           </div>
           <button
             type="button"
+            className="bp-btn-primary"
             onClick={() => onInstall(s)}
-            style={btnSolidStyle("#2563eb")}
+            style={buttonStyle("primary", "sm")}
           >
             安装
           </button>
-        </li>
+        </div>
       ))}
-    </ul>
+    </div>
   );
 };
+
+// ---------- Add by URL ----------
 
 const AddByUrl: React.FC<{
   value: string;
@@ -401,144 +659,187 @@ const AddByUrl: React.FC<{
   disabled: boolean;
 }> = ({ value, onChange, onSubmit, disabled }) => (
   <div>
-    <p style={{ fontSize: 13, color: "#6b7280" }}>
-      支持以下格式：
-      <br />
-      • <code>github:owner/repo</code>
-      <br />
-      • <code>github:owner/repo/tree/main/subpath</code>
-      <br />
-      • <code>https://github.com/owner/repo</code>
-    </p>
+    <div
+      style={{
+        ...bannerStyle("info"),
+        marginBottom: tokens.space.md,
+        fontSize: tokens.text.sm.size,
+      }}
+    >
+      支持以下 GitHub 形式：
+      <ul
+        style={{
+          margin: `${tokens.space.xs}px 0 0`,
+          paddingLeft: tokens.space.lg,
+          fontFamily: tokens.font.mono,
+          fontSize: tokens.text.xs.size,
+        }}
+      >
+        <li>github:owner/repo</li>
+        <li>github:owner/repo/tree/branch/subpath</li>
+        <li>https://github.com/owner/repo</li>
+      </ul>
+    </div>
     <input
+      className="bp-input"
       type="text"
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      placeholder="github:foo/bar"
-      style={{
-        width: "100%",
-        padding: 8,
-        fontSize: 14,
-        border: "1px solid #d1d5db",
-        borderRadius: 6,
-        marginTop: 8,
+      placeholder="github:anthropics/skills/tree/main/skills/algorithmic-art"
+      style={inputStyle}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !disabled && value.trim()) {
+          onSubmit();
+        }
       }}
     />
-    <button
-      type="button"
-      disabled={disabled || !value.trim()}
-      onClick={onSubmit}
+    <div
       style={{
-        ...btnSolidStyle("#2563eb"),
-        marginTop: 8,
-        opacity: disabled || !value.trim() ? 0.5 : 1,
+        marginTop: tokens.space.md,
+        display: "flex",
+        justifyContent: "flex-end",
       }}
     >
-      安装
-    </button>
+      <button
+        type="button"
+        className="bp-btn-primary"
+        disabled={disabled || !value.trim()}
+        onClick={onSubmit}
+        style={buttonStyle("primary", "md", disabled || !value.trim())}
+      >
+        {disabled ? <span className="bp-spinner" /> : "安装"}
+      </button>
+    </div>
   </div>
 );
+
+// ---------- Confirm modal ----------
 
 const ConfirmModal: React.FC<{
   staged: StagedSkill;
   sensitive: PermissionCategory[];
   onApprove: () => void;
   onCancel: () => void;
-}> = ({ staged, sensitive, onApprove, onCancel }) => (
-  <div
-    style={{
-      position: "absolute",
-      inset: 0,
-      background: "rgba(0,0,0,0.45)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      zIndex: 10,
-    }}
-  >
+}> = ({ staged, sensitive, onApprove, onCancel }) => {
+  const dangerous = sensitive.length > 0;
+  return (
     <div
       style={{
-        background: "white",
-        borderRadius: 8,
-        padding: 16,
-        width: 480,
-        maxWidth: "90%",
-        borderTop: `4px solid ${sensitive.length ? "#dc2626" : "#d97706"}`,
+        position: "absolute",
+        inset: 0,
+        background: tokens.color.surface.lightBackdrop,
+        backdropFilter: "blur(3px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 10,
+        animation: `bp-fade-in ${tokens.duration.base}ms ${tokens.easing.out}`,
       }}
     >
-      <h3 style={{ margin: 0, fontSize: 16 }}>
-        确认安装 · {staged.name}
-      </h3>
-      <p style={{ fontSize: 13, color: "#1f2937", marginTop: 8 }}>
-        {(staged.manifest.description as string) || "(no description)"}
-      </p>
-      {sensitive.length > 0 && (
+      <div
+        style={{
+          ...surfaceLight,
+          width: 480,
+          maxWidth: "92%",
+          borderTop: `4px solid ${
+            dangerous ? tokens.color.danger.bg : tokens.color.accent.bg
+          }`,
+          padding: tokens.space.lg,
+          animation: `bp-pop-in ${tokens.duration.base}ms ${tokens.easing.out}`,
+        }}
+      >
         <div
           style={{
-            marginTop: 8,
-            padding: 8,
-            background: "#fee2e2",
-            color: "#991b1b",
-            borderRadius: 4,
-            fontSize: 13,
+            fontSize: tokens.text.xs.size,
+            color: tokens.color.neutral[500],
+            fontWeight: tokens.weight.medium,
+            marginBottom: 2,
           }}
-        >
-          ⚠ 此技能请求敏感权限：{sensitive.join(", ")}
-        </div>
-      )}
-      <details style={{ marginTop: 8, fontSize: 12 }}>
-        <summary>查看 manifest.json</summary>
-        <pre
-          style={{
-            background: "#f3f4f6",
-            padding: 8,
-            borderRadius: 4,
-            fontSize: 11,
-            maxHeight: 200,
-            overflow: "auto",
-          }}
-        >
-          {JSON.stringify(staged.manifest, null, 2)}
-        </pre>
-      </details>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-        <button type="button" onClick={onCancel} style={btnGhostStyle("#1f2937")}>
-          取消
-        </button>
-        <button
-          type="button"
-          onClick={onApprove}
-          style={btnSolidStyle(sensitive.length ? "#dc2626" : "#2563eb")}
         >
           确认安装
-        </button>
+        </div>
+        <h3
+          style={{
+            margin: 0,
+            fontSize: tokens.text.lg.size,
+            fontWeight: tokens.weight.semibold,
+            color: tokens.color.neutral[900],
+          }}
+        >
+          {staged.name}
+        </h3>
+        <p
+          style={{
+            fontSize: tokens.text.md.size,
+            color: tokens.color.neutral[700],
+            marginTop: tokens.space.sm,
+            marginBottom: tokens.space.sm,
+            lineHeight: 1.55,
+          }}
+        >
+          {(staged.manifest.description as string) || "(无描述)"}
+        </p>
+        {dangerous && (
+          <div style={bannerStyle("error")}>
+            ⚠ 该技能请求敏感权限：
+            <strong style={{ marginLeft: 4 }}>{sensitive.join(", ")}</strong>
+            。请确认来源可信。
+          </div>
+        )}
+        <details style={{ marginTop: tokens.space.md, fontSize: tokens.text.sm.size }}>
+          <summary
+            style={{
+              cursor: "pointer",
+              userSelect: "none",
+              color: tokens.color.neutral[500],
+            }}
+          >
+            查看 manifest.json
+          </summary>
+          <pre
+            style={{
+              background: tokens.color.neutral[50],
+              border: `1px solid ${tokens.color.neutral[200]}`,
+              padding: tokens.space.sm,
+              borderRadius: tokens.radius.md,
+              fontFamily: tokens.font.mono,
+              fontSize: tokens.text.xs.size,
+              maxHeight: 200,
+              overflow: "auto",
+              margin: `${tokens.space.xs}px 0 0`,
+            }}
+          >
+            {JSON.stringify(staged.manifest, null, 2)}
+          </pre>
+        </details>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: tokens.space.sm,
+            marginTop: tokens.space.lg,
+          }}
+        >
+          <button
+            type="button"
+            className="bp-btn-secondary"
+            onClick={onCancel}
+            style={buttonStyle("secondary", "md")}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            className={dangerous ? "bp-btn-danger" : "bp-btn-primary"}
+            onClick={onApprove}
+            style={buttonStyle(dangerous ? "danger" : "primary", "md")}
+          >
+            {dangerous ? "我明白风险，继续安装" : "确认安装"}
+          </button>
+        </div>
       </div>
     </div>
-  </div>
-);
-
-function btnSolidStyle(bg: string): React.CSSProperties {
-  return {
-    background: bg,
-    color: "white",
-    border: "none",
-    padding: "6px 14px",
-    borderRadius: 6,
-    fontSize: 13,
-    cursor: "pointer",
-  };
-}
-
-function btnGhostStyle(fg: string): React.CSSProperties {
-  return {
-    background: "white",
-    color: fg,
-    border: `1px solid ${fg}`,
-    padding: "6px 14px",
-    borderRadius: 6,
-    fontSize: 13,
-    cursor: "pointer",
-  };
-}
+  );
+};
 
 export default SkillStorePanel;
