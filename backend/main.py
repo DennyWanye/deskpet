@@ -946,6 +946,15 @@ async def control_channel(ws: WebSocket):
         return
 
     session_id = ws.query_params.get("session_id", "default")
+    # P4-S20: gracefully kick the previous holder of this session_id
+    # (e.g. an old E2E client) so its disconnect callback doesn't
+    # later pop OUR entry. Don't kill ourselves if we're the holder.
+    _prev_ws = _control_connections.get(session_id)
+    if _prev_ws is not None and _prev_ws is not ws:
+        try:
+            await _prev_ws.close(code=4002, reason="session replaced")
+        except Exception:
+            pass
     _control_connections[session_id] = ws
     logger.info("control channel connected", session_id=session_id)
     # P3-S2: first frame after handshake reports startup-error state so the
@@ -1465,7 +1474,10 @@ async def control_channel(ws: WebSocket):
                 })
 
     except WebSocketDisconnect:
-        _control_connections.pop(session_id, None)
+        # P4-S20: only clear the dict entry if it's still pointing at
+        # OUR ws — a later connection may have replaced us already.
+        if _control_connections.get(session_id) is ws:
+            _control_connections.pop(session_id, None)
         logger.info("control channel disconnected", session_id=session_id)
 
 
