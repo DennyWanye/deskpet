@@ -779,13 +779,17 @@ class CloudConfigRequest(BaseModel):
     @field_validator("api_key")
     @classmethod
     def validate_api_key(cls, v: str | None) -> str | None:
+        # P4-S20-LLM-Unified: 接受短占位符如 "ollama"（本地 Ollama 不验 key）
+        # 同时排除常见的 placeholder 值（避免被误当真 key 入库）。
         if v is None:
             return None
         v = v.strip()
         if not v:
             return None
-        if not (10 <= len(v) <= 256):
-            raise ValueError("api_key length must be between 10 and 256 characters")
+        if len(v) > 256:
+            raise ValueError("api_key must not exceed 256 characters")
+        # 1-256 字符任意字符串都接受。本地 Ollama "ollama" 6 字符 OK；
+        # 真云端 key (sk-..., tsk-..., 几十字符) 也 OK。
         return v
 
     @field_validator("strategy")
