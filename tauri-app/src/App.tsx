@@ -225,28 +225,11 @@ function App() {
   // (chat_v2). Persisted in localStorage so a refresh keeps the
   // user's preference. Defaults to off so existing behavior is
   // unchanged for users who haven't opted in.
-  const [useToolUseLoop, setUseToolUseLoop] = useState<boolean>(() => {
-    try {
-      // P4-S20: default ON during testing so users get the new tool_use
-      // loop without hunting for the toolbar toggle. Explicit "0" in
-      // localStorage opts out.
-      const stored = localStorage.getItem("deskpet:useToolUseLoop");
-      if (stored === "0") return false;
-      return true;
-    } catch {
-      return true;
-    }
-  });
+  // P4-S20-LLM-Unified: chat 路径已统一 — 永远走 tool_use loop。
+  // 不再需要 🛠 toggle。保留这两个空 noop 以减少删除 props 的传播改动。
+  const useToolUseLoop = true;
   const toggleToolUseLoop = useCallback(() => {
-    setUseToolUseLoop((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("deskpet:useToolUseLoop", next ? "1" : "0");
-      } catch {
-        /* ignore quota errors */
-      }
-      return next;
-    });
+    /* deprecated — chat path is now unified */
   }, []);
 
   // Reset route kind when disconnected.

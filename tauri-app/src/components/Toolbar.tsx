@@ -15,8 +15,10 @@ import { tokens } from "../theme/tokens";
 import { buttonStyle } from "../theme/components";
 
 interface Props {
-  useToolUseLoop: boolean;
-  toggleToolUseLoop: () => void;
+  /** @deprecated chat path is unified now; kept to avoid prop-drilling churn */
+  useToolUseLoop?: boolean;
+  /** @deprecated */
+  toggleToolUseLoop?: () => void;
   onMemory: () => void;
   onTrace: () => void;
   onSettings: () => void;
@@ -33,8 +35,6 @@ interface Props {
 }
 
 export const Toolbar: React.FC<Props> = ({
-  useToolUseLoop,
-  toggleToolUseLoop,
   onMemory,
   onTrace,
   onSettings,
@@ -91,18 +91,8 @@ export const Toolbar: React.FC<Props> = ({
 
       <Divider />
 
-      {/* Group 2 — feature toggles (visually distinct: 文字按钮) */}
-      <ToggleChip
-        active={useToolUseLoop}
-        onClick={toggleToolUseLoop}
-        label={useToolUseLoop ? "工具 ON" : "工具 OFF"}
-        title={
-          useToolUseLoop
-            ? "已启用工具调用回路 (chat_v2) — 点击关闭"
-            : "启用工具调用回路 (chat_v2) — 点击开启"
-        }
-        testId="tool-use-toggle"
-      />
+      {/* Group 2 — feature toggles. P4-S20-LLM-Unified 之后 chat 永远走
+          工具调用回路，🛠 toggle 删掉，UI 更简洁。 */}
       {autostartReady && (
         <ToggleChip
           active={autostartEnabled}

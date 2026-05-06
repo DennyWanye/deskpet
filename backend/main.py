@@ -1195,14 +1195,17 @@ async def control_channel(ws: WebSocket):
                         "payload": {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
                     })
 
-            elif msg_type == "chat_v2":
-                # P4-S20: tool_use loop path. Routes through AgentLoop +
-                # ToolRegistry v2 + PermissionGate. Streams events to
-                # frontend so it can render tool steps + popups.
+            elif msg_type in ("chat", "chat_v2"):
+                # P4-S20-LLM-Unified: 单一对话路径。
+                # 永远走 AgentLoop tool_use loop（即原 chat_v2 路径），
+                # 同时保留 ContextAssembler 长期记忆召回 + BillingLedger
+                # 计费（继承自原 chat 路径）。
+                #
                 # CRITICAL: run in a background task so the WS recv
                 # loop keeps draining permission_response messages —
-                # otherwise the gate's responder Future never gets
-                # set_result and times out (see permission-gate spec).
+                # gate's responder Future never gets set otherwise.
+                #
+                # `chat_v2` 类型保留作为别名，前端无感升级。
                 text = raw.get("payload", {}).get("text", "")
                 if (
                     deskpet_tool_registry_v2 is None
@@ -1214,7 +1217,39 @@ async def control_channel(ws: WebSocket):
                     })
                     continue
 
-                async def _run_chat_v2(_ws, _text, _sid):
+                async def _run_chat(_ws, _text, _sid):
+                    # ContextAssembler — 把长期记忆 / 技能 / MCP 工具描述
+                    # 装入 message stack（继承自原 chat 路径，丢失就降级
+                    # 到只发用户原话，永远不让 chat 因 assembler 异常炸）。
+                    _bundle = None
+                    _assembler = service_context.get("context_assembler")
+                    if _assembler is not None and getattr(_assembler, "enabled", True):
+                        try:
+                            import time as _ti
+                            _bundle = await _assembler.assemble(
+                                user_message=_text,
+                                memory_manager=service_context.get("memory_manager"),
+                                tool_registry=service_context.get("tool_router"),
+                                skill_registry=service_context.get("skill_loader"),
+                                mcp_manager=service_context.get("mcp_manager"),
+                                session_id=_sid,
+                            )
+                            if _bundle is not None and _bundle.decisions is not None:
+                                _bundle.decisions.timestamp = _ti.time()
+                                _bundle.decisions.session_id = _sid
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "p4_assembler_failed", error=str(exc),
+                                error_type=type(exc).__name__,
+                            )
+                            _bundle = None
+
+                    if _bundle is not None:
+                        _msgs = _bundle.build_messages(user_message=_text)
+                    else:
+                        _msgs = [{"role": "user", "content": _text}]
+
+                    final_text = ""
                     try:
                         from agent.agent_loop import (
                             AgentLoop as _AgentLoop,
@@ -1225,20 +1260,17 @@ async def control_channel(ws: WebSocket):
                             ErrorEvent as _ErrEv,
                         )
                         from agent.tool_use_shim import OpenAICompatibleAgentLLM as _Shim
-                        # P4-S20: prefer LOCAL for the tool_use loop —
-                        # cloud chat_with_tools needs an API key + model
-                        # that supports tool_calls. Local Ollama
-                        # gemma4:e4b is verified to support them with
-                        # zero auth cost.
+                        # P4-S20-LLM-Unified: 单一 endpoint。local_llm 来自
+                        # 统一 [llm] 段（base_url + api_key + model）；不管你
+                        # 把它指向 Ollama 还是任何 OpenAI 兼容云端都一样。
                         _provider = local_llm or cloud_llm
                         _shim = _Shim(provider=_provider)
-                        _agent_v2 = _AgentLoop(
+                        _agent = _AgentLoop(
                             llm_registry=_shim,
                             tool_registry=deskpet_tool_registry_v2,
                             max_iterations=8,
                         )
-                        _msgs_v2 = [{"role": "user", "content": _text}]
-                        async for ev in _agent_v2.run(_msgs_v2, session_id=_sid):
+                        async for ev in _agent.run(_msgs, session_id=_sid):
                             if isinstance(ev, _AsstEv):
                                 if ev.content:
                                     await _ws.send_json({
@@ -1270,6 +1302,7 @@ async def control_channel(ws: WebSocket):
                                     },
                                 })
                             elif isinstance(ev, _FinEv):
+                                final_text = ev.content
                                 await _ws.send_json({
                                     "type": "chat_v2_final",
                                     "payload": {"text": ev.content, "iterations": ev.iteration},
@@ -1279,8 +1312,42 @@ async def control_channel(ws: WebSocket):
                                     "type": "chat_v2_error",
                                     "payload": {"reason": ev.reason, "detail": ev.detail},
                                 })
+
+                        # ContextAssembler feedback — 写入这一轮最终
+                        # 响应到决策表，让 ContextTracePanel 能看到时长。
+                        if _bundle is not None and _assembler is not None:
+                            try:
+                                _assembler.feedback(_bundle, final_response=final_text)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning("p4_assembler_feedback_failed", error=str(exc))
+
+                        # BillingLedger — 取 provider 的 last_usage 计费。
+                        # 单 endpoint 时统一调 _provider；URL 是 localhost
+                        # 就不会被计费（ledger.record_if_billable 自动判断）。
+                        usage = getattr(_provider, "last_usage", None)
+                        if usage:
+                            try:
+                                _is_local = "localhost" in (
+                                    getattr(_provider, "base_url", "") or ""
+                                ) or "127.0.0.1" in (
+                                    getattr(_provider, "base_url", "") or ""
+                                )
+                                await billing_ledger.record(
+                                    provider="local" if _is_local else "cloud",
+                                    model=getattr(_provider, "model", "unknown"),
+                                    prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                                    completion_tokens=int(usage.get("completion_tokens", 0)),
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning("billing_record_failed", error=str(exc))
+                            _provider.last_usage = None
+
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning("chat_v2_failed", error=str(exc), error_type=type(exc).__name__)
+                        logger.warning(
+                            "chat_v2_failed",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        )
                         try:
                             await _ws.send_json({
                                 "type": "chat_v2_error",
@@ -1289,134 +1356,9 @@ async def control_channel(ws: WebSocket):
                         except Exception:
                             pass
 
-                # Fire-and-forget — the recv loop continues immediately
-                # so permission_response can drain the pending Future.
-                asyncio.create_task(_run_chat_v2(ws, text, session_id))
-
-
-            elif msg_type == "chat":
-                text = raw.get("payload", {}).get("text", "")
-                response_text = f"[echo] {text}"
-                budget_exceeded = False
-                budget_reason: str | None = None
-
-                # P4-S14: per-turn ContextAssembler. Runs BEFORE chat_stream so
-                # the bundle's frozen_system + memory_block + skill_prelude land
-                # in the prompt, and the decision is recorded for ContextTrace.
-                # Failures NEVER block the chat path — bundle stays None, the
-                # message list falls back to legacy ``[{"role":"user", ...}]``.
-                _bundle = None
-                _assembler = service_context.get("context_assembler")
-                if _assembler is not None and getattr(_assembler, "enabled", True):
-                    try:
-                        import time as _ti
-                        _bundle = await _assembler.assemble(
-                            user_message=text,
-                            memory_manager=service_context.get("memory_manager"),
-                            tool_registry=service_context.get("tool_router"),
-                            skill_registry=service_context.get("skill_loader"),
-                            mcp_manager=service_context.get("mcp_manager"),
-                            session_id=session_id,
-                        )
-                        # Stamp wall-clock + session so ContextTracePanel can
-                        # render a meaningful timeline. AssemblyDecisions
-                        # already records assembly_latency_ms during assemble.
-                        if _bundle is not None and _bundle.decisions is not None:
-                            _bundle.decisions.timestamp = _ti.time()
-                            _bundle.decisions.session_id = session_id
-                    except Exception as exc:
-                        logger.warning(
-                            "p4_assembler_failed",
-                            error=str(exc),
-                            error_type=type(exc).__name__,
-                        )
-                        _bundle = None
-
-                # If assembler succeeded, build a fully-shaped messages list;
-                # otherwise fall back to the legacy shape.
-                if _bundle is not None:
-                    _msgs = _bundle.build_messages(user_message=text)
-                else:
-                    _msgs = [{"role": "user", "content": text}]
-
-                # V5 §2.3: route through agent_engine (not llm_engine directly).
-                # Keeps WS layer stable when S2/S3 add memory/tools to Agent.
-                agent_engine = service_context.agent_engine
-                if agent_engine:
-                    try:
-                        response_text = ""
-                        async for token in agent_engine.chat_stream(
-                            _msgs,
-                            session_id=session_id,
-                        ):
-                            response_text += token
-                    except LLMUnavailableError as exc:
-                        # P2-1-S8: surface budget-denied refusals distinctly
-                        # so the UI can toast "预算已用尽" instead of a
-                        # generic failure. Any other LLMUnavailableError
-                        # (cloud+local both dead) still degrades to echo.
-                        # Reason rides on the exception itself now — no more
-                        # racy instance attribute shared between requests.
-                        reason = exc.budget_reason
-                        logger.warning("llm_unavailable", error=str(exc), reason=reason)
-                        response_text = f"[echo] {text}"
-                        if reason is not None:
-                            budget_exceeded = True
-                            budget_reason = reason
-                    except Exception as exc:
-                        logger.warning("agent_stream_failed", error=str(exc))
-                        response_text = f"[echo] {text}"
-
-                # P4-S14: feedback decision so ContextTrace shows the final
-                # response length on the same record. Best-effort — never
-                # surface to the user.
-                if _bundle is not None and _assembler is not None:
-                    try:
-                        _assembler.feedback(_bundle, final_response=response_text)
-                    except Exception as exc:
-                        logger.warning("p4_assembler_feedback_failed", error=str(exc))
-
-                # P2-1-S8: on a successful stream, consult the underlying
-                # providers' last_usage (set by OpenAICompatibleProvider) and
-                # debit the ledger. We probe both local and cloud — whichever
-                # actually served the request left its usage on that object.
-                served_by: str | None = None
-                if not budget_exceeded:
-                    for route, provider in (
-                        ("cloud", llm._cloud),
-                        ("local", llm._local),
-                    ):
-                        if provider is None:
-                            continue
-                        usage = getattr(provider, "last_usage", None)
-                        if not usage:
-                            continue
-                        served_by = route
-                        try:
-                            await billing_ledger.record(
-                                provider=route,
-                                model=getattr(provider, "model", "unknown"),
-                                prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                                completion_tokens=int(usage.get("completion_tokens", 0)),
-                            )
-                        except Exception as exc:
-                            logger.warning("billing_record_failed", error=str(exc))
-                        # Clear so the next call doesn't double-debit this
-                        # usage block if only one provider ran.
-                        provider.last_usage = None
-                        break
-
-                payload: dict = {"text": response_text}
-                if served_by:
-                    payload["provider"] = served_by
-                if budget_exceeded:
-                    payload["budget_exceeded"] = True
-                    if budget_reason:
-                        payload["budget_reason"] = budget_reason
-                await ws.send_json({
-                    "type": "chat_response",
-                    "payload": payload,
-                })
+                # Fire-and-forget — recv loop must keep draining
+                # permission_response while we're awaiting the gate.
+                asyncio.create_task(_run_chat(ws, text, session_id))
 
             elif msg_type == "interrupt":
                 # Forward barge-in to the audio pipeline (separate WS). Cancels

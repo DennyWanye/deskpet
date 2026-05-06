@@ -97,34 +97,39 @@ def test_load_config_llm_cloud_optional(tmp_path):
     assert cfg.llm.local.model == "gemma4:e4b"
 
 
-def test_load_config_warns_on_pre_split_llm_schema(tmp_path, caplog):
-    """User on the pre-P2-1-S2 flat [llm] schema should get a loud warning,
-    not a silent revert to default model.
+def test_load_config_promotes_unified_llm_schema(tmp_path, caplog):
+    """P4-S20-LLM-Unified: 单 [llm] 段含 endpoint 字段（model/base_url/...）
+    应被 promote 到 routing.local，让下游代码无感升级。
 
-    Failure mode this guards against: user upgrading from v0.2.0 with a
-    custom `[llm] model = "qwen2.5:7b"` would silently start using the
-    `gemma4:e4b` default because the old keys get dropped and no
-    [llm.local] section means the dataclass defaults take over.
+    背景：原 P2-1-S2 schema 把 endpoint 字段拆到 [llm.local] / [llm.cloud]，
+    现在合并回 [llm] 单段。这个测试验证迁移路径：用户写新 schema → cfg.llm
+    .local 拿到正确 model/base_url。
+
+    旧行为 (pre-P2-1-S2 警告)被本次重构 deprecated。
     """
     import logging
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(dedent("""
         [llm]
-        strategy = "local_first"
         model = "qwen2.5:7b"
         base_url = "http://localhost:11434/v1"
         api_key = "ollama"
+        temperature = 0.5
     """).strip())
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         cfg = load_config(cfg_path)
 
-    # The custom model is silently lost (we can't recover it without invasive
-    # auto-migration), but the user is warned in logs.
-    assert cfg.llm.local.model == "gemma4:e4b"  # default kicked in
-    assert any("pre-P2-1-S2 schema" in r.message for r in caplog.records)
-    assert any("model" in r.message for r in caplog.records)
+    # 用户填的 model 被正确读到（不再丢失为默认值）
+    assert cfg.llm.local.model == "qwen2.5:7b"
+    assert cfg.llm.local.base_url == "http://localhost:11434/v1"
+    assert cfg.llm.local.api_key == "ollama"
+    assert cfg.llm.local.temperature == 0.5
+    # cloud 段默认不存在
+    assert cfg.llm.cloud is None
+    # info 日志会汇报这次 promote
+    assert any("llm_unified_schema_loaded" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

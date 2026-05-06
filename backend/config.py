@@ -330,25 +330,42 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
                     "(set via SettingsPanel → 云端账号). Remove this line "
                     "from config.toml once migrated. (P2-1-S3)"
                 )
-        # P2-1-S2: warn loudly if user is still on the pre-split [llm] schema.
-        # _load_section silently drops these keys, but a missing [llm.local]
-        # then quietly falls back to LLMEndpointConfig() defaults — which
-        # would silently revert the user's custom model. Better to nudge
-        # them in the logs than let it puzzle them later.
-        _OLD_LLM_KEYS = {"model", "base_url", "api_key", "provider", "temperature", "max_tokens"}
-        stray = _OLD_LLM_KEYS & set(raw_llm)
-        if stray and raw_local is None:
-            logger.warning(
-                "config [llm] uses pre-P2-1-S2 schema (keys: %s); "
-                "these are ignored and local LLM defaults will be used. "
-                "Move them under [llm.local]. See CHANGELOG for migration.",
-                sorted(stray),
-            )
+        # P4-S20-LLM-Unified: pre-P2-1-S2 schema 警告 deprecated —
+        # 新统一格式正好用这些 key (model/base_url/api_key/...) 在 [llm] 段下，
+        # 旧 deprecation warning 反而会误报。新 schema 下面会明确 promote 这些
+        # 字段到 routing.local。
         routing = _load_section(LLMRoutingConfig, raw_llm)
         if raw_local is not None:
             routing.local = _load_section(LLMEndpointConfig, raw_local)
         if raw_cloud is not None:
             routing.cloud = _load_section(LLMEndpointConfig, raw_cloud)
+
+        # P4-S20-LLM-Unified: 新统一格式 — [llm] 段直接含 endpoint 字段
+        # (model/base_url/api_key/temperature/max_tokens)，没有 [llm.local]
+        # 也没有 [llm.cloud]。此处是关键迁移点：如果用户的 [llm] 段直接
+        # 含 endpoint 字段（且 [llm.local] 缺失），把这些字段抽出来填到
+        # routing.local。这样下游所有读 routing.local 的代码无感升级。
+        _ENDPOINT_KEYS = {
+            "model", "base_url", "api_key", "temperature", "max_tokens"
+        }
+        new_format_keys = _ENDPOINT_KEYS & set(raw_llm)
+        if new_format_keys and raw_local is None:
+            # User is on the new unified schema → promote to local slot.
+            endpoint_kwargs: dict = {}
+            for k in new_format_keys:
+                endpoint_kwargs[k] = raw_llm[k]
+            try:
+                routing.local = LLMEndpointConfig(**endpoint_kwargs)
+                logger.info(
+                    "llm_unified_schema_loaded fields=%s base_url=%s model=%s",
+                    sorted(new_format_keys),
+                    routing.local.base_url,
+                    routing.local.model,
+                )
+            except TypeError as exc:
+                logger.warning(
+                    "llm_unified_schema_invalid: %s", exc,
+                )
         config.llm = routing
     if "asr" in raw:
         config.asr = _load_section(ASRConfig, raw["asr"])

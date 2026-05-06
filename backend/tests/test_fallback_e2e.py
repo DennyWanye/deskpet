@@ -1,16 +1,15 @@
-"""P2-1-S7 fallback E2E.
+"""P2-1-S7 fallback E2E — DEPRECATED post-P4-S20-LLM-Unified.
 
-Exercises the full chat path WITHOUT external network:
-  TestClient(/ws/control) -> agent_engine -> HybridRouter -> mocked providers.
+Tested the legacy chat path: TestClient(/ws/control) -> agent_engine ->
+HybridRouter -> mocked providers. The chat WS handler no longer goes
+through agent_engine.chat_stream() / HybridRouter — it goes through the
+unified AgentLoop tool_use loop with a single OpenAICompatibleProvider.
 
-Each scenario constructs a fresh HybridRouter with httpx.MockTransport-backed
-OpenAICompatibleProvider instances, swaps it into service_context, and sends
-a real `chat` message over the WebSocket.
+The legacy fallback (local→cloud) is also gone with the [llm] schema
+unification; users now configure a single endpoint.
 
-This is the "real router code, fake network" test layer.
-The S2 unit tests use _FakeProvider (no httpx involved); this suite uses
-the real OpenAICompatibleProvider so SSE parsing + connection lifecycle
-are also under test.
+These tests are skipped, NOT deleted, so reviewers can see what behavior
+was retired. A new e2e fixture covering the unified path is TODO.
 """
 from __future__ import annotations
 
@@ -21,6 +20,11 @@ from fastapi.testclient import TestClient
 from providers.openai_compatible import OpenAICompatibleProvider
 from router.hybrid_router import HybridRouter
 from agent.providers.simple_llm import SimpleLLMAgent
+
+pytestmark = pytest.mark.skip(
+    reason="P4-S20-LLM-Unified: legacy HybridRouter chat path removed; "
+    "see commit log + new test_unified_chat_e2e.py (TODO).",
+)
 
 
 # --- helpers ---------------------------------------------------------------
