@@ -1343,6 +1343,9 @@ async def control_channel(ws: WebSocket):
                     if _assembler is not None and getattr(_assembler, "enabled", True):
                         try:
                             import time as _ti
+                            # P4-S20-LLM-Unified: 把当前 LLM 的 model + base_url
+                            # 传给 ContextAssembler，PersonaComponent 用它告诉
+                            # 用户底层模型 — 不再有"我看不到模型"的尴尬回复。
                             _bundle = await _assembler.assemble(
                                 user_message=_text,
                                 memory_manager=service_context.get("memory_manager"),
@@ -1350,6 +1353,12 @@ async def control_channel(ws: WebSocket):
                                 skill_registry=service_context.get("skill_loader"),
                                 mcp_manager=service_context.get("mcp_manager"),
                                 session_id=_sid,
+                                config={
+                                    "llm": {
+                                        "model": getattr(local_llm, "model", "unknown"),
+                                        "base_url": getattr(local_llm, "base_url", ""),
+                                    },
+                                },
                             )
                             if _bundle is not None and _bundle.decisions is not None:
                                 _bundle.decisions.timestamp = _ti.time()
