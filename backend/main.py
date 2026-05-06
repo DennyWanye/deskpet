@@ -1216,7 +1216,12 @@ async def control_channel(ws: WebSocket):
                             ErrorEvent as _ErrEv,
                         )
                         from agent.tool_use_shim import OpenAICompatibleAgentLLM as _Shim
-                        _provider = cloud_llm or local_llm
+                        # P4-S20: prefer LOCAL for the tool_use loop —
+                        # cloud chat_with_tools needs an API key + model
+                        # that supports tool_calls. Local Ollama
+                        # gemma4:e4b is verified to support them with
+                        # zero auth cost.
+                        _provider = local_llm or cloud_llm
                         _shim = _Shim(provider=_provider)
                         _agent_v2 = _AgentLoop(
                             llm_registry=_shim,
