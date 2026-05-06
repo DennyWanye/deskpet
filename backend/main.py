@@ -1292,7 +1292,14 @@ async def control_channel(ws: WebSocket):
                         )
                         async for ev in _agent.run(_msgs, session_id=_sid):
                             if isinstance(ev, _AsstEv):
-                                if ev.content:
+                                # P4-S20-LLM-Unified-fix: AgentLoop 在每次
+                                # LLM turn 后 emit AsstEv，最终轮还会 emit
+                                # FinalEvent —— 两者带相同 content。前端
+                                # 两条都渲染会造成重复。规则：只在中间
+                                # 步骤（带 tool_calls）emit chat_response
+                                # 作为"思考中"提示；最终回复让 FinalEvent
+                                # 唯一负责。
+                                if ev.content and ev.tool_calls:
                                     await _ws.send_json({
                                         "type": "chat_response",
                                         "payload": {"text": ev.content, "provider": "v2"},
