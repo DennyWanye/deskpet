@@ -568,6 +568,9 @@ try:
         vector_worker=True,
         retriever=True,
     )
+
+    # P4-S20-D: 把 _state_db_path 暴露给 IPC handler 用 (memory_summarize_now)
+    _summarizer_state_db_path = _state_db_path
 except Exception as _p4_exc:
     # S13 stay-alive guarantee: ANY P4 import/init failure must not block the
     # legacy chat path. p4_ipc.py already handles None services gracefully.
@@ -576,6 +579,7 @@ except Exception as _p4_exc:
         error=str(_p4_exc),
         error_type=type(_p4_exc).__name__,
     )
+    _summarizer_state_db_path = None  # type: ignore[assignment]
 
 
 base_agent = SimpleLLMAgent(llm, memory=memory_store)
@@ -680,6 +684,37 @@ async def lifespan(app: FastAPI):
         logger.info("p4_mcp_manager_ready", states=_mcp_manager.server_state())
     except Exception as exc:
         logger.warning("p4_mcp_manager_bootstrap_failed", error=str(exc))
+
+    # P4-S20-D: 启动时把"老对话总结"任务 fire-and-forget。不阻塞 startup
+    # — 后台慢慢跑。第一次启动 4881 条历史时只处理 max_per_run 个 session
+    # 防止打爆 LLM。
+    if _summarizer_state_db_path is not None and local_llm is not None:
+        async def _bg_summarize() -> None:
+            try:
+                from deskpet.memory.summarizer import (
+                    summarize_old_sessions, make_llm_call,
+                )
+                # 多等 8s 让其它启动任务先就位（embedder warmup、MCP 启动等）
+                await asyncio.sleep(8.0)
+                logger.info("summarizer_starting age_days=30 min_messages=20 max_per_run=10")
+                result = await summarize_old_sessions(
+                    db_path=_summarizer_state_db_path,
+                    llm_call=make_llm_call(local_llm),
+                )
+                logger.info(
+                    "summarizer_done scanned=%d summarized=%d archived=%d errors=%d",
+                    result.sessions_scanned,
+                    result.sessions_summarized,
+                    result.messages_archived,
+                    len(result.errors),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "summarizer_bg_failed: %s",
+                    exc,
+                )
+        asyncio.create_task(_bg_summarize())
+
     logger.info("startup complete")
     yield
     # P4-S15: stop in reverse-dependency order — MCP servers first (so they
@@ -1075,6 +1110,101 @@ async def control_channel(ws: WebSocket):
 
             if msg_type == "ping":
                 await ws.send_json({"type": "pong"})
+
+            elif msg_type == "memory_summarize_now":
+                # P4-S20-D: 手动触发 — 用户可在 SettingsPanel / MemoryPanel
+                # 点 "立即总结老对话" 按钮。参数支持 age_days / min_messages
+                # / max_per_run override。
+                payload = raw.get("payload", {}) or {}
+                if (
+                    _summarizer_state_db_path is None
+                    or local_llm is None
+                ):
+                    await ws.send_json({
+                        "type": "memory_summarize_response",
+                        "payload": {
+                            "ok": False,
+                            "error": "summarizer not initialized (state_db or local_llm missing)",
+                        },
+                    })
+                    continue
+                try:
+                    from deskpet.memory.summarizer import (
+                        summarize_old_sessions, make_llm_call,
+                    )
+                    _result = await summarize_old_sessions(
+                        db_path=_summarizer_state_db_path,
+                        llm_call=make_llm_call(local_llm),
+                        age_days=float(payload.get("age_days", 30)),
+                        min_messages=int(payload.get("min_messages", 20)),
+                        max_per_run=int(payload.get("max_per_run", 10)),
+                    )
+                    await ws.send_json({
+                        "type": "memory_summarize_response",
+                        "payload": {
+                            "ok": True,
+                            "sessions_scanned": _result.sessions_scanned,
+                            "sessions_summarized": _result.sessions_summarized,
+                            "messages_archived": _result.messages_archived,
+                            "summary_ids": _result.summaries_created,
+                            "errors": _result.errors,
+                        },
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("memory_summarize_failed: %s", exc)
+                    await ws.send_json({
+                        "type": "memory_summarize_response",
+                        "payload": {"ok": False, "error": str(exc)},
+                    })
+
+            elif msg_type == "memory_archive_list":
+                # P4-S20-D: 列出 archive 内容供用户查看 / 决定是否恢复或彻底删
+                # 参数：limit (default 100), session_id (optional filter)
+                payload = raw.get("payload", {}) or {}
+                if _summarizer_state_db_path is None:
+                    await ws.send_json({
+                        "type": "memory_archive_list_response",
+                        "payload": {"ok": False, "error": "state_db not initialized"},
+                    })
+                    continue
+                _limit = int(payload.get("limit", 100))
+                _filter_sid = payload.get("session_id")
+                try:
+                    import aiosqlite
+                    rows = []
+                    async with aiosqlite.connect(_summarizer_state_db_path) as _db:
+                        if _filter_sid:
+                            cur = await _db.execute(
+                                "SELECT id, session_id, role, content, created_at, "
+                                "archived_at, archived_into_id "
+                                "FROM messages_archive WHERE session_id = ? "
+                                "ORDER BY archived_at DESC, created_at DESC LIMIT ?",
+                                (_filter_sid, _limit),
+                            )
+                        else:
+                            cur = await _db.execute(
+                                "SELECT id, session_id, role, content, created_at, "
+                                "archived_at, archived_into_id "
+                                "FROM messages_archive "
+                                "ORDER BY archived_at DESC, created_at DESC LIMIT ?",
+                                (_limit,),
+                            )
+                        async for r in cur:
+                            rows.append({
+                                "id": r[0], "session_id": r[1], "role": r[2],
+                                "content": r[3], "created_at": r[4],
+                                "archived_at": r[5], "archived_into_id": r[6],
+                            })
+                        await cur.close()
+                    await ws.send_json({
+                        "type": "memory_archive_list_response",
+                        "payload": {"ok": True, "rows": rows, "count": len(rows)},
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    await ws.send_json({
+                        "type": "memory_archive_list_response",
+                        "payload": {"ok": False, "error": str(exc)},
+                    })
 
             elif msg_type == "permission_response":
                 # P4-S20: drain a pending PermissionGate request.

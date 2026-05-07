@@ -151,4 +151,7 @@ async def test_update_cloud_config_with_strategy():
         )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["strategy"] == "local_first"
+    # P4-S20-LLM-Unified: strategy field accepted but ignored under unified
+    # single-endpoint schema (no local/cloud routing decision). Response
+    # echoes the HybridRouter's residual strategy, not the requested one.
+    assert "strategy" in data
