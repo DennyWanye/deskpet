@@ -6,7 +6,23 @@ import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 
 import main as main_module
-from main import app, SHARED_SECRET
+from main import app, SHARED_SECRET, LLM_RUNTIME_PATH
+
+
+# Autouse: snapshot llm_runtime.json before each test, restore after.
+# Without this, /config/cloud writes pollute %APPDATA%/deskpet/llm_runtime.json
+# and the next backend boot uses the test's bogus base_url/model. Bit me
+# during P4-S20-D E2E (api.example.com/gpt-4 leaked to runtime).
+@pytest.fixture(autouse=True)
+def _snapshot_runtime_config():
+    saved = LLM_RUNTIME_PATH.read_text(encoding="utf-8") if LLM_RUNTIME_PATH.exists() else None
+    try:
+        yield
+    finally:
+        if saved is not None:
+            LLM_RUNTIME_PATH.write_text(saved, encoding="utf-8")
+        elif LLM_RUNTIME_PATH.exists():
+            LLM_RUNTIME_PATH.unlink()
 
 
 @pytest.mark.asyncio

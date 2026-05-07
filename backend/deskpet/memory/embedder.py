@@ -521,24 +521,39 @@ class Embedder:
         try:
             self._proc.stdin.write(line)  # type: ignore[union-attr]
             await self._proc.stdin.drain()  # type: ignore[union-attr]
-            response_line = await asyncio.wait_for(
-                self._proc.stdout.readline(),  # type: ignore[union-attr]
-                timeout=60.0,
-            )
+
+            # P4-S20-D: 读到匹配 id 之前，丢弃任何 stale response。
+            # 上一次调用如果 timeout 或被 cancel 了，stdout 里可能积着
+            # 它没读完的回包。原本一行 readline 就抛 RuntimeError，导致
+            # 整批 enqueue 被 skip — 用户根本不知道是历史污染。新协议:
+            # 最多丢 5 条 stale，超过认定为 worker 死了。
+            envelope = None
+            for _drain_attempt in range(6):
+                response_line = await asyncio.wait_for(
+                    self._proc.stdout.readline(),  # type: ignore[union-attr]
+                    timeout=60.0,
+                )
+                if not response_line:
+                    raise RuntimeError(
+                        "embedder subprocess returned empty response "
+                        "(check parent stderr for worker output)"
+                    )
+                cand = json.loads(response_line.decode("utf-8").strip())
+                if cand.get("id") == req_id:
+                    envelope = cand
+                    break
+                # 不匹配 — 这是上次调用残留的 response。丢弃，继续读。
+                log.info(
+                    "embedder: discarding stale response id=%s (waiting for %d)",
+                    cand.get("id"), req_id,
+                )
+            if envelope is None:
+                raise RuntimeError(
+                    f"embedder RPC id mismatch persisted after 5 drains "
+                    f"(expected id={req_id}); worker likely dead"
+                )
         except (asyncio.TimeoutError, BrokenPipeError, ConnectionResetError) as exc:
             raise RuntimeError(f"embedder subprocess RPC failed: {exc}") from exc
-
-        if not response_line:
-            raise RuntimeError(
-                "embedder subprocess returned empty response "
-                "(check parent stderr for worker output)"
-            )
-
-        envelope = json.loads(response_line.decode("utf-8").strip())
-        if envelope.get("id") != req_id:
-            raise RuntimeError(
-                f"embedder RPC id mismatch: sent={req_id} got={envelope.get('id')}"
-            )
         if not envelope.get("ok"):
             raise RuntimeError(
                 f"embedder encode failed: {envelope.get('error_type')}: "

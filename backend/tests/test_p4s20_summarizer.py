@@ -265,6 +265,31 @@ async def test_max_per_run_caps_processing(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_summary_enqueued_to_vector_worker(fresh_db):
+    """Pass-through: summary 必须被 enqueue 到 vector_worker，否则召回缺失。"""
+    db_path, sdb = fresh_db
+    await _seed_session(sdb, "s1", n_messages=25, age_days=60)
+
+    enqueued: list[tuple[int, str]] = []
+
+    class _StubVecWorker:
+        async def enqueue(self, message_id: int, text: str) -> None:
+            enqueued.append((message_id, text))
+
+    result = await summarize_old_sessions(
+        db_path=db_path,
+        llm_call=_stub_llm(reply="测试摘要"),
+        age_days=30, min_messages=20,
+        vector_worker=_StubVecWorker(),
+    )
+    assert result.sessions_summarized == 1
+    assert len(enqueued) == 1
+    summary_id_enqueued, text_enqueued = enqueued[0]
+    assert summary_id_enqueued == result.summaries_created[0]
+    assert "测试摘要" in text_enqueued
+
+
+@pytest.mark.asyncio
 async def test_long_conversation_truncated(fresh_db):
     """超长 conversation 应该截头尾，不会让 LLM 调用挂掉。"""
     db_path, sdb = fresh_db

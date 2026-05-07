@@ -97,11 +97,17 @@ async def summarize_old_sessions(
     max_per_run: int = DEFAULT_MAX_PER_RUN,
     max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
     now: float | None = None,
+    vector_worker: Any = None,
 ) -> SummaryResult:
     """主入口。返回 SummaryResult 报告本次成果。
 
     Parameters
     ----------
+    vector_worker:
+        Optional VectorWorker instance. When provided, each newly
+        created summary message is enqueued for embedding so it
+        participates in vector recall (otherwise summaries are in
+        ``messages`` but not in ``messages_vec`` — recall miss).
     db_path:
         state.db 绝对路径。
     llm_call:
@@ -156,6 +162,21 @@ async def summarize_old_sessions(
                     "summarizer: session=%s -> summary id=%d, archived %d msgs",
                     session_id, summary_id, n_archived,
                 )
+                # Vectorize the new summary so it participates in recall.
+                # Without this, summaries are invisible to BGE-M3 retrieval —
+                # users would lose long-term memory after archive.
+                if vector_worker is not None:
+                    try:
+                        # We need the summary's content to enqueue. Cheapest
+                        # path: re-read it (we just inserted it).
+                        summary_text = await _read_summary_content(db_path, summary_id)
+                        if summary_text:
+                            await vector_worker.enqueue(summary_id, summary_text)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "summarizer: vec enqueue failed for summary %d: %s",
+                            summary_id, exc,
+                        )
         except Exception as exc:  # noqa: BLE001 — single-session failure not fatal
             log.warning(
                 "summarizer: session=%s failed: %s",
@@ -169,6 +190,17 @@ async def summarize_old_sessions(
 # ---------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------
+
+
+async def _read_summary_content(db_path: Path, summary_id: int) -> str | None:
+    """Read back a summary message's content (for vector enqueue)."""
+    async with aiosqlite.connect(db_path) as db:
+        cur = await db.execute(
+            "SELECT content FROM messages WHERE id = ?", (summary_id,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+    return row[0] if row else None
 
 
 async def _find_candidate_sessions(

@@ -700,6 +700,7 @@ async def lifespan(app: FastAPI):
                 result = await summarize_old_sessions(
                     db_path=_summarizer_state_db_path,
                     llm_call=make_llm_call(local_llm),
+                    vector_worker=service_context.get("vector_worker"),
                 )
                 logger.info(
                     "summarizer_done scanned=%d summarized=%d archived=%d errors=%d",
@@ -1138,6 +1139,7 @@ async def control_channel(ws: WebSocket):
                         age_days=float(payload.get("age_days", 30)),
                         min_messages=int(payload.get("min_messages", 20)),
                         max_per_run=int(payload.get("max_per_run", 10)),
+                        vector_worker=service_context.get("vector_worker"),
                     )
                     await ws.send_json({
                         "type": "memory_summarize_response",
