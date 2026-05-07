@@ -156,7 +156,38 @@ e2e_chat session 36 条 ping 消息 → summary:
 没有讨论任何实质性的信息、偏好或决策。"
 ```
 
-详细测试覆盖见 `backend/tests/test_p4s20_summarizer.py`（9 个单测，覆盖候选筛选、事务、失败兜底、超长输入截断等）。
+详细测试覆盖见 `backend/tests/test_p4s20_summarizer.py`（10 个单测，覆盖候选筛选、事务、失败兜底、超长输入截断、vec enqueue 等）。
+
+### 严格 E2E 测试（5 个维度，真 backend + 真 Ollama）
+
+`backend/scripts/e2e_summarizer_full.py` — 不依赖单测桩，纯生产 backend + 真实 Ollama LLM。任何后续改动只要 5/5 PASS 就基本放心。
+
+```bash
+# 要求：backend 跑在 8100，Ollama 跑在 11434
+cd backend && python -m scripts.e2e_summarizer_full
+```
+
+5 个测试维度：
+
+| 测试 | 验证什么 | 通过标准 |
+|------|---------|----------|
+| **L3** 真实有意义内容 | 30 条偏好对话 → LLM 摘要 → 保留 ≥2 个关键事实 | summary 含 Rust/咖啡/猫/京都等 |
+| **L3.3** vec 入库 | summary 入 messages_vec 才能召回 | 3 秒 flush 后 vec 命中 |
+| **L5a** max_per_run 上限 | 3 个候选 + cap=2 → 只处理 2 | scanned=2 |
+| **L5b** 幂等 | 已总结 session 再跑不会重复处理 | before/after 状态一致 |
+| **L5c** 异常路径 | 切到坏 endpoint → errors[] + 原文完整 | 25 原文不变 |
+| **L5d** archive_list IPC | 列出归档行 + schema 字段齐全 | count=30, 6 个键全有 |
+
+**最近一次实测**：5/5 PASS。Ollama gemma4:e4b 给 30 条偏好对话生成的总结：
+> "用户偏好信息包括：最喜欢的编程语言是内存安全的 Rust；每天早上饮用冰美式咖啡，不加糖；养了一只名叫小橘的 3 岁橘猫；下个月计划去日本京都游览寺庙；喜欢阅读刘慈欣等作家的科幻小说。"
+
+### 严格测试发现并修复的 3 个 bug
+
+设计阶段的单测全 PASS，但 E2E 暴露了真链路问题。透明记录：
+
+1. **summary 没入向量库** — summarize 后只 INSERT 进 `messages` 主表，**漏了 enqueue 给 vector_worker** → BGE-M3 召回时找不到 summary → 长期记忆链路其实是断的。修：`summarize_old_sessions(vector_worker=...)` 参数 + main.py 在两处调用都传 vector_worker。
+2. **embedder RPC stale response** — `_encode_subprocess` 上次调用 timeout 后 stdout 里残留旧响应，下次调用读到旧 id 抛错，整 batch 被 skip。修：drain stale 最多 5 次直到拿到匹配 id。
+3. **测试污染 `llm_runtime.json`** — `/config/cloud` 端点的旧测试把 `api.example.com` 永久写到运行时配置文件，下次启动 backend 加载就坏。修：autouse fixture 给该测试文件，每个测试前 snapshot、测试后还原。
 
 ### Schema
 
