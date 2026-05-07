@@ -74,3 +74,14 @@ backend/deskpet/memory/embedding_cache/
 # P4-S7: ContextAssembler trace dumps written by decisions debug mode.
 # Local-only, generated on demand via the Context Trace UI — not source.
 debug/assembler_trace_*.json
+
+# P4-S20: pytest tmp roots (Windows). Should never be in git.
+backend/.tmp-pytest-root/
+backend/.pytest-basetemp/
+backend/temp/
+
+# P4-S20: screenshot evidence files generated locally by computer-use.
+docs/EVIDENCE/screenshot_*.png
+
+# Runtime LLM config — user-specific, may contain api_key.
+*/llm_runtime.json
