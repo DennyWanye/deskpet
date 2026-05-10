@@ -34,7 +34,6 @@ def _err(error: str, hint: str, **extra: Any) -> str:
 
 def write_file(args: dict[str, Any], task_id: str = "") -> str:
     path = args.get("path", "")
-    content = args.get("content", "")
     overwrite = bool(args.get("overwrite", False))
 
     if not isinstance(path, str) or not path:
@@ -43,6 +42,16 @@ def write_file(args: dict[str, Any], task_id: str = "") -> str:
             "write_file 的 path 字段必填，且必须是非空字符串。"
             "例如 {\"path\": \"./hello.txt\", \"content\": \"hi\"}。",
         )
+    # P5-S2 Phase 0 fix: require content key explicitly. Defaulting to
+    # "" silently writes empty files which is rarely intended; force
+    # the LLM to be explicit.
+    if "content" not in args:
+        return _err(
+            "content required",
+            "write_file 的 content 字段必填。如要写空文件请显式传 content=\"\"。"
+            "例如 {\"path\": \"./hello.txt\", \"content\": \"hi\"}。",
+        )
+    content = args.get("content", "")
     if not isinstance(content, str):
         return _err(
             "content must be string",

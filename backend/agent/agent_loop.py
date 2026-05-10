@@ -39,6 +39,25 @@ from llm.types import ChatResponse, ToolCall
 logger = logging.getLogger("deskpet.agent.loop")
 
 
+# ───────────────────── P5-S2 Phase 3 constants ─────────────────────
+
+
+# Repeat-detection threshold: if the LLM emits the SAME (tool_name,
+# args_hash) signature ``>= _REPEAT_THRESHOLD`` times in a row, the
+# loop short-circuits the dispatch and injects a system message asking
+# the LLM to look at the prior tool_result hint or change tactics.
+# Keep at 3 to match the OpenSpec proposal default.
+_REPEAT_THRESHOLD = 3
+
+# Module-level template so tests can pin it. Filled with ``.format(
+# name=..., count=...)`` at injection time.
+_REPEAT_NUDGE_MSG = (
+    "你刚连续 {count} 次用同一个工具 {name} 调用同样的参数，"
+    "结果不会变。看一下 tool_result 的 hint 字段，"
+    "或者换个思路 / 换个工具。"
+)
+
+
 # ───────────────────── P5-S2 Phase 2 helpers ─────────────────────
 
 
@@ -262,6 +281,7 @@ class AgentLoop:
             Callable[[str], Awaitable[list[dict[str, Any]]]]
         ] = None,
         max_completion_nudges: int = 2,
+        activity_store: Optional[Any] = None,
     ) -> None:
         self.llm = llm_registry
         self.tools = tool_registry
@@ -285,6 +305,15 @@ class AgentLoop:
         # genuinely refuses to continue. Set to 0 to disable the hook.
         self.completion_probe = completion_probe
         self.max_completion_nudges = max_completion_nudges
+        # P5-S2 Phase 3.3: same-(name, args) repeat detection. When set,
+        # the loop checks the activity store's per-session
+        # ``tool_signature_window`` BEFORE dispatching each tool_call —
+        # if the same signature already shows ``>= _REPEAT_THRESHOLD - 1``
+        # consecutive prior calls, we suppress the dispatch and inject a
+        # system nudge so the LLM gets a chance to change tactics.
+        # Pre-Phase-3 callers leave this as None and the branch is a
+        # no-op (verified by ``test_no_activity_store_means_no_repeat_detection``).
+        self.activity_store = activity_store
 
     async def run(
         self,
@@ -534,6 +563,58 @@ class AgentLoop:
                     total_cache_write_tokens=totals["cache_write"],
                 )
                 return
+
+            # P5-S2 Phase 3.3: same-(name, args) repeat detection. If
+            # the activity store reports the same signature already ran
+            # ``_REPEAT_THRESHOLD - 1`` times in a row, dispatching the
+            # same call a Nth time can't change the result. Inject a
+            # system nudge and skip dispatch for THIS turn — the LLM
+            # gets the nudge on the next iteration and can change tactics.
+            #
+            # Check happens BEFORE we append the assistant turn so the
+            # rejected tool_call doesn't pollute the conversation either.
+            if self.activity_store is not None:
+                from agent.session_activity import args_hash as _args_hash  # noqa: PLC0415
+
+                repeat_hit: tuple[str, int] | None = None  # (tool_name, count)
+                sa = await self.activity_store.get(session_id)
+                if sa is not None:
+                    sig_window = dict(sa.tool_signature_window)
+                    for tc in response.tool_calls:
+                        sig = f"{tc.name}:{_args_hash(tc.arguments)}"
+                        prior = int(sig_window.get(sig, 0))
+                        if prior >= (_REPEAT_THRESHOLD - 1):
+                            repeat_hit = (tc.name, prior + 1)
+                            break
+
+                if repeat_hit is not None:
+                    name, count = repeat_hit
+                    nudge = _REPEAT_NUDGE_MSG.format(name=name, count=count)
+                    # Append the assistant content (so the LLM can see
+                    # what it just said) plus the system nudge. Do NOT
+                    # append the broken tool_calls — we're suppressing
+                    # the dispatch entirely.
+                    if response.content:
+                        working_messages.append({
+                            "role": "assistant",
+                            "content": response.content,
+                        })
+                    working_messages.append({
+                        "role": "system",
+                        "content": nudge,
+                    })
+                    logger.info(
+                        "p5s2_signature_repeat_nudge sid=%s tid=%s iter=%d "
+                        "name=%s count=%d",
+                        session_id, tid, iteration, name, count,
+                    )
+                    # Skip dispatch and re-iterate — next LLM call sees
+                    # the nudge and can change tactics. NOTE: we don't
+                    # bump completion_nudges_used (this is a different
+                    # nudge mechanism) and we don't yield a ToolCallEvent
+                    # for the suppressed call (it never happened from
+                    # the dispatch layer's perspective).
+                    continue
 
             # Append assistant turn with tool_calls so next LLM turn sees it.
             # OpenAI requires arguments to be a JSON STRING, not a dict.

@@ -57,6 +57,35 @@ ToolHandler = Callable[[dict[str, Any], str], str]
 CheckFn = Callable[[], bool]
 
 
+def _envelope_indicates_success(handler_result: str) -> bool:
+    """P5-S2 Phase 3: was the handler call a "real" success for breaker
+    accounting?
+
+    Handlers return JSON strings. By Phase 0 convention, the structured
+    payload uses ``{"ok": false, "error": "..."}`` for known failure
+    modes (missing param / would_overwrite / not_found / etc) even when
+    no Python exception was raised. We treat those as breaker failures
+    — otherwise an LLM that keeps invoking ``write_file`` with no
+    ``path`` parameter would never trip the breaker.
+
+    Anything that doesn't parse as JSON / isn't a dict / has no ``ok``
+    field defaults to True (success) — handlers that pre-date Phase 0
+    just return raw strings and we don't want to false-trip on them.
+    """
+    if not isinstance(handler_result, str):
+        return True
+    try:
+        payload = json.loads(handler_result)
+    except (ValueError, TypeError):
+        return True
+    if not isinstance(payload, dict):
+        return True
+    ok = payload.get("ok")
+    if ok is False:
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """Immutable bundle of everything needed to expose + run a tool.
@@ -128,10 +157,25 @@ class ToolRegistry:
         # call. Keys conventionally start with underscore so they don't
         # collide with LLM-supplied ones.
         self._session_context: dict[str, dict[str, Any]] = {}
+        # P5-S2 Phase 3: optional circuit breaker. When set, every
+        # ``execute_tool`` call first asks the breaker whether the tool
+        # is currently allowed for this session, and records the outcome
+        # afterwards. Defaults to None for backward compat with tests
+        # and legacy callers that don't want breaker semantics.
+        self._breaker = None  # type: Optional[Any]  # ToolCircuitBreaker
 
     def set_permission_gate(self, gate) -> None:  # type: ignore[no-untyped-def]
         """Wire a PermissionGate. Called once at backend startup."""
         self._gate = gate
+
+    def set_circuit_breaker(self, breaker) -> None:  # type: ignore[no-untyped-def]
+        """P5-S2 Phase 3: wire a :class:`agent.circuit_breaker.ToolCircuitBreaker`.
+
+        After this is set, ``execute_tool`` consults it before invoking
+        each handler and records every outcome. Pass ``None`` to detach
+        (mostly useful in tests).
+        """
+        self._breaker = breaker
 
     def set_session_context(
         self,
@@ -407,6 +451,16 @@ class ToolRegistry:
         if spec is None:
             return {"ok": False, "result": None, "error": f"unknown tool: {name}"}
 
+        # P5-S2 Phase 3: per-(session, tool) circuit breaker. If the
+        # breaker is OPEN we synthesize a structured ``circuit_open``
+        # envelope so the LLM sees a real tool_result with a hint and
+        # alternatives — much better than silently retrying the broken
+        # tool until max_iterations.
+        if self._breaker is not None:
+            allowed = await self._breaker.can_call(session_id, name)
+            if not allowed:
+                return await self._build_circuit_open_envelope(name, session_id, spec)
+
         if self._gate is not None:
             decision = await self._gate.check(
                 category=spec.permission_category,
@@ -460,6 +514,8 @@ class ToolRegistry:
                 logger.warning(
                     "execute_tool %r timed out after %.1fs", name, timeout_s
                 )
+                if self._breaker is not None:
+                    await self._breaker.record_call(session_id, name, ok=False)
                 return {
                     "ok": False,
                     "result": None,
@@ -468,18 +524,82 @@ class ToolRegistry:
         except Exception as exc:  # noqa: BLE001 — uniform error envelope
             err = f"{type(exc).__name__}: {exc}"
             logger.info("execute_tool %r raised: %s", name, err)
+            if self._breaker is not None:
+                await self._breaker.record_call(session_id, name, ok=False)
             return {"ok": False, "result": None, "error": err}
 
         if not isinstance(result, str):
             try:
                 result = json.dumps(result, ensure_ascii=False)
             except (TypeError, ValueError) as exc:
-                return {
+                envelope_bad = {
                     "ok": False,
                     "result": None,
                     "error": f"handler returned non-JSON value: {exc}",
                 }
-        return {"ok": True, "result": result, "error": None}
+                if self._breaker is not None:
+                    await self._breaker.record_call(session_id, name, ok=False)
+                return envelope_bad
+        envelope = {"ok": True, "result": result, "error": None}
+
+        # P5-S2 Phase 3: record success/failure to the breaker. The
+        # handler returned a JSON string (typically an envelope itself)
+        # — if THAT envelope says ``ok=false`` we count it as a failure
+        # even though the Python call didn't raise.
+        if self._breaker is not None:
+            outcome_ok = _envelope_indicates_success(result)
+            await self._breaker.record_call(session_id, name, ok=outcome_ok)
+        return envelope
+
+    async def _build_circuit_open_envelope(
+        self, name: str, session_id: str, spec: ToolSpec
+    ) -> dict[str, Any]:
+        """Synthesize the dispatch envelope returned when the breaker
+        is OPEN. Includes a Chinese hint + the list of sibling tools in
+        the same toolset so the LLM has something concrete to fall back
+        to.
+        """
+        # Cooldown remaining (best-effort; breaker may not expose it).
+        cooldown_left: Optional[float] = None
+        if hasattr(self._breaker, "cooldown_remaining"):
+            try:
+                cooldown_left = await self._breaker.cooldown_remaining(  # type: ignore[union-attr]
+                    session_id, name
+                )
+            except Exception:  # noqa: BLE001 — never break dispatch over this
+                cooldown_left = None
+
+        # Find sibling tools (same toolset, different name). Skip env-
+        # gated tools — they wouldn't survive ``schemas()`` either.
+        with self._lock:
+            siblings = [
+                s.name
+                for s in self._tools.values()
+                if s.toolset == spec.toolset
+                and s.name != name
+                and s.env_satisfied()
+            ]
+        siblings.sort()
+
+        if cooldown_left is not None and cooldown_left > 0:
+            cooldown_str = f"剩余 {cooldown_left:.0f} 秒"
+        else:
+            cooldown_str = "请稍后重试"
+        hint = (
+            f"{name} 连续失败 3 次已熔断 ({cooldown_str})。"
+            "检查参数或换个工具。"
+        )
+        result_payload = {
+            "ok": False,
+            "error": "circuit_open",
+            "hint": hint,
+            "available_alternatives": siblings,
+        }
+        return {
+            "ok": False,
+            "result": json.dumps(result_payload, ensure_ascii=False),
+            "error": "circuit_open",
+        }
 
     # ------------------------------------------------------------------
     # Introspection helpers (tests + tool_search)
