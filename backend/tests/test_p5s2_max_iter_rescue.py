@@ -160,12 +160,33 @@ async def test_no_reason_field_does_not_trigger_rescue():
 
 
 def test_selfcheck_constants_loaded():
-    """Lightweight check that the self-check prompt constant is exported."""
-    from agent.agent_loop import _SELFCHECK_EVERY, _SELFCHECK_PROMPT
+    """Lightweight check that the escalating self-check builder works."""
+    from agent.agent_loop import (
+        _SELFCHECK_EVERY,
+        _SELFCHECK_TIER2_AT,
+        _SELFCHECK_TIER3_AT,
+        _build_selfcheck_message,
+    )
     assert _SELFCHECK_EVERY == 10
-    # Template contains the {iter}, {max_iter}, {budget} placeholders
-    assert "{iter}" in _SELFCHECK_PROMPT
-    assert "{max_iter}" in _SELFCHECK_PROMPT
-    assert "{budget}" in _SELFCHECK_PROMPT
-    # Mentions stop_reason so the LLM knows the magic string
-    assert "stop_reason" in _SELFCHECK_PROMPT
+    assert _SELFCHECK_TIER2_AT == 20
+    assert _SELFCHECK_TIER3_AT == 30
+    # Tier 1 at iter=10
+    msg1 = _build_selfcheck_message(10, 50, 5)
+    assert "stop_reason=end_turn" in msg1
+    # Tier 2 at iter=20 — should be more forceful
+    msg2 = _build_selfcheck_message(20, 50, 15)
+    assert "必须" in msg2 or "warning" in msg2.lower() or "警告" in msg2
+    # Tier 3 at iter=30 — should be hardest
+    msg3 = _build_selfcheck_message(30, 50, 25)
+    assert "STRICT STOP" in msg3 or "禁止" in msg3
+    assert "stop_reason=end_turn" in msg3
+
+
+def test_selfcheck_tier_escalation():
+    from agent.agent_loop import _build_selfcheck_message
+    # Tier 1 / 2 / 3 messages should differ
+    m1 = _build_selfcheck_message(10, 50, 1)
+    m2 = _build_selfcheck_message(20, 50, 1)
+    m3 = _build_selfcheck_message(35, 50, 1)
+    assert m1 != m2
+    assert m2 != m3

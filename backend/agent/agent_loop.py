@@ -60,29 +60,84 @@ _REPEAT_NUDGE_MSG = (
 # ───────────────────── P5-S2 Phase 7: in-loop self-check ─────────────
 #
 # Every ``_SELFCHECK_EVERY`` iterations, BEFORE the LLM call, we inject
-# a system message asking the LLM to review progress and decide whether
-# to commit-to-finish or keep going. This catches the "productive
-# looking but circular" failure mode that the same-signature repeat
-# detector misses (because each tool call has different args).
+# a system message. The message ESCALATES based on iteration count:
 #
-# The check is intentionally conservative — it doesn't force an end_turn,
-# it just makes the LLM pause and rationalise. Empirical observation:
-# this alone cuts max_iterations failures by ~70% on deepseek-v4-pro
-# style models, because the model has to write down its plan and often
-# realises "yeah, that's enough".
+#   tier 1 (iter=10): gentle reflection — "consider committing to a finish"
+#   tier 2 (iter=20): firm — "you MUST justify each remaining tool call"
+#   tier 3 (iter=30+): forced — "your NEXT response MUST be stop_reason=end_turn"
+#
+# Empirical: tier 1 alone wasn't enough — the LLM sees "considered" and
+# keeps going. Forced tier at 30 reliably breaks "infinite content
+# generation" patterns where each iteration writes another section,
+# fix, refactor, etc.
+#
+# Plus: a separate hard cap on TOOL CALLS per session (counted across
+# iterations, regardless of iteration index). When >= _TOOL_BUDGET,
+# next iteration injects a "you've used your tool budget" forced stop.
 
-_SELFCHECK_EVERY = 10  # iterations
-_SELFCHECK_PROMPT = (
-    "[in-loop self-check / 自检 — 第 {iter}/{max_iter} 轮]\n"
-    "你已经跑了 {iter} 轮 ReAct 循环。在下一轮回复中，请先写一段简短反思：\n"
-    "1. 用户原问题的核心需求是什么？(1 句话)\n"
-    "2. 你目前已经完成了哪些核心成果？(2-3 行)\n"
-    "3. 剩余工作是否真的必须，才能交付原问题的答案？\n"
-    "   - 若不必须 → **立即 stop_reason=end_turn**，把当前结果交付给用户，"
-    "把可改进点写进 todo_write 留给下一次。\n"
-    "   - 若必须 → 继续，但每次 tool_call 必须直接服务于剩余目标。\n"
-    "记住：用户期望的是答完原问题，不是追求完美。剩 {budget} 轮预算。"
+_SELFCHECK_EVERY = 10  # base interval — tier 1 fires here
+_SELFCHECK_TIER2_AT = 20  # iter >= this → escalate
+_SELFCHECK_TIER3_AT = 30  # iter >= this → forced stop
+_TOOL_BUDGET_SOFT = 25  # gentle warning when used
+_TOOL_BUDGET_HARD = 40  # forced stop when used
+
+_SELFCHECK_TIER1 = (
+    "[self-check 第 1 级 / 第 {iter}/{max_iter} 轮 — 已用 {tools_used} 次工具调用]\n"
+    "你已经跑了 {iter} 轮 ReAct 循环。在下一轮回复中先反思 3 行：\n"
+    "1. 用户原问题的核心需求是什么？\n"
+    "2. 你已经完成了哪些核心成果（具体改了什么文件、跑了什么命令、产出了什么结果）？\n"
+    "3. 剩余工作是否真的必须？若不必须立即 stop_reason=end_turn 把可改进点写进 todo_write。\n"
+    "记住：用户期望答完原问题，不是追求完美。剩 {budget} 轮预算。"
 )
+
+_SELFCHECK_TIER2 = (
+    "[self-check 第 2 级 — 你已经跑了 {iter} 轮，使用了 {tools_used} 次工具调用]\n"
+    "**警告**：你已经超过了正常任务的迭代量。不再允许『探索式』的工具调用。\n"
+    "下一轮你**必须**做以下其中之一：\n"
+    "  (A) 立即 stop_reason=end_turn，给用户一段总结：你做完了什么、剩余什么留给下次。\n"
+    "  (B) 如果**真的**必须继续，先用一句话写清楚『为什么再来一轮就能收尾』，"
+    "然后这一轮必须是**最后一轮**——只调一个工具，下下轮一定 end_turn。\n"
+    "如果你又想『再写一节/再修一处/再扫一遍』——选 (A)，把它写进 todo 留给下次。"
+)
+
+_SELFCHECK_TIER3 = (
+    "[STRICT STOP — 第 {iter}/{max_iter} 轮，已用 {tools_used} 次工具调用]\n"
+    "你已经达到迭代预算的临界点。**禁止任何新的 tool_call**。\n"
+    "你的下一轮回复**必须**：\n"
+    "  1. 不包含任何 tool_calls 字段（即 stop_reason=end_turn）\n"
+    "  2. 用 markdown 段落直接给用户写：\n"
+    "     - 已完成的工作清单（带文件路径、改动概要）\n"
+    "     - 已知未完成 / 待改进事项（用户可以下次让我做）\n"
+    "  3. 用 todo_write 之前已经做过的，不要重复写\n"
+    "如果你违反这条规则继续 tool_call，下一轮 supervisor 会强制中断你。"
+)
+
+_TOOL_BUDGET_HARD_MSG = (
+    "[TOOL BUDGET EXHAUSTED — 已用 {tools_used} 次工具调用]\n"
+    "你已经超过工具调用硬上限 ({hard_cap} 次)。立即停止任何新的 tool_call。\n"
+    "下一轮回复必须是 stop_reason=end_turn，用文字总结当前所有成果给用户。"
+)
+
+
+def _build_selfcheck_message(iteration: int, max_iter: int, tools_used: int) -> str:
+    """Choose the right self-check tier based on iteration count.
+
+    Tier escalation handles the "LLM ignores gentle reminder" problem:
+    we get progressively harsher until the LLM has no choice but to
+    stop_reason=end_turn.
+    """
+    budget = max(0, max_iter - iteration)
+    fmt = {
+        "iter": iteration,
+        "max_iter": max_iter,
+        "budget": budget,
+        "tools_used": tools_used,
+    }
+    if iteration >= _SELFCHECK_TIER3_AT:
+        return _SELFCHECK_TIER3.format(**fmt)
+    if iteration >= _SELFCHECK_TIER2_AT:
+        return _SELFCHECK_TIER2.format(**fmt)
+    return _SELFCHECK_TIER1.format(**fmt)
 
 
 # ───────────────────── P5-S2 Phase 2 helpers ─────────────────────
@@ -390,6 +445,10 @@ class AgentLoop:
         # fresh nudge budget — we don't want stale "already nudged 2x"
         # state leaking between turns.
         completion_nudges_used = 0
+        # P5-S2 Phase 7: track total tool calls for hard-cap enforcement.
+        # Each ToolCallEvent yield bumps this. When >= _TOOL_BUDGET_HARD
+        # the loop injects a forced-stop system message.
+        tools_used_count = 0
 
         for iteration in range(1, self.max_iterations + 1):
             # Budget gate BEFORE the call — can't take back tokens after the fact.
@@ -403,25 +462,45 @@ class AgentLoop:
                 )
                 return
 
-            # P5-S2 Phase 7: in-loop self-check — every _SELFCHECK_EVERY
-            # iterations, inject a system message forcing the LLM to
-            # review progress + commit-or-continue. Catches the
-            # "productive-looking but circular" failure where each
-            # tool call differs in args (so signature repeat doesn't
-            # fire) but no real progress is being made.
-            if iteration > 0 and iteration % _SELFCHECK_EVERY == 0:
-                budget_left = self.max_iterations - iteration
+            # P5-S2 Phase 7: escalating in-loop self-check + tool budget.
+            # Two independent triggers, each can inject a system message:
+            #   (a) iteration-based self-check (every _SELFCHECK_EVERY rounds)
+            #       → tier escalates based on iteration count
+            #   (b) tool budget hard cap (when total tool calls used so far
+            #       crosses _TOOL_BUDGET_HARD)
+            # Both inject as system messages BEFORE the next LLM call.
+            # The HARD tool-budget message takes priority — it's the
+            # strongest stop signal.
+
+            # Count tools used so far in this loop run (tracked above per
+            # iteration). `tools_used` is bumped at each ToolCallEvent.
+            tools_used = locals().get("tools_used_count", 0)
+
+            if tools_used >= _TOOL_BUDGET_HARD:
                 working_messages.append({
                     "role": "system",
-                    "content": _SELFCHECK_PROMPT.format(
-                        iter=iteration,
-                        max_iter=self.max_iterations,
-                        budget=budget_left,
+                    "content": _TOOL_BUDGET_HARD_MSG.format(
+                        tools_used=tools_used,
+                        hard_cap=_TOOL_BUDGET_HARD,
                     ),
                 })
+                logger.warning(
+                    "p5s2_tool_budget_exhausted sid=%s tid=%s iter=%d tools_used=%d",
+                    session_id, tid, iteration, tools_used,
+                )
+            elif iteration > 0 and iteration % _SELFCHECK_EVERY == 0:
+                budget_left = self.max_iterations - iteration
+                msg = _build_selfcheck_message(iteration, self.max_iterations, tools_used)
+                working_messages.append({"role": "system", "content": msg})
+                tier = (
+                    3 if iteration >= _SELFCHECK_TIER3_AT
+                    else 2 if iteration >= _SELFCHECK_TIER2_AT
+                    else 1
+                )
                 logger.info(
-                    "p5s2_selfcheck_injected sid=%s tid=%s iter=%d budget=%d",
-                    session_id, tid, iteration, budget_left,
+                    "p5s2_selfcheck_injected sid=%s tid=%s iter=%d budget=%d "
+                    "tier=%d tools_used=%d",
+                    session_id, tid, iteration, budget_left, tier, tools_used,
                 )
 
             try:
@@ -713,6 +792,9 @@ class AgentLoop:
             tool_coros = []
             call_order: list[ToolCall] = []
             for tc in response.tool_calls:
+                # P5-S2 Phase 7: bump tool budget counter — checked at top
+                # of next iteration to enforce hard cap.
+                tools_used_count += 1
                 yield ToolCallEvent(
                     type="tool_call",
                     task_id=tid,
