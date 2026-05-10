@@ -205,3 +205,37 @@ def test_real_world_runtime_picks_a_shell() -> None:
         "powershell.exe",
         "cmd.exe",
     }
+
+
+def test_busybox_utf8_via_stdin_workaround(monkeypatch) -> None:
+    """Regression: busybox-w32 mangles non-ASCII in `-c "..."` args
+    on Chinese-locale Windows because main() decodes via the OEM
+    codepage instead of CommandLineToArgvW(). run_shell must feed
+    the command via STDIN when the picked shell is busybox so UTF-8
+    survives.
+
+    This test only runs when the bundled busybox.exe is actually
+    present (we ship it via scripts/download_busybox.ps1 — not
+    committed to the test environment by default). Skipped otherwise.
+    """
+    import importlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    rs = importlib.import_module("deskpet.tools.os_tools.run_shell")
+    bb = rs._bundled_busybox_path()
+    if bb is None:
+        pytest.skip("bundled busybox.exe not present (run scripts/download_busybox.ps1)")
+
+    # Force the picker to choose busybox even though Git Bash is on
+    # this machine — we want to exercise the busybox code path.
+    monkeypatch.setattr(rs, "_git_bash_path", lambda: None)
+
+    out = json.loads(rs.run_shell({"command": "echo 你好世界", "timeout": 5}))
+    assert out.get("exit_code") == 0, out
+    # � is the Unicode replacement char emitted on encoding loss;
+    # a working UTF-8 path will return the original Chinese text.
+    assert "�" not in (out.get("stdout") or ""), (
+        "busybox -c args got mangled — stdin workaround broken? "
+        f"stdout={out.get('stdout')!r}"
+    )
+    assert "你好世界" in (out.get("stdout") or ""), out

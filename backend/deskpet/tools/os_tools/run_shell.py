@@ -182,16 +182,32 @@ def run_shell(args: dict[str, Any], task_id: str = "") -> str:
         return json.dumps({"error": "command required"})
 
     shell, leading = _pick_shell()
-    argv = [shell, *leading, command]
 
     # Force UTF-8 so child processes that respect PYTHONIOENCODING /
     # LC_ALL emit unicode-clean output. Most LLM-emitted commands write
     # Chinese / emoji that GBK eats.
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "LC_ALL": "C.UTF-8"}
 
+    # busybox-w32 quirk (verified 2026-05-10): non-ASCII characters in
+    # `-c "..."` argv are mangled because busybox-w32's main() converts
+    # the Windows command line through the ANSI codepage (GBK on
+    # Chinese systems) instead of using GetCommandLineW(). Result:
+    # `echo 你好` prints as `��...`. Workaround: feed the
+    # command via STDIN, which busybox reads as raw UTF-8 bytes —
+    # bypasses the args-encoding path entirely. Git Bash, PowerShell,
+    # and cmd all handle -c correctly so they keep the simple path.
+    is_busybox = "busybox" in Path(shell).name.lower()
+    if is_busybox:
+        argv = [shell, "sh"]
+        stdin_payload: str | None = command
+    else:
+        argv = [shell, *leading, command]
+        stdin_payload = None
+
     try:
         proc = subprocess.run(  # noqa: S603 — shell selection happens above
             argv,
+            input=stdin_payload,
             cwd=cwd if isinstance(cwd, str) and cwd else None,
             capture_output=True,
             text=True,
