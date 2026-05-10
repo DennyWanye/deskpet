@@ -30,12 +30,97 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol, Union
 
+from agent import errors as agent_errors
 from agent.task_id import new_task_id
 from llm.budget import DailyBudget
 from llm.errors import LLMBudgetExceededError, LLMProviderError
 from llm.types import ChatResponse, ToolCall
 
 logger = logging.getLogger("deskpet.agent.loop")
+
+
+# ───────────────────── P5-S2 Phase 2 helpers ─────────────────────
+
+
+def _classify_tool_result(result_str: str) -> type[Exception]:
+    """Classify a tool result JSON string into an error class.
+
+    Handles two layouts emitted by the dispatch path:
+      1. v2 envelope: ``{"ok": false, "result": null, "error": "..."}``
+      2. legacy / hand-shaped: ``{"error": "...", "retriable": ...}``
+      3. nested — handler put a structured envelope into ``result`` as
+         a JSON string: ``{"ok": true, "result": "{\"ok\":false,\"error\":...}"}``
+
+    Always defaults to :class:`agent_errors.TransientToolError` on parse
+    failure / unknown shape (conservative — never break a turn over
+    something we can't read).
+    """
+    import json as _json
+
+    try:
+        payload = _json.loads(result_str) if isinstance(result_str, str) else result_str
+    except (ValueError, TypeError):
+        return agent_errors.TransientToolError
+
+    if not isinstance(payload, dict):
+        return agent_errors.TransientToolError
+
+    # v2 envelope success path: ok=True with nested result. Inspect the
+    # nested structure (handlers can return {"ok": false, ...} inside
+    # result even when execute_tool considered the call "successful"
+    # at the dispatch layer).
+    if payload.get("ok") is True and isinstance(payload.get("result"), str):
+        nested_str = payload["result"]
+        try:
+            nested = _json.loads(nested_str)
+        except (ValueError, TypeError):
+            nested = None
+        if isinstance(nested, dict) and nested.get("ok") is False:
+            return agent_errors.classify(nested)
+        # Successful, no nested error → no classification needed.
+        return agent_errors.TransientToolError
+
+    # Failure envelopes (top-level error string).
+    return agent_errors.classify(payload)
+
+
+def _extract_break_detail(result_str: str, tool_name: str) -> str:
+    """Pull a short human-readable detail string out of a tool result
+    JSON for the ``ErrorEvent.detail`` field. Prefers a ``hint``
+    (Phase 0 sensor feedback) over the raw ``error`` so the message we
+    surface is actionable.
+    """
+    import json as _json
+
+    try:
+        payload = _json.loads(result_str) if isinstance(result_str, str) else result_str
+    except (ValueError, TypeError):
+        return f"tool {tool_name} returned unparseable error"
+
+    if not isinstance(payload, dict):
+        return f"tool {tool_name}: {str(payload)[:200]}"
+
+    # Try nested first (envelope.result is a JSON string with the
+    # actual handler error including hint).
+    nested_str = payload.get("result")
+    if isinstance(nested_str, str):
+        try:
+            nested = _json.loads(nested_str)
+        except (ValueError, TypeError):
+            nested = None
+        if isinstance(nested, dict):
+            for key in ("hint", "error", "message"):
+                value = nested.get(key)
+                if isinstance(value, str) and value:
+                    return f"tool {tool_name}: {value}"[:300]
+
+    # Fall back to top-level fields.
+    for key in ("hint", "error", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return f"tool {tool_name}: {value}"[:300]
+
+    return f"tool {tool_name} permanent error (no detail)"
 
 
 # ───────────────────── event dataclasses ─────────────────────
@@ -499,6 +584,15 @@ class AgentLoop:
 
             results = await asyncio.gather(*tool_coros, return_exceptions=True)
 
+            # P5-S2 Phase 2: classify each tool result. If ANY is a
+            # PermanentToolError or HallucinationError, break out after
+            # yielding every tool_result event (downstream persistence
+            # + supervisor diagnosis still need them) — but DO NOT
+            # iterate again. Saves up to ``max_iterations - 1`` wasted
+            # LLM round-trips when the LLM keeps invoking the same
+            # broken tool_call (vpn-tunnel bug 2026-05-10).
+            permanent_break: tuple[str, str] | None = None  # (reason, detail)
+
             for tc, result in zip(call_order, results):
                 if isinstance(result, BaseException):
                     # _dispatch_tool already normalizes most exceptions; this
@@ -527,6 +621,36 @@ class AgentLoop:
                         "content": result_str,
                     }
                 )
+
+                # P5-S2 Phase 2: classify *this* tool_result.
+                if permanent_break is None:
+                    err_class = _classify_tool_result(result_str)
+                    if err_class is agent_errors.PermanentToolError:
+                        permanent_break = (
+                            "permanent_tool_error",
+                            _extract_break_detail(result_str, tc.name),
+                        )
+                    elif err_class is agent_errors.HallucinationError:
+                        permanent_break = (
+                            "hallucination",
+                            _extract_break_detail(result_str, tc.name),
+                        )
+
+            if permanent_break is not None:
+                reason, detail = permanent_break
+                logger.info(
+                    "p5s2_tool_error_classified sid=%s tid=%s iter=%d "
+                    "reason=%s detail=%s",
+                    session_id, tid, iteration, reason, detail[:200],
+                )
+                yield ErrorEvent(
+                    type="error",
+                    task_id=tid,
+                    iteration=iteration,
+                    reason=reason,
+                    detail=detail,
+                )
+                return
 
         # Hit max_iterations — spec §11.4 says emit warning + final.
         logger.warning("agent loop task %s hit max_iterations=%d", tid, self.max_iterations)
