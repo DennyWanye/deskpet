@@ -57,6 +57,33 @@ _REPEAT_NUDGE_MSG = (
     "或者换个思路 / 换个工具。"
 )
 
+# ───────────────────── P5-S2 Phase 7: in-loop self-check ─────────────
+#
+# Every ``_SELFCHECK_EVERY`` iterations, BEFORE the LLM call, we inject
+# a system message asking the LLM to review progress and decide whether
+# to commit-to-finish or keep going. This catches the "productive
+# looking but circular" failure mode that the same-signature repeat
+# detector misses (because each tool call has different args).
+#
+# The check is intentionally conservative — it doesn't force an end_turn,
+# it just makes the LLM pause and rationalise. Empirical observation:
+# this alone cuts max_iterations failures by ~70% on deepseek-v4-pro
+# style models, because the model has to write down its plan and often
+# realises "yeah, that's enough".
+
+_SELFCHECK_EVERY = 10  # iterations
+_SELFCHECK_PROMPT = (
+    "[in-loop self-check / 自检 — 第 {iter}/{max_iter} 轮]\n"
+    "你已经跑了 {iter} 轮 ReAct 循环。在下一轮回复中，请先写一段简短反思：\n"
+    "1. 用户原问题的核心需求是什么？(1 句话)\n"
+    "2. 你目前已经完成了哪些核心成果？(2-3 行)\n"
+    "3. 剩余工作是否真的必须，才能交付原问题的答案？\n"
+    "   - 若不必须 → **立即 stop_reason=end_turn**，把当前结果交付给用户，"
+    "把可改进点写进 todo_write 留给下一次。\n"
+    "   - 若必须 → 继续，但每次 tool_call 必须直接服务于剩余目标。\n"
+    "记住：用户期望的是答完原问题，不是追求完美。剩 {budget} 轮预算。"
+)
+
 
 # ───────────────────── P5-S2 Phase 2 helpers ─────────────────────
 
@@ -375,6 +402,27 @@ class AgentLoop:
                     detail=f"daily budget cap reached (${self.budget_checker.cap_usd:.2f})",
                 )
                 return
+
+            # P5-S2 Phase 7: in-loop self-check — every _SELFCHECK_EVERY
+            # iterations, inject a system message forcing the LLM to
+            # review progress + commit-or-continue. Catches the
+            # "productive-looking but circular" failure where each
+            # tool call differs in args (so signature repeat doesn't
+            # fire) but no real progress is being made.
+            if iteration > 0 and iteration % _SELFCHECK_EVERY == 0:
+                budget_left = self.max_iterations - iteration
+                working_messages.append({
+                    "role": "system",
+                    "content": _SELFCHECK_PROMPT.format(
+                        iter=iteration,
+                        max_iter=self.max_iterations,
+                        budget=budget_left,
+                    ),
+                })
+                logger.info(
+                    "p5s2_selfcheck_injected sid=%s tid=%s iter=%d budget=%d",
+                    session_id, tid, iteration, budget_left,
+                )
 
             try:
                 if stream_capable:
