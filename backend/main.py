@@ -96,6 +96,25 @@ SHARED_SECRET = secrets.token_hex(16)
 
 service_context = ServiceContext()
 
+# P3-S5 / P4-S20: register the bundled CUDA DLL dir BEFORE any provider
+# import that drags in torch (silero_vad / faster_whisper_asr both do).
+# torch's `_load_dll_libraries` runs at module import and globs
+# `torch/lib/*.dll` with LoadLibrary; if cudart64_12.dll / cublas64_12.dll
+# can't be resolved on the DLL search path, `shm.dll` (which links those
+# transitively) raises `OSError [WinError 126]` and the frozen exe dies
+# before logging a single line. Doing AddDllDirectory here — before the
+# `from providers...` block on the next line — fixes that race.
+# Was previously below, after vad/asr provider construction. That worked
+# in dev (CUDA on system PATH) but blew up in the frozen bundle where
+# the only copy of cudart64_12.dll lives in `_internal/ctranslate2/`.
+if getattr(sys, "frozen", False):
+    try:
+        _ct2_dir_early = Path(sys._MEIPASS) / "ctranslate2"  # type: ignore[attr-defined]
+        if _ct2_dir_early.is_dir():
+            os.add_dll_directory(str(_ct2_dir_early))
+    except Exception:  # pragma: no cover — silent; logged after structlog ready
+        pass
+
 # --- Register providers ---
 from providers.openai_compatible import OpenAICompatibleProvider
 from providers.silero_vad import SileroVAD
@@ -145,6 +164,11 @@ def _save_llm_runtime_overrides(data: dict) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("llm_runtime_overrides_save_failed: %s", exc)
 
+
+# P4-S25 (2026-05-09): cross-endpoint Ollama fallback removed at
+# user request. Single-endpoint mode — errors surface directly
+# instead of auto-swapping to a different model with a different
+# voice mid-turn.
 
 # Apply runtime overrides BEFORE creating local_llm so the very first
 # request after a restart uses the user's saved config.
@@ -201,6 +225,11 @@ local_llm = OpenAICompatibleProvider(
     model=config.llm.local.model,
     temperature=config.llm.local.temperature,
 )
+
+# P4-S25 (2026-05-09): cross-endpoint Ollama fallback removed at user
+# request — they don't want auto-swap to gemma4:e4b mid-turn because
+# the model-style mismatch produces ugly mixed responses. Errors from
+# the configured LLM endpoint now surface directly to the user.
 
 # Keep cloud_llm symbol around for legacy code paths but it's None now —
 # config.llm.cloud is no longer set under the unified [llm] schema.
@@ -274,6 +303,11 @@ try:
         PermissionResponse as _PermissionResponse,
     )
     _register_os_tools_v2(deskpet_tool_registry_v2)
+    # P4-S22: Code mode tools (glob, grep, web_search) registered now;
+    # todo_write + agent need closures over runtime objects (SessionDB,
+    # LLM shim) and are wired later, after those are constructed.
+    from deskpet.tools.code_tools import register_code_tools as _register_code_tools
+    _register_code_tools(deskpet_tool_registry_v2)
     _shell_deny = list(getattr(getattr(config, "permissions", None), "deny", {}).get("shell_patterns", []) or [
         "rm -rf /",
         "format c:",
@@ -286,6 +320,20 @@ try:
         )
     )
     deskpet_tool_registry_v2.set_permission_gate(permission_gate_v2)
+    # P4-S25: persist auto_mode across restart. Path lives under the
+    # user data dir so it follows the user's profile (dev mode uses
+    # `<repo>/userdata/`, prod uses `%APPDATA%/deskpet/`). Loading
+    # happens immediately so by the time the first chat runs, the
+    # gate already knows the user's prior choice.
+    try:
+        from pathlib import Path as _Path
+        _automode_path = _Path(_paths.user_data_dir()) / "permissions_auto_mode.json"
+        permission_gate_v2.bind_persistence_path(_automode_path)
+        _restored_automode = permission_gate_v2.load_auto_mode()
+        if _restored_automode:
+            logger.info("permission_auto_mode_restored", enabled=True)
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("auto_mode_persist_init_failed: %s", _exc)
     # Module-level globals (service_context has a pre-declared key list
     # we don't want to extend just for this).
     # Accessed by the chat handler when it instantiates AgentLoop.
@@ -443,6 +491,17 @@ if config.tts.provider == "cosyvoice2":
 else:
     tts = EdgeTTSProvider(voice=config.tts.voice)
 service_context.register("tts_engine", tts)
+# P4-S21 #13: hand the TTS to the permission gate so voice-context
+# requests get an audible "please click Allow" cue alongside the popup.
+# permission_gate_v2 was constructed earlier (line ~301) and may be
+# None when v2 stack init failed.
+try:
+    if permission_gate_v2 is not None:
+        permission_gate_v2.set_tts_engine(tts)
+except NameError:
+    # permission_gate_v2 didn't get initialized (e.g. import error in
+    # the v2 block). Voice prompts skip TTS narration; popup still works.
+    pass
 
 # --- P4-S13: read-only P4 services (FileMemory + SkillLoader + MemoryManager) ---
 #
@@ -557,6 +616,142 @@ try:
     service_context.register("vector_worker", _vector_worker)
     service_context.register("embedder", _embedder)
 
+    # P4-S22: Code Mode session manager (per-base-session enable map).
+    from deskpet.code_mode import CodeModeManager as _CodeModeManager
+    _code_mode_manager = _CodeModeManager()
+    # P4-S25 B4: bind SessionDB so projects persist across restart.
+    # Actual `load_persisted` runs inside the async lifespan (see below)
+    # because we can't await at module level.
+    _code_mode_manager.bind_persistence(_session_db)
+    service_context.register("code_mode", _code_mode_manager)
+
+    # P5-S1: supervisor watchdog infrastructure. SessionActivity tracks
+    # AgentEvent timestamps + tool-call signature windows so the watchdog
+    # can detect "stuck" Code-mode sessions. Watchdog itself is started
+    # later in lifespan() with a 30s grace period; here we just register
+    # the data structures so the WS forwarder can bump them.
+    from agent.session_activity import SessionActivityStore as _SessionActivityStore
+    _session_activity_store = _SessionActivityStore()
+    service_context.register("session_activity", _session_activity_store)
+
+    # P5-S4: NudgeQueue is created here (not in lifespan) so the IPC
+    # handlers — code_mode_exit, message build path — can reach it
+    # without nullable plumbing. Capacity from [supervisor].max_hints_per_session.
+    from agent.nudge_queue import NudgeQueue as _NudgeQueue
+    _nudge_queue = _NudgeQueue(
+        cap=int((config.raw.get("supervisor") or {}).get("max_hints_per_session", 3))
+    )
+    service_context.register("nudge_queue", _nudge_queue)
+
+    # P4-S22: register the two Code-mode tools that need closures over
+    # runtime objects (SessionDB for todo_write, LLM shim + tool
+    # registry for agent). The other three (glob/grep/web_search) were
+    # registered earlier with static handlers.
+    if deskpet_tool_registry_v2 is not None:
+        try:
+            from deskpet.tools.code_tools import (
+                build_todo_write_tool as _build_todo_write_tool,
+                build_agent_tool as _build_agent_tool,
+            )
+            from agent.tool_use_shim import (  # type: ignore[import-not-found]
+                OpenAICompatibleAgentLLM as _ShimForAgent,
+            )
+
+            # todo_write needs (session_db, code_session_id_resolver, broadcaster)
+            # P4-S22 fix: wire a real broadcaster that pushes
+            # `code_todo_update` to whichever control WebSocket owns
+            # the active code-mode session. Without this, todos write to
+            # DB but the frontend's TodoListPanel doesn't update until
+            # the user manually closes / reopens the panel (or sends a
+            # new chat turn that re-pulls). Now they update live.
+            def _resolve_code_sid() -> str | None:
+                # The chat handler stores the active session id on the
+                # tool registry's session_context dict — pull it from
+                # there. If multiple sessions are concurrent this picks
+                # the most-recent one written; for now there's only ever
+                # one chat session active per backend process.
+                cm = service_context.get("code_mode")
+                if cm is None:
+                    return None
+                # Last writer wins — code_mode's all_sessions() returns
+                # all base sessions; pick any enabled one.
+                for base_sid, st in cm.all_sessions().items():
+                    if st.enabled and st.code_session_id:
+                        return st.code_session_id
+                return None
+
+            def _resolve_base_sid_for_code_session(code_sid: str) -> str | None:
+                """Reverse map: code session id → base session id, so we
+                know which control_ws to broadcast to. Useful when the
+                tool runs deep inside AgentLoop and only knows the
+                code_session_id."""
+                cm = service_context.get("code_mode")
+                if cm is None:
+                    return None
+                for base_sid, st in cm.all_sessions().items():
+                    if st.code_session_id == code_sid:
+                        return base_sid
+                return None
+
+            async def _todo_broadcaster(msg: dict) -> None:
+                """Broadcast a `code_todo_update` to ALL connected
+                control WebSockets so both the pet and the code panel
+                update in lockstep. Multi-window setups (P4-S23) need
+                this — a single-target send to the chat-trigger ws
+                misses the sibling window even though both render
+                the same code session.
+                Best-effort: WS errors are swallowed so a stale tab
+                doesn't break tool execution.
+                """
+                # Snapshot to avoid mutation during iteration when a
+                # ws closes mid-broadcast.
+                targets = list(_control_connections.values())
+                for ws in targets:
+                    try:
+                        await ws.send_json(msg)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("code_todo_broadcast_failed", error=str(exc))
+
+            _todo_handler, _todo_schema = _build_todo_write_tool(
+                session_db=_session_db,
+                code_session_id_resolver=_resolve_code_sid,
+                broadcaster=_todo_broadcaster,
+            )
+
+            _shim_for_agent = _ShimForAgent(provider=local_llm)
+
+            def _resolve_parent_sid() -> str:
+                cm = service_context.get("code_mode")
+                if cm is not None:
+                    for base_sid, st in cm.all_sessions().items():
+                        if st.enabled:
+                            return base_sid
+                return "default"
+
+            _agent_handler, _agent_schema = _build_agent_tool(
+                llm_shim=_shim_for_agent,
+                parent_tool_registry=deskpet_tool_registry_v2,
+                parent_session_id_resolver=_resolve_parent_sid,
+            )
+
+            # Re-register the full code tool set including the closures.
+            from deskpet.tools.code_tools import (
+                register_code_tools as _register_code_tools_full,
+            )
+            _register_code_tools_full(
+                deskpet_tool_registry_v2,
+                todo_write_handler=_todo_handler,
+                todo_write_schema=_todo_schema,
+                agent_handler=_agent_handler,
+                agent_schema=_agent_schema,
+            )
+            logger.info("p4_s22_code_tools_registered", count=5)
+        except Exception as _ct_exc:  # noqa: BLE001
+            logger.warning(
+                "p4_s22_code_tools_register_failed",
+                error=str(_ct_exc),
+            )
+
     logger.info(
         "p4_services_registered",
         l1_dir=str(_l1_dir),
@@ -621,6 +816,20 @@ async def lifespan(app: FastAPI):
             logger.info("p4_session_db_ready", path=str(_sdb._db_path))
         except Exception as exc:
             logger.warning("p4_session_db_init_failed", error=str(exc))
+    # P4-S25 B4: restore persisted code-mode projects from SessionDB.
+    # Done after _sdb.initialize() so migration v13 (code_sessions
+    # table) is in place. Failure is non-fatal — user just sees an
+    # empty project list and can re-add manually.
+    _cmm_for_restore = service_context.get("code_mode")
+    if _cmm_for_restore is not None and _sdb is not None:
+        try:
+            _restored_n = await _cmm_for_restore.load_persisted(_sdb)
+            logger.info(
+                "code_sessions_restored",
+                count=_restored_n,
+            )
+        except Exception as exc:
+            logger.warning("code_sessions_restore_failed", error=str(exc))
     _mm = service_context.get("memory_manager")
     if _mm is not None:
         try:
@@ -716,8 +925,119 @@ async def lifespan(app: FastAPI):
                 )
         asyncio.create_task(_bg_summarize())
 
+    # P5-S1/S2: supervisor watchdog + LLM agent. Starts after the rest of
+    # startup is done so the 30s grace can run while normal startup races
+    # finish. Disabled when [supervisor].enabled = false; in that case we
+    # skip construction entirely so the asyncio.Task isn't even created.
+    try:
+        _sup_cfg = (config.raw.get("supervisor") if hasattr(config, "raw") else None) or {}
+        if bool(_sup_cfg.get("enabled", True)):
+            from agent.watchdog import WatchdogLoop as _WatchdogLoop
+            from agent.supervisor import (
+                SupervisorAgent as _SupAgent,
+                build_supervisor_hook as _build_sup_hook,
+            )
+            from agent.snapshot import build_snapshot as _build_snap_func
+
+            # Snapshot builder closure — pulls services lazily so each
+            # tick reads fresh state.
+            async def _snap_builder(sid: str):
+                _ctx_window = int(
+                    (config.raw.get("agent") or {}).get("context_window_tokens", 200_000)
+                )
+                return await _build_snap_func(
+                    sid,
+                    session_activity=service_context.get("session_activity"),
+                    session_db=service_context.get("session_db"),
+                    code_mode_manager=service_context.get("code_mode"),
+                    context_window_tokens=_ctx_window,
+                )
+
+            # Audit closure — persists every non-wait SupervisorAction
+            async def _audit_action(action, sid):
+                _sdb_for_audit = service_context.get("session_db")
+                if _sdb_for_audit is None:
+                    return
+                hint_text = action.hint_for_main_agent or action.user_message or action.diagnosis
+                await _sdb_for_audit.append_supervisor_hint(
+                    session_id=sid,
+                    alert_id=action.alert_id,
+                    hint_text=hint_text,
+                    action="cancel_coerced" if action.raw_action == "cancel" else action.action,
+                    severity=action.severity,
+                    diagnosis=action.diagnosis,
+                )
+
+            # Nudge push closure — wraps SupervisorAction → Hint and
+            # forwards to the queue.
+            async def _push_hint(sid: str, action):
+                from agent.nudge_queue import Hint as _Hint
+                _nq = service_context.get("nudge_queue")
+                if _nq is None:
+                    return
+                await _nq.push(
+                    sid,
+                    _Hint(
+                        text=action.hint_for_main_agent or action.user_message or "",
+                        alert_id=action.alert_id,
+                        severity=action.severity,
+                    ),
+                )
+
+            # Broadcast closure — sends supervisor_alert to all control WS.
+            async def _broadcast_supervisor_alert(typ: str, payload: dict):
+                # Use the same multi-WS fan-out the todo broadcaster uses.
+                # _control_connections is the canonical mapping (sid → ws).
+                if not _control_connections:
+                    return
+                msg = {"type": typ, "payload": payload}
+                for _sid_key, _ws_obj in list(_control_connections.items()):
+                    try:
+                        await _ws_obj.send_json(msg)
+                    except Exception as _bex:
+                        logger.debug("supervisor_alert_broadcast_failed sid=%s error=%s", _sid_key, _bex)
+
+            # Build agent. Provider = the same OpenAI-compatible provider
+            # that powers chat. Future enhancement: route to a cheaper
+            # model via a [supervisor].llm_provider override.
+            _sup_provider = local_llm  # default to main LLM provider
+            _supervisor_agent = _SupAgent(
+                provider=_sup_provider,
+                snapshot_builder=_snap_builder,
+                nudge_queue_push=_push_hint,
+                broadcast=_broadcast_supervisor_alert,
+                audit=_audit_action,
+                timeout_seconds=float(_sup_cfg.get("llm_timeout_seconds", 30.0)),
+            )
+            service_context.register("supervisor", _supervisor_agent)
+
+            _watchdog = _WatchdogLoop(
+                session_activity=service_context.get("session_activity"),
+                code_mode_manager=service_context.get("code_mode"),
+                hook=_build_sup_hook(_supervisor_agent),
+                scan_interval_seconds=float(_sup_cfg.get("scan_interval_seconds", 60)),
+                stuck_threshold_seconds=float(_sup_cfg.get("stuck_threshold_seconds", 900)),
+                dedup_seconds=float(_sup_cfg.get("dedup_seconds", 720)),
+                startup_grace_seconds=float(_sup_cfg.get("startup_grace_seconds", 30)),
+            )
+            _watchdog.start()
+            service_context.register("watchdog", _watchdog)
+            logger.info("p5_supervisor_watchdog_started")
+        else:
+            logger.info("p5_supervisor_disabled_via_config")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("p5_supervisor_watchdog_start_failed", error=str(exc))
+
     logger.info("startup complete")
     yield
+    # P5-S1: stop the watchdog cleanly so its task doesn't dangle past
+    # shutdown and produce "Task was destroyed but it is pending!" noise.
+    _wd = service_context.get("watchdog")
+    if _wd is not None:
+        try:
+            await _wd.stop()
+        except Exception as exc:
+            logger.warning("p5_supervisor_watchdog_stop_failed", error=str(exc))
     # P4-S15: stop in reverse-dependency order — MCP servers first (so they
     # don't keep firing tool_invoke writes), then VectorWorker (drain
     # outstanding embeds), then SkillLoader's watchdog thread.
@@ -762,6 +1082,10 @@ app.add_middleware(
 
 # Track control channel connections for lip-sync forwarding
 _control_connections: dict[str, WebSocket] = {}
+
+# P4-S23: track in-flight chat tasks per session_id so multi-session
+# panels can cancel-on-retry without leaking stale AgentLoop runs.
+_chat_inflight: dict[str, asyncio.Task] = {}
 # Track active voice pipelines by session so that a control-channel `interrupt`
 # message can reach the audio-channel pipeline (they are separate WebSockets).
 _pipelines: dict[str, "VoicePipeline"] = {}  # noqa: F821 — forward ref, set at runtime
@@ -1229,6 +1553,25 @@ async def control_channel(ws: WebSocket):
                         request_id=rid,
                     )
 
+            elif msg_type == "permission_auto_mode_set":
+                # P4-S21 #13: toggle "yes-to-all" mode. Settings panel
+                # sends {enabled: bool}; we flip the flag on the live
+                # PermissionGate instance. Default is OFF — has to be
+                # explicitly opted in. Reverts on backend restart.
+                payload = raw.get("payload", {}) or {}
+                enabled = bool(payload.get("enabled", False))
+                if permission_gate_v2 is not None:
+                    # P4-S25: route through set_auto_mode so the choice
+                    # persists across backend restart (was process-only).
+                    permission_gate_v2.set_auto_mode(enabled)
+                    logger.info(
+                        "permission_auto_mode_set", enabled=enabled,
+                    )
+                await ws.send_json({
+                    "type": "permission_auto_mode_response",
+                    "payload": {"enabled": enabled},
+                })
+
             elif msg_type == "plugin_list":
                 # P4-S20 Stage D — list all discovered plugins with enabled status.
                 if plugin_manager is None:
@@ -1428,6 +1771,309 @@ async def control_channel(ws: WebSocket):
                         "payload": {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
                     })
 
+            elif msg_type == "code_mode_enter":
+                # P4-S22: enter Code mode for this session.
+                # Payload: {project_path?, suggested_name?, session_id?}
+                # P4-S23: payload.session_id lets the new code panel
+                # bind a fresh base sid per project, so multiple Code
+                # mode sessions can run in parallel without colliding
+                # on the WS-level "default" session.
+                payload = raw.get("payload", {}) or {}
+                project_path = payload.get("project_path") or None
+                suggested_name = (
+                    payload.get("suggested_name") or "untitled"
+                )
+                target_sid = payload.get("session_id") or session_id
+                cmm = service_context.get("code_mode")
+                if cmm is None:
+                    await ws.send_json({
+                        "type": "code_mode_state",
+                        "payload": {
+                            "enabled": False,
+                            "error": "code mode manager not initialized",
+                            "session_id": target_sid,
+                        },
+                    })
+                    continue
+                try:
+                    from deskpet.code_mode import resolve_project_root
+                    root = resolve_project_root(project_path, suggested_name)
+                    # P4-S25 B4 fix: if this project_root already has a
+                    # persisted base_session_id, REUSE it. Otherwise the
+                    # frontend's freshly-generated random sid creates a
+                    # new conversation slot and orphans all prior chat
+                    # history (which is keyed by base_session_id in the
+                    # messages table). Lookup is by absolute path —
+                    # resolve_project_root already canonicalised it.
+                    sdb = service_context.get("session_db")
+                    if sdb is not None:
+                        try:
+                            existing = await sdb.list_code_sessions()
+                            target_root = str(root.resolve())
+                            for row in existing:
+                                if str(row["project_root"]) == target_root:
+                                    target_sid = row["base_session_id"]
+                                    logger.info(
+                                        "code_mode_enter_reusing_existing",
+                                        base_session_id=target_sid,
+                                        project_root=target_root,
+                                    )
+                                    break
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug(
+                                "code_mode_enter_lookup_failed",
+                                error=str(exc),
+                            )
+                    state = cmm.enter(target_sid, root)
+                    await ws.send_json({
+                        "type": "code_mode_state",
+                        "payload": {
+                            "enabled": True,
+                            "project_root": str(state.project_root),
+                            "project_name": state.project_name,
+                            "code_session_id": state.code_session_id,
+                            "session_id": target_sid,
+                        },
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("code_mode_enter_failed", error=str(exc))
+                    await ws.send_json({
+                        "type": "code_mode_state",
+                        "payload": {
+                            "enabled": False,
+                            "error": str(exc),
+                            "session_id": target_sid,
+                        },
+                    })
+
+            elif msg_type == "code_mode_exit":
+                payload = raw.get("payload", {}) or {}
+                target_sid = payload.get("session_id") or session_id
+                cmm = service_context.get("code_mode")
+                if cmm is not None:
+                    cmm.exit(target_sid)
+                # Clear injected project_root from tool registry context
+                if deskpet_tool_registry_v2 is not None:
+                    deskpet_tool_registry_v2.set_session_context(target_sid, None)
+                # P5-S1: clear supervisor state (activity tracking, queued nudges)
+                # before broadcasting the exit so any in-flight watchdog scan
+                # sees a consistent "no longer in Code mode" view.
+                _sa = service_context.get("session_activity")
+                if _sa is not None:
+                    try:
+                        await _sa.drop(target_sid)
+                    except Exception as _exc:
+                        logger.debug("session_activity_drop_failed", error=str(_exc))
+                _nq = service_context.get("nudge_queue")
+                if _nq is not None:
+                    try:
+                        await _nq.clear(target_sid)
+                    except Exception as _exc:
+                        logger.debug("nudge_queue_clear_failed", error=str(_exc))
+                await ws.send_json({
+                    "type": "code_mode_state",
+                    "payload": {"enabled": False, "session_id": target_sid},
+                })
+
+            elif msg_type == "code_mode_status":
+                payload = raw.get("payload", {}) or {}
+                target_sid = payload.get("session_id") or session_id
+                cmm = service_context.get("code_mode")
+                if cmm is None or not cmm.is_enabled(target_sid):
+                    await ws.send_json({
+                        "type": "code_mode_state",
+                        "payload": {"enabled": False, "session_id": target_sid},
+                    })
+                else:
+                    s = cmm.get(target_sid)
+                    await ws.send_json({
+                        "type": "code_mode_state",
+                        "payload": {
+                            "enabled": True,
+                            "project_root": str(s.project_root) if s else None,
+                            "project_name": s.project_name if s else "",
+                            "code_session_id": s.code_session_id if s else None,
+                            "session_id": target_sid,
+                        },
+                    })
+
+            elif msg_type == "code_todo_list":
+                # P4-S22: frontend asks for current todos (e.g. on panel open).
+                payload = raw.get("payload", {}) or {}
+                target_sid = payload.get("session_id") or session_id
+                cmm = service_context.get("code_mode")
+                sdb = service_context.get("session_db")
+                items: list = []
+                if cmm and sdb:
+                    csid = cmm.code_session_id(target_sid)
+                    if csid:
+                        try:
+                            items = await sdb.get_code_todos(csid)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "code_todo_list_failed", error=str(exc),
+                            )
+                await ws.send_json({
+                    "type": "code_todo_update",
+                    "payload": {"items": items, "session_id": target_sid},
+                })
+
+            elif msg_type == "session_messages_load":
+                # P4-S23: panel reload (F5) needs to rehydrate chat
+                # history from SessionDB. Returns messages for the
+                # given session_id (default: ws session_id).
+                # Capped at 200 msgs/session to keep payload sane —
+                # users can scroll older messages via a future
+                # paginated load if needed.
+                payload = raw.get("payload", {}) or {}
+                target_sid = payload.get("session_id") or session_id
+                limit = int(payload.get("limit") or 200)
+                sdb = service_context.get("session_db")
+                msgs: list = []
+                if sdb is not None:
+                    try:
+                        rows = await sdb.get_messages(target_sid, limit=limit)
+                        # Slim payload — frontend only needs role + content + ts.
+                        msgs = [
+                            {
+                                "id": str(r.get("id") or ""),
+                                "role": r.get("role") or "",
+                                "text": r.get("content") or "",
+                                "ts": float(r.get("created_at") or 0) * 1000,
+                            }
+                            for r in rows
+                            if (r.get("role") in ("user", "assistant"))
+                            and (r.get("content") or "").strip()
+                        ]
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "session_messages_load_failed",
+                            error=str(exc), session_id=target_sid,
+                        )
+                await ws.send_json({
+                    "type": "session_messages_response",
+                    "payload": {"session_id": target_sid, "messages": msgs},
+                })
+
+            elif msg_type == "chat_v2_interrupt":
+                # P4-S25 B3: stop the in-flight chat task for a given
+                # session WITHOUT enqueueing a new one. Pairs with the
+                # frontend "停止" button — when the user clicks it, the
+                # current LLM call gets cancelled and the inflight
+                # state on that session clears, freeing the user to
+                # type a fresh prompt.
+                payload = raw.get("payload", {}) or {}
+                target_sid = payload.get("session_id") or session_id
+                _t = _chat_inflight.get(target_sid)
+                cancelled = False
+                if _t is not None and not _t.done():
+                    _t.cancel()
+                    cancelled = True
+                # Tell the frontend regardless — it expects a response so
+                # the button can revert. If nothing was running, send the
+                # confirmation anyway (idempotent UX).
+                await ws.send_json({
+                    "type": "chat_v2_interrupted",
+                    "payload": {
+                        "session_id": target_sid,
+                        "cancelled": cancelled,
+                    },
+                })
+
+            elif msg_type == "code_session_delete":
+                # P4-S24 followup: user clicked 🗑️ on a project tile / sidebar
+                # entry and confirmed the dialog. Drop the in-memory state
+                # AND wipe code_todos for that code session. Chat history
+                # in `messages` is preserved on purpose (same philosophy as
+                # `code_mode_exit`) so re-adding the same project root
+                # later resumes from where the user left off.
+                payload = raw.get("payload", {}) or {}
+                target_sid = payload.get("session_id") or session_id
+                cmm = service_context.get("code_mode")
+                sdb = service_context.get("session_db")
+                deleted_csid: str | None = None
+                if cmm is not None:
+                    # P4-S25 B4: cmm.delete drops in-memory state AND
+                    # the code_sessions persistence row, so the project
+                    # truly disappears across restart. (Old cmm.exit
+                    # only cleared memory; would resurrect on next boot.)
+                    deleted_csid = await cmm.delete(target_sid)
+                # Clear injected project_root from tool registry context
+                if deskpet_tool_registry_v2 is not None:
+                    deskpet_tool_registry_v2.set_session_context(target_sid, None)
+                deleted_todos = 0
+                if sdb is not None and deleted_csid:
+                    try:
+                        deleted_todos = await sdb.delete_code_todos(deleted_csid)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "code_session_delete_todos_failed",
+                            error=str(exc),
+                            session_id=deleted_csid,
+                        )
+                await ws.send_json({
+                    "type": "code_session_deleted",
+                    "payload": {
+                        "base_session_id": target_sid,
+                        "code_session_id": deleted_csid,
+                        "deleted_todos": deleted_todos,
+                    },
+                })
+                # Auto-broadcast a refreshed list so multi-window
+                # dashboards (pet + code panel) both update without
+                # the frontend having to ask.
+                items_list_after: list = []
+                if cmm is not None:
+                    for base_sid_after, st_after in cmm.all_sessions().items():
+                        todo_count_after = 0
+                        if sdb is not None and st_after.code_session_id:
+                            try:
+                                tds = await sdb.get_code_todos(st_after.code_session_id)
+                                todo_count_after = len(tds)
+                            except Exception:
+                                pass
+                        items_list_after.append({
+                            "base_session_id": base_sid_after,
+                            "code_session_id": st_after.code_session_id,
+                            "project_root": str(st_after.project_root) if st_after.project_root else None,
+                            "project_name": st_after.project_name,
+                            "todo_count": todo_count_after,
+                            "enabled": st_after.enabled,
+                        })
+                await ws.send_json({
+                    "type": "code_sessions_list_response",
+                    "payload": {"items": items_list_after},
+                })
+
+            elif msg_type == "code_sessions_list":
+                # P4-S23: dashboard pulls all enabled code sessions in
+                # one shot. Returns [{base_session_id, code_session_id,
+                # project_root, project_name, todo_count, enabled}].
+                cmm = service_context.get("code_mode")
+                sdb = service_context.get("session_db")
+                items_list: list = []
+                if cmm is not None:
+                    for base_sid, st in cmm.all_sessions().items():
+                        todo_count = 0
+                        if sdb is not None and st.code_session_id:
+                            try:
+                                todos = await sdb.get_code_todos(st.code_session_id)
+                                todo_count = len(todos)
+                            except Exception:
+                                pass
+                        items_list.append({
+                            "base_session_id": base_sid,
+                            "code_session_id": st.code_session_id,
+                            "project_root": str(st.project_root) if st.project_root else None,
+                            "project_name": st.project_name,
+                            "todo_count": todo_count,
+                            "enabled": st.enabled,
+                        })
+                await ws.send_json({
+                    "type": "code_sessions_list_response",
+                    "payload": {"items": items_list},
+                })
+
             elif msg_type in ("chat", "chat_v2"):
                 # P4-S20-LLM-Unified: 单一对话路径。
                 # 永远走 AgentLoop tool_use loop（即原 chat_v2 路径），
@@ -1439,16 +2085,43 @@ async def control_channel(ws: WebSocket):
                 # gate's responder Future never gets set otherwise.
                 #
                 # `chat_v2` 类型保留作为别名，前端无感升级。
-                text = raw.get("payload", {}).get("text", "")
+                # P4-S23: payload may carry an explicit `session_id` —
+                # the new code-panel can talk to multiple code sessions
+                # over one shared WS, so we honor whatever the client
+                # asks for and fall back to the WS-level session_id
+                # (which is "default" for the pet's chat).
+                _payload = raw.get("payload", {}) or {}
+                text = _payload.get("text", "")
+                _msg_sid = _payload.get("session_id") or session_id
                 if (
                     deskpet_tool_registry_v2 is None
                     or permission_gate_v2 is None
                 ):
                     await ws.send_json({
                         "type": "chat_v2_error",
-                        "payload": {"error": "v2 stack not initialized"},
+                        "payload": {"error": "v2 stack not initialized", "session_id": _msg_sid},
                     })
                     continue
+
+                # P4-S22: auto-suggest Code mode when user looks like
+                # they're starting a project, and code mode isn't on yet.
+                # We send a one-shot banner — the actual chat still runs
+                # below as a normal companion turn (we don't hijack).
+                try:
+                    from deskpet.code_mode import maybe_suggest_code_mode
+                    cmm = service_context.get("code_mode")
+                    in_code = bool(cmm and cmm.is_enabled(_msg_sid))
+                    if not in_code and maybe_suggest_code_mode(text):
+                        await ws.send_json({
+                            "type": "code_mode_suggest",
+                            "payload": {
+                                "trigger_text": text[:120],
+                                "reason": "detected project intent",
+                                "session_id": _msg_sid,
+                            },
+                        })
+                except Exception as _exc:  # noqa: BLE001
+                    logger.debug("code_mode_suggest_failed", error=str(_exc))
 
                 async def _run_chat(_ws, _text, _sid):
                     # P4-S20-LLM-Unified-fix: 持久化用户消息到 SessionDB
@@ -1482,6 +2155,18 @@ async def control_channel(ws: WebSocket):
                             # P4-S20-LLM-Unified: 把当前 LLM 的 model + base_url
                             # 传给 ContextAssembler，PersonaComponent 用它告诉
                             # 用户底层模型 — 不再有"我看不到模型"的尴尬回复。
+                            # P4-S22: pass code_mode state into assembler
+                            # so PersonaComponent picks the engineering
+                            # assistant template + project root.
+                            _cmm_for_assembler = service_context.get("code_mode")
+                            _code_cfg = {"enabled": False, "project_root": ""}
+                            if _cmm_for_assembler and _cmm_for_assembler.is_enabled(_sid):
+                                _state = _cmm_for_assembler.get(_sid)
+                                if _state and _state.project_root:
+                                    _code_cfg = {
+                                        "enabled": True,
+                                        "project_root": str(_state.project_root),
+                                    }
                             _bundle = await _assembler.assemble(
                                 user_message=_text,
                                 memory_manager=service_context.get("memory_manager"),
@@ -1494,6 +2179,7 @@ async def control_channel(ws: WebSocket):
                                         "model": getattr(local_llm, "model", "unknown"),
                                         "base_url": getattr(local_llm, "base_url", ""),
                                     },
+                                    "code_mode": _code_cfg,
                                 },
                             )
                             if _bundle is not None and _bundle.decisions is not None:
@@ -1507,15 +2193,81 @@ async def control_channel(ws: WebSocket):
                             _bundle = None
 
                     if _bundle is not None:
-                        _msgs = _bundle.build_messages(user_message=_text)
+                        # P4-S21 #16 fix: pass real conversation history.
+                        # Without this the LLM gets only the current user
+                        # turn, even though SessionDB has all prior messages
+                        # — that produced the "we just talked about VPN,
+                        # why does it ask 'what do you want to do?'" bug.
+                        # `bundle.history` is populated by MemoryComponent
+                        # from raw L2 rows.
+                        _msgs = _bundle.build_messages(
+                            user_message=_text,
+                            history=_bundle.history,
+                        )
                     else:
                         _msgs = [{"role": "user", "content": _text}]
 
+                    # P5-S4: pop any queued supervisor hints for this sid
+                    # and inject them at the top of the system stack as a
+                    # single ``[Supervisor]`` system message. This is the
+                    # consume-on-use point — by the time the agent loop
+                    # starts running, hints are already gone from the queue.
+                    try:
+                        _nq_for_inject = service_context.get("nudge_queue")
+                        if _nq_for_inject is not None:
+                            _hints = await _nq_for_inject.pop_all(_sid)
+                            if _hints:
+                                from agent.nudge_queue import format_hints_for_injection as _fmt_hints
+                                _hint_text = _fmt_hints(_hints)
+                                if _hint_text:
+                                    _hint_msg = {
+                                        "role": "system",
+                                        "content": _hint_text,
+                                        "_is_supervisor_hint": True,
+                                    }
+                                    _insert_at = 0
+                                    while _insert_at < len(_msgs) and _msgs[_insert_at].get("role") == "system":
+                                        _insert_at += 1
+                                    _msgs.insert(_insert_at, _hint_msg)
+                                    # Mark each hint dispatched in audit trail
+                                    _sdb_for_audit = service_context.get("session_db")
+                                    if _sdb_for_audit is not None:
+                                        for _h in _hints:
+                                            try:
+                                                await _sdb_for_audit.append_supervisor_hint(
+                                                    session_id=_sid,
+                                                    alert_id=_h.alert_id or "",
+                                                    hint_text=_h.text,
+                                                    action="dispatched",
+                                                    severity=_h.severity,
+                                                )
+                                            except Exception as _ex2:
+                                                logger.debug(
+                                                    "supervisor_dispatched_audit_failed",
+                                                    error=str(_ex2),
+                                                )
+                                    logger.info(
+                                        "supervisor_hints_injected sid=%s count=%d",
+                                        _sid,
+                                        len(_hints),
+                                    )
+                    except Exception as _hint_exc:  # noqa: BLE001
+                        logger.debug("supervisor_hint_inject_failed error=%s", _hint_exc)
+
                     final_text = ""
+                    # P4-S24: capture the LAST assistant turn's
+                    # reasoning_content so we persist it alongside
+                    # final_text. Multi-iteration runs (tool calls)
+                    # may produce reasoning_content per iteration —
+                    # only the terminal one matters for round-trip,
+                    # since intermediate turns are already complete
+                    # in working_messages by the time agent_loop ends.
+                    final_reasoning = ""
                     try:
                         from agent.agent_loop import (
                             AgentLoop as _AgentLoop,
                             AssistantMessageEvent as _AsstEv,
+                            AssistantDeltaEvent as _AsstDelta,
                             ToolCallEvent as _TCEv,
                             ToolResultEvent as _TREv,
                             FinalEvent as _FinEv,
@@ -1527,13 +2279,153 @@ async def control_channel(ws: WebSocket):
                         # 把它指向 Ollama 还是任何 OpenAI 兼容云端都一样。
                         _provider = local_llm or cloud_llm
                         _shim = _Shim(provider=_provider)
+                        # P4-S22: Code mode bumps max_iterations to 50 so
+                        # long tool-use chains (read → grep → edit → bash
+                        # → repeat) can finish a real task. Companion
+                        # mode stays at 8 — anything past that is
+                        # usually a runaway loop in chitchat context.
+                        _cmm = service_context.get("code_mode")
+                        _in_code_mode = bool(_cmm and _cmm.is_enabled(_sid))
+                        _max_iter = 50 if _in_code_mode else 8
+                        # Inject project root into per-session tool-arg
+                        # context so glob/grep can run without the LLM
+                        # restating the path every call. Cleared when
+                        # code mode exits via ``code_mode_exit`` IPC.
+                        if _in_code_mode:
+                            _proot = _cmm.project_root(_sid)
+                            if _proot is not None:
+                                deskpet_tool_registry_v2.set_session_context(
+                                    _sid,
+                                    {"_project_root": str(_proot)},
+                                )
+
+                        # P4-S25 A2: Plan/Replan — for non-trivial code-mode
+                        # requests, do a structured-output plan call BEFORE
+                        # the ReAct loop. The plan is sent to the frontend
+                        # for visibility and injected into the message stack
+                        # so the LLM stays anchored. Auto-confirm (no user
+                        # gate) for now — the 停止 button is the escape
+                        # hatch if the plan looks wrong.
+                        try:
+                            from agent.plan import (
+                                maybe_extract_plan as _maybe_plan,
+                                plan_to_system_message as _plan_to_sys,
+                            )
+                            _plan = await _maybe_plan(
+                                _provider,
+                                _text,
+                                str(_cmm.project_root(_sid)) if _in_code_mode and _cmm else None,
+                                in_code_mode=_in_code_mode,
+                            )
+                            if _plan is not None:
+                                await _ws.send_json({
+                                    "type": "chat_v2_plan",
+                                    "payload": {
+                                        "session_id": _sid,
+                                        "rationale": _plan.rationale,
+                                        "steps": [
+                                            {"title": s.title, "detail": s.detail}
+                                            for s in _plan.steps
+                                        ],
+                                    },
+                                })
+                                # Insert plan as a system message right after
+                                # the existing system stack (or at index 0
+                                # if there's nothing).
+                                _plan_msg = {"role": "system", "content": _plan_to_sys(_plan)}
+                                _insert_at = 0
+                                while _insert_at < len(_msgs) and _msgs[_insert_at].get("role") == "system":
+                                    _insert_at += 1
+                                _msgs.insert(_insert_at, _plan_msg)
+                        except Exception as _exc:  # noqa: BLE001
+                            logger.debug("p4s25_plan_skipped error=%s", _exc)
+
                         _agent = _AgentLoop(
                             llm_registry=_shim,
                             tool_registry=deskpet_tool_registry_v2,
-                            max_iterations=8,
+                            max_iterations=_max_iter,
                         )
-                        async for ev in _agent.run(_msgs, session_id=_sid):
-                            if isinstance(ev, _AsstEv):
+                        # P4-S25 A1: stream by default — gives the user
+                        # instant visible feedback on thinking-mode
+                        # models that otherwise stare back blank for 30+
+                        # seconds. Caller-side `chat_v2_delta` event is
+                        # accumulated by the frontend MessageStream.
+
+                        # P5-S1: SessionActivity bumping. Every AgentEvent
+                        # for a Code-mode session feeds the supervisor
+                        # watchdog's view of the world (last_event_ts,
+                        # recent_events ring buffer, tool signature window).
+                        # Companion-mode sessions are not tracked.
+                        _sa_store = service_context.get("session_activity") if _in_code_mode else None
+                        if _sa_store is not None:
+                            try:
+                                await _sa_store.set_status(_sid, "running")
+                            except Exception:
+                                pass
+
+                        async for ev in _agent.run(_msgs, session_id=_sid, stream=True):
+                            # P5-S1: bump activity BEFORE forwarding so the
+                            # watchdog sees the latest event even if the
+                            # WS send fails. Best-effort — never let a
+                            # bump failure abort the agent loop.
+                            if _sa_store is not None:
+                                try:
+                                    if isinstance(ev, _TCEv) and ev.tool_call:
+                                        await _sa_store.bump(
+                                            _sid,
+                                            event_type="tool_call",
+                                            name=ev.tool_call.name,
+                                            args=ev.tool_call.arguments,
+                                            iteration=ev.iteration,
+                                            max_iterations=_max_iter,
+                                        )
+                                    elif isinstance(ev, _TREv):
+                                        await _sa_store.bump(
+                                            _sid,
+                                            event_type="tool_result",
+                                            name=ev.tool_name,
+                                            ok=True,
+                                            snippet=(ev.result or "")[:80],
+                                            iteration=ev.iteration,
+                                            max_iterations=_max_iter,
+                                        )
+                                    elif isinstance(ev, _AsstEv):
+                                        await _sa_store.bump(
+                                            _sid,
+                                            event_type="assistant_message",
+                                            iteration=ev.iteration,
+                                            max_iterations=_max_iter,
+                                        )
+                                    elif isinstance(ev, _FinEv):
+                                        await _sa_store.bump(
+                                            _sid,
+                                            event_type="final",
+                                            iteration=ev.iteration,
+                                            max_iterations=_max_iter,
+                                        )
+                                        await _sa_store.set_status(_sid, "idle")
+                                    elif isinstance(ev, _ErrEv):
+                                        await _sa_store.bump(
+                                            _sid,
+                                            event_type="error",
+                                            snippet=(ev.detail or ev.reason or "")[:80],
+                                            iteration=ev.iteration,
+                                            max_iterations=_max_iter,
+                                        )
+                                        await _sa_store.mark_error_pending(_sid)
+                                except Exception as _bump_exc:  # noqa: BLE001
+                                    logger.debug("session_activity_bump_failed", error=str(_bump_exc))
+                            if isinstance(ev, _AsstDelta):
+                                await _ws.send_json({
+                                    "type": "chat_v2_delta",
+                                    "payload": {
+                                        "session_id": _sid,
+                                        "kind": ev.kind,
+                                        "content": ev.content,
+                                        "iteration": ev.iteration,
+                                    },
+                                })
+                            elif isinstance(ev, _AsstEv):
                                 # P4-S20-LLM-Unified-fix: AgentLoop 在每次
                                 # LLM turn 后 emit AsstEv，最终轮还会 emit
                                 # FinalEvent —— 两者带相同 content。前端
@@ -1541,12 +2433,21 @@ async def control_channel(ws: WebSocket):
                                 # 步骤（带 tool_calls）emit chat_response
                                 # 作为"思考中"提示；最终回复让 FinalEvent
                                 # 唯一负责。
+                                # P4-S23: stamp session_id on every event
+                                # so the frontend can route it to the right
+                                # tile / chat slot when multiple sessions
+                                # are running.
                                 if ev.content and ev.tool_calls:
                                     await _ws.send_json({
                                         "type": "chat_response",
-                                        "payload": {"text": ev.content, "provider": "v2"},
+                                        "payload": {"text": ev.content, "provider": "v2", "session_id": _sid},
                                     })
                             elif isinstance(ev, _TCEv) and ev.tool_call:
+                                # Emit BOTH the legacy tool_use_event (kept
+                                # for the pet's permission popup wiring)
+                                # AND a code-panel-friendly `tool_call`
+                                # event so the new MessageStream renders
+                                # ToolCallCard inline.
                                 await _ws.send_json({
                                     "type": "tool_use_event",
                                     "payload": {
@@ -1554,6 +2455,16 @@ async def control_channel(ws: WebSocket):
                                         "tool_name": ev.tool_call.name,
                                         "params": ev.tool_call.arguments,
                                         "turn": ev.iteration,
+                                        "session_id": _sid,
+                                    },
+                                })
+                                await _ws.send_json({
+                                    "type": "tool_call",
+                                    "payload": {
+                                        "name": ev.tool_call.name,
+                                        "arguments": ev.tool_call.arguments,
+                                        "turn": ev.iteration,
+                                        "session_id": _sid,
                                     },
                                 })
                             elif isinstance(ev, _TREv):
@@ -1568,37 +2479,66 @@ async def control_channel(ws: WebSocket):
                                         "tool_name": ev.tool_name,
                                         "result": _parsed,
                                         "turn": ev.iteration,
+                                        "session_id": _sid,
+                                    },
+                                })
+                                await _ws.send_json({
+                                    "type": "tool_result",
+                                    "payload": {
+                                        "tool": ev.tool_name,
+                                        "ok": True,  # _TREv only fires on success; failures arrive as _ErrEv
+                                        "result": ev.result,
+                                        "turn": ev.iteration,
+                                        "session_id": _sid,
                                     },
                                 })
                             elif isinstance(ev, _FinEv):
                                 final_text = ev.content
+                                final_reasoning = ev.reasoning_content
+                                # P4-S24: persist the assistant row IN-LINE
+                                # so a same-sid cancellation (next user
+                                # message arriving before this task's
+                                # post-loop tail finishes) can't strand
+                                # it. Without this, the next turn's
+                                # history rebuild misses the prior
+                                # assistant entirely. asyncio.shield
+                                # would do too but inlining is simpler
+                                # and the persist cost is sub-ms anyway.
+                                if final_text and _sdb is not None:
+                                    try:
+                                        _asst_id_inline = await _sdb.append_message(
+                                            session_id=_sid,
+                                            role="assistant",
+                                            content=final_text,
+                                            reasoning_content=(final_reasoning or None),
+                                        )
+                                        if _vw is not None and _asst_id_inline is not None:
+                                            await _vw.enqueue(_asst_id_inline, final_text)
+                                    except Exception as exc:  # noqa: BLE001
+                                        logger.warning(
+                                            "chat_persist_assistant_failed",
+                                            error=str(exc),
+                                        )
                                 await _ws.send_json({
                                     "type": "chat_v2_final",
-                                    "payload": {"text": ev.content, "iterations": ev.iteration},
+                                    "payload": {"text": ev.content, "iterations": ev.iteration, "session_id": _sid},
                                 })
                             elif isinstance(ev, _ErrEv):
+                                # P4-S25 (2026-05-09): cross-endpoint
+                                # fallback removed. LLM errors now
+                                # surface to the user directly.
                                 await _ws.send_json({
                                     "type": "chat_v2_error",
-                                    "payload": {"reason": ev.reason, "detail": ev.detail},
+                                    "payload": {"reason": ev.reason, "detail": ev.detail, "session_id": _sid},
                                 })
 
-                        # P4-S20-LLM-Unified-fix: 持久化 assistant 回复 +
-                        # 入向量库。final_text 可能为空（譬如 LLM 只调
-                        # tool 没生成最终 text），这种情况就跳过。
-                        if final_text and _sdb is not None:
-                            try:
-                                _asst_id = await _sdb.append_message(
-                                    session_id=_sid,
-                                    role="assistant",
-                                    content=final_text,
-                                )
-                                if _vw is not None and _asst_id is not None:
-                                    await _vw.enqueue(_asst_id, final_text)
-                            except Exception as exc:  # noqa: BLE001
-                                logger.warning(
-                                    "chat_persist_assistant_failed",
-                                    error=str(exc),
-                                )
+                        # P4-S24: assistant persistence moved INTO the
+                        # FinalEvent handler above so a same-sid task
+                        # cancellation (race when user fires the next
+                        # message faster than the post-loop tail can
+                        # finish) doesn't strand the assistant row.
+                        # The `final_text and _sdb` guard there already
+                        # mirrors what this block used to do.
 
                         # ContextAssembler feedback — 写入这一轮最终
                         # 响应到决策表，让 ContextTracePanel 能看到时长。
@@ -1635,17 +2575,85 @@ async def control_channel(ws: WebSocket):
                             error=str(exc),
                             error_type=type(exc).__name__,
                         )
+                        # P4-S23: include session_id so the panel can
+                        # show the error on the right tile/slot.
+                        # P4-S22 carryover: also include error_type so
+                        # the UI can display "ConnectError" instead of
+                        # falling back to "unknown" when str(exc) is "".
                         try:
                             await _ws.send_json({
                                 "type": "chat_v2_error",
-                                "payload": {"error": str(exc)},
+                                "payload": {
+                                    "error": str(exc) or type(exc).__name__,
+                                    "detail": type(exc).__name__,
+                                    "session_id": _sid,
+                                },
                             })
                         except Exception:
                             pass
 
                 # Fire-and-forget — recv loop must keep draining
                 # permission_response while we're awaiting the gate.
-                asyncio.create_task(_run_chat(ws, text, session_id))
+                # P4-S23: stamp the per-message session_id so multi-
+                # session panels work correctly. Track in-flight task
+                # per-sid so a same-sid retry cancels its predecessor
+                # (prevents stale tool calls if user rage-types).
+                _prev_task = _chat_inflight.get(_msg_sid)
+                if _prev_task is not None and not _prev_task.done():
+                    _prev_task.cancel()
+                _chat_task = asyncio.create_task(_run_chat(ws, text, _msg_sid))
+                _chat_inflight[_msg_sid] = _chat_task
+
+                # P5-S4: register a done_callback so when this task
+                # finishes (success or cancel), we check whether the
+                # supervisor pushed a hint while it was running and
+                # automatically schedule a follow-up turn to consume it.
+                # Critical safety property: if the user retried in the
+                # meantime, _chat_inflight[sid] points at a NEWER task —
+                # we detect that and skip, letting the new task consume
+                # the hint via its own message-build pop_all path.
+                def _make_followup_cb(target_sid: str, target_ws):
+                    own_task = _chat_task
+
+                    def _cb(_t):
+                        async def _maybe_followup():
+                            try:
+                                cur = _chat_inflight.get(target_sid)
+                                if cur is not own_task:
+                                    # User retried (or another follow-up
+                                    # took over) — let that task handle hints.
+                                    return
+                                _nq_check = service_context.get("nudge_queue")
+                                if _nq_check is None or not await _nq_check.peek(target_sid):
+                                    return
+                                # Schedule a follow-up turn with synthesized
+                                # trigger text. ``_run_chat`` will pop the
+                                # hint via the standard injection path.
+                                new_task = asyncio.create_task(
+                                    _run_chat(target_ws, "<<supervisor_followup>>", target_sid)
+                                )
+                                _chat_inflight[target_sid] = new_task
+                                new_task.add_done_callback(_make_followup_cb(target_sid, target_ws))
+                                logger.info(
+                                    "supervisor_followup_scheduled sid=%s",
+                                    target_sid,
+                                )
+                            except Exception as _exc:  # noqa: BLE001
+                                logger.debug(
+                                    "supervisor_followup_failed sid=%s error=%s",
+                                    target_sid,
+                                    _exc,
+                                )
+
+                        try:
+                            asyncio.create_task(_maybe_followup())
+                        except RuntimeError:
+                            # No running loop (shutdown); silently skip.
+                            pass
+
+                    return _cb
+
+                _chat_task.add_done_callback(_make_followup_cb(_msg_sid, ws))
 
             elif msg_type == "interrupt":
                 # Forward barge-in to the audio pipeline (separate WS). Cancels
@@ -1696,6 +2704,61 @@ async def control_channel(ws: WebSocket):
                 from provider_test_connection import handle_provider_test_connection
                 await handle_provider_test_connection(ws, raw.get("payload", {}) or {})
 
+            elif msg_type == "supervisor_user_choice":
+                # P5-S2/S3: user clicked a button on the supervisor bubble.
+                # We log + persist for audit; behavior change is future work.
+                _payload = raw.get("payload", {}) or {}
+                _target_sid = _payload.get("session_id") or session_id
+                _alert_id = str(_payload.get("alert_id") or "")
+                _btn_idx = int(_payload.get("button_index") or 0)
+                _btn_text = str(_payload.get("button_text") or "")
+                logger.info(
+                    "supervisor_user_choice sid=%s alert=%s button_idx=%d text=%s",
+                    _target_sid, _alert_id, _btn_idx, _btn_text,
+                )
+                _sdb_for_choice = service_context.get("session_db")
+                if _sdb_for_choice is not None:
+                    try:
+                        await _sdb_for_choice.append_supervisor_hint(
+                            session_id=_target_sid,
+                            alert_id=_alert_id,
+                            hint_text=_btn_text,
+                            action="user_choice",
+                            severity="green",
+                            user_button=_btn_text,
+                        )
+                    except Exception as _exc:
+                        logger.debug("supervisor_user_choice_audit_failed error=%s", _exc)
+
+            elif msg_type == "supervisor_toggle":
+                # P5-S2: enable / disable the supervisor at runtime.
+                # When disabling: cancel watchdog, clear queues, drop activity.
+                # When enabling: rebuild watchdog if not present (best-effort —
+                # full restart is recommended for reliability).
+                _payload = raw.get("payload", {}) or {}
+                _enabled = bool(_payload.get("enabled", True))
+                _wd_inst = service_context.get("watchdog")
+                if _enabled:
+                    if _wd_inst is None or not _wd_inst.is_running():
+                        logger.info("supervisor_toggle_enable_requested (restart_recommended)")
+                    else:
+                        _wd_inst.enable()
+                        logger.info("supervisor_toggle_enabled")
+                else:
+                    if _wd_inst is not None:
+                        _wd_inst.disable()
+                    _nq_inst = service_context.get("nudge_queue")
+                    if _nq_inst is not None:
+                        try:
+                            await _nq_inst.clear()
+                        except Exception:
+                            pass
+                    logger.info("supervisor_toggle_disabled")
+                await ws.send_json({
+                    "type": "supervisor_toggle_ack",
+                    "payload": {"enabled": _enabled},
+                })
+
             else:
                 await ws.send_json({
                     "type": "error",
@@ -1735,6 +2798,9 @@ async def audio_channel(ws: WebSocket):
 
     # V5 §2.3 + S1: voice pipeline routes through agent_engine (not llm directly)
     # so that S2 memory / S3 tools flow uniformly through voice and text paths.
+    # P4-S21 #13: also pass the v2 tool stack (registry + permission gate +
+    # raw LLM provider) so voice utterances run through AgentLoop and can
+    # actually invoke tools — same code path text chat already uses.
     pipeline = VoicePipeline(
         vad=session_vad,
         asr=service_context.asr_engine,
@@ -1745,6 +2811,10 @@ async def audio_channel(ws: WebSocket):
         vad_threshold_during_tts=config.voice.vad_threshold_during_tts,
         min_speech_ms_during_tts=config.voice.min_speech_ms_during_tts,
         tts_cooldown_ms=config.voice.tts_cooldown_ms,
+        service_context=service_context,
+        tool_registry_v2=deskpet_tool_registry_v2,
+        permission_gate_v2=permission_gate_v2,
+        local_llm=local_llm,
     )
     # Register so control-channel `interrupt` messages can reach us.
     _pipelines[session_id] = pipeline

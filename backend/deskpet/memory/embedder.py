@@ -47,23 +47,35 @@ EMBEDDING_DIM = 1024
 
 
 def _default_model_path() -> Path:
-    """BGE-M3 weights 默认目录：``%LocalAppData%\\deskpet\\models\\bge-m3-int8``。
+    """BGE-M3 weights 默认目录解析。
 
-    沿用 ``backend/scripts/download_bge_m3.py`` 的约定（SUBDIR="bge-m3-int8"）。
-    我们这里不 import ``deskpet.paths``（避免循环），直接用 platformdirs
-    解析，和下载脚本保持一致。
+    P4-S20+ 改成走 ``paths.resolve_model_dir("bge-m3-int8")``，统一进
+    install-bundle / user_models_dir / dev-assets 的多级 fallback 链
+    （详见 ``backend/paths.py``）。
+
+    历史上这里直接用 platformdirs 拼出 ``%LocalAppData%/deskpet/models/
+    bge-m3-int8``，绕过了 ``paths.py``。结果是：装好的 install bundle
+    把 BGE-M3 打到了 ``_MEIPASS/models/bge-m3-int8/``，但 Embedder 还
+    去找 LocalAppData，找不到就降级到 mock —— 等于打包白做。
     """
     try:
-        import platformdirs
-    except ImportError:
-        # 极端情况：platformdirs 不可用 → 给一个相对路径，反正后续
-        # exists() 会返回 False 触发 mock 降级。
-        return Path("./models/bge-m3-int8")
+        # Lazy import：``backend/`` 在 sys.path 顶层，``paths`` 是 top-level
+        # 模块；从 ``deskpet.memory.embedder`` 反向 import 不会形成循环
+        # （paths 不依赖 deskpet.*）。lazy 是因为某些极简测试 stub 可能
+        # 没把 backend/ 放进 sys.path。
+        from paths import resolve_model_dir  # type: ignore[import-not-found]
 
-    local_base = Path(
-        platformdirs.user_data_dir("deskpet", appauthor=False, roaming=False)
-    )
-    return (local_base / "models" / "bge-m3-int8").resolve()
+        return resolve_model_dir("bge-m3-int8")
+    except ImportError:
+        # 极端 fallback：复制原始硬编码逻辑，至少能在 dev 跑起来。
+        try:
+            import platformdirs
+        except ImportError:
+            return Path("./models/bge-m3-int8")
+        local_base = Path(
+            platformdirs.user_data_dir("deskpet", appauthor=False, roaming=False)
+        )
+        return (local_base / "models" / "bge-m3-int8").resolve()
 
 
 def _mock_vector(text: str, dim: int = EMBEDDING_DIM) -> np.ndarray:

@@ -1,8 +1,11 @@
 use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 mod backend_launch;
 mod click_through;
+mod commands;
 mod crash_reports;
 mod gpu_check;
 mod paths;
@@ -54,6 +57,16 @@ pub fn run() {
             secrets::get_cloud_api_key,
             secrets::delete_cloud_api_key,
             secrets::has_cloud_api_key,
+            // P4-S21 #1: HTTP proxy from frontend to backend, bypasses
+            // webview's https→http mixed-content block.
+            commands::update_cloud_config,
+            // P4-S21 #7: graceful Quit invoked by Toolbar ⏻ button.
+            commands::app_exit,
+            // P4-S22: native folder picker for Code mode entry.
+            commands::open_directory_dialog,
+            // P4-S23: second-window (code panel) open/close commands.
+            commands::open_code_panel,
+            commands::close_code_panel,
         ])
         .setup(|app| {
             // P3-S2: NVIDIA precheck. Phase-3 contract is CUDA-only, so
@@ -84,10 +97,80 @@ pub fn run() {
                     eprintln!("[setup] grant_media_permissions failed: {e:?}");
                 }
             }
+
+            // P4-S22+ portable mode: pre-create `<install>/userdata/`
+            // so the user can drop files there from a fresh install
+            // (browse to it via a "Open data folder" tray entry,
+            // future feature). Backend's `paths.py` will also lazily
+            // mkdir on first access if this fails — strictly best-
+            // effort here.
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(install_dir) = exe.parent() {
+                    let _ = std::fs::create_dir_all(install_dir.join("userdata"));
+                }
+            }
+
+            // P4-S21 #7: system tray icon with Show/Hide/Quit menu.
+            // Without this the only way to surface a hidden pet (or a
+            // pet whose toolbar is offscreen) is to kill the process.
+            let show_item = MenuItem::with_id(app, "show", "显示桌宠", true, None::<&str>)?;
+            let hide_item = MenuItem::with_id(app, "hide", "隐藏桌宠", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出 DeskPet", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &hide_item, &quit_item])?;
+            let _tray = TrayIconBuilder::with_id("deskpet-tray")
+                .icon(app.default_window_icon().cloned().expect("icon set in tauri.conf.json"))
+                .tooltip("DeskPet")
+                .menu(&tray_menu)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "hide" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                    }
+                    "quit" => {
+                        if let Some(state) = app.try_state::<BackendProcess>() {
+                            state.kill_child();
+                        }
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .build(app)?;
+
             Ok(())
         })
         .on_window_event(|window, event| {
+            // P4-S23: when the user clicks the OS title-bar X on the
+            // *code panel*, hide instead of destroy — keeps zustand
+            // state, chat scrollback, the WebSocket and the URL
+            // fragment alive across "I closed it by mistake" moments.
+            // The pet (main) window keeps destroy-on-close because
+            // closing the pet really is a quit signal.
+            //
+            // Reopen reliability is solved at the show() side via the
+            // alwaysOnTop pulse in `commands::open_code_panel`, NOT by
+            // destroying here — destroying breaks dev-mode hash routing
+            // (`WebviewUrl::App` drops the `#/code-panel` fragment when
+            // used dynamically, leaving the rebuilt webview blank).
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "code-panel" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
+            }
             if let tauri::WindowEvent::Destroyed = event {
+                // Only the main pet's destroy means "quit the app";
+                // any other window is a non-event for the supervisor.
+                if window.label() != "main" {
+                    return;
+                }
                 if let Some(state) = window.try_state::<BackendProcess>() {
                     state.kill_child();
                 }

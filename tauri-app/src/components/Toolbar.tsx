@@ -23,6 +23,12 @@ interface Props {
   onTrace: () => void;
   onSettings: () => void;
   onSkillStore: () => void;
+  /** P4-S21 #7: invoked when user clicks the Quit (⏻) button. */
+  onExit: () => void;
+  /** P4-S22: open Code mode entry flow (folder picker + IPC). */
+  onCodeMode: () => void;
+  /** True when Code mode is currently active for this session. */
+  codeModeActive?: boolean;
   autostartReady: boolean;
   autostartEnabled: boolean;
   onToggleAutostart: () => void;
@@ -39,6 +45,9 @@ export const Toolbar: React.FC<Props> = ({
   onTrace,
   onSettings,
   onSkillStore,
+  onExit,
+  onCodeMode,
+  codeModeActive,
   autostartReady,
   autostartEnabled,
   onToggleAutostart,
@@ -87,6 +96,23 @@ export const Toolbar: React.FC<Props> = ({
         onClick={onSkillStore}
       >
         🏪
+      </IconButton>
+      {/* P4-S22: Code mode entry. Click → folder picker → enters Code
+          mode for the chosen project. When active, button shows green
+          tint to make the mode obvious. */}
+      <IconButton
+        title={codeModeActive ? "Code 模式已开启 — 点击切换项目" : "进入 Code 模式（编程助手）"}
+        testId="code-mode-toggle"
+        onClick={onCodeMode}
+        active={codeModeActive}
+      >
+        🔧
+      </IconButton>
+      {/* P4-S21 #7: Quit button. Without this, after backend startup
+          finishes the only path to exit was Task Manager — the boot
+          overlay's Exit button hides itself once startup succeeds. */}
+      <IconButton title="退出 DeskPet" testId="exit-toggle" onClick={onExit}>
+        ⏻
       </IconButton>
 
       <Divider />
@@ -155,7 +181,8 @@ const IconButton: React.FC<{
   onClick: () => void;
   title: string;
   testId?: string;
-}> = ({ children, onClick, title, testId }) => (
+  active?: boolean;
+}> = ({ children, onClick, title, testId, active }) => (
   <button
     type="button"
     className="bp-btn-icon"
@@ -169,8 +196,8 @@ const IconButton: React.FC<{
       fontSize: 13,
       padding: 0,
       // override the dark overlay for tighter integration with toolbar bg
-      background: "transparent",
-      borderColor: "transparent",
+      background: active ? "rgba(34, 197, 94, 0.30)" : "transparent",
+      borderColor: active ? "rgba(34, 197, 94, 0.50)" : "transparent",
       color: tokens.color.surface.darkText,
     }}
   >

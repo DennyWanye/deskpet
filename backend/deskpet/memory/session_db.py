@@ -251,16 +251,23 @@ class SessionDB:
         content: str,
         tool_call_id: str | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
+        reasoning_content: str | None = None,
     ) -> int:
         """写入一条 message。
 
         FTS5 同步通过 migration 里的 trigger 自动完成，无需额外 insert。
         返回新 message 的 id（lastrowid）。
+
+        ``reasoning_content`` (P4-S24): 思考模式 LLM 的 chain-of-thought
+        原文。仅 role='assistant' 行需要；为 None / 空字符串时落 NULL。
+        多轮对话时会被读出来塞回 LLM payload，否则 DeepSeek V4 Pro
+        / Qwen3 thinking 之类会以 HTTP 400 拒绝下一轮请求。
         """
         if not self._initialized:
             await self.initialize()
 
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        reasoning = reasoning_content if reasoning_content else None
 
         async def _do():
             async with self._write_lock:
@@ -269,8 +276,8 @@ class SessionDB:
                     cursor = await db.execute(
                         "INSERT INTO messages("
                         "session_id, role, content, created_at, "
-                        "tool_call_id, tool_calls"
-                        ") VALUES (?, ?, ?, ?, ?, ?)",
+                        "tool_call_id, tool_calls, reasoning_content"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (
                             session_id,
                             role,
@@ -278,6 +285,7 @@ class SessionDB:
                             time.time(),
                             tool_call_id,
                             tool_calls_json,
+                            reasoning,
                         ),
                     )
                     msg_id = cursor.lastrowid
@@ -317,7 +325,7 @@ class SessionDB:
             cursor = await db.execute(
                 "SELECT id, session_id, role, content, created_at, "
                 "salience, decay_last_touch, user_emotion, audio_file_path, "
-                "tool_call_id, tool_calls "
+                "tool_call_id, tool_calls, reasoning_content "
                 "FROM messages WHERE session_id = ? "
                 "ORDER BY created_at ASC, id ASC "
                 "LIMIT ? OFFSET ?",
@@ -347,6 +355,7 @@ class SessionDB:
                 "SELECT m.id, m.session_id, m.role, m.content, m.created_at, "
                 "m.salience, m.decay_last_touch, m.user_emotion, "
                 "m.audio_file_path, m.tool_call_id, m.tool_calls, "
+                "m.reasoning_content, "
                 "messages_fts.rank AS rank "
                 "FROM messages_fts "
                 "JOIN messages m ON m.id = messages_fts.rowid "
@@ -359,6 +368,7 @@ class SessionDB:
                 "SELECT m.id, m.session_id, m.role, m.content, m.created_at, "
                 "m.salience, m.decay_last_touch, m.user_emotion, "
                 "m.audio_file_path, m.tool_call_id, m.tool_calls, "
+                "m.reasoning_content, "
                 "messages_fts.rank AS rank "
                 "FROM messages_fts "
                 "JOIN messages m ON m.id = messages_fts.rowid "
@@ -562,6 +572,372 @@ class SessionDB:
 
         return await self._with_retry(_do)
 
+    # ------------------------------------------------------------------
+    # P4-S22 Code Mode — todo list per session
+    # ------------------------------------------------------------------
+
+    async def replace_code_todos(
+        self,
+        session_id: str,
+        items: list[dict[str, Any]],
+    ) -> None:
+        """Replace the entire todo list for ``session_id`` atomically.
+
+        ``items`` is a list of dicts shaped like::
+
+            {
+                "content": "Implement A",
+                "activeForm": "Implementing A",
+                "status": "pending" | "in_progress" | "completed",
+            }
+
+        Mirrors Claude Code's TodoWrite semantics: the tool is
+        idempotent — every call replaces the full list, the LLM doesn't
+        track diffs. Sort order is preserved by index in ``items``.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do():
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    await db.execute(
+                        "DELETE FROM code_todos WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    for idx, item in enumerate(items):
+                        status = item.get("status", "pending")
+                        if status not in {"pending", "in_progress", "completed"}:
+                            status = "pending"
+                        await db.execute(
+                            """
+                            INSERT INTO code_todos
+                              (session_id, content, active_form, status, sort_order)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (
+                                session_id,
+                                str(item.get("content", ""))[:2000],
+                                str(item.get("activeForm", ""))[:2000],
+                                status,
+                                idx,
+                            ),
+                        )
+                    await db.commit()
+
+        await self._with_retry(_do)
+
+    async def get_code_todos(self, session_id: str) -> list[dict[str, Any]]:
+        """Return the current todo list for ``session_id`` in render order."""
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do():
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute("PRAGMA busy_timeout=5000")
+                cursor = await db.execute(
+                    """
+                    SELECT content, active_form, status, sort_order
+                    FROM code_todos
+                    WHERE session_id = ?
+                    ORDER BY sort_order
+                    """,
+                    (session_id,),
+                )
+                rows = await cursor.fetchall()
+                await cursor.close()
+                return [
+                    {
+                        "content": row[0],
+                        "activeForm": row[1],
+                        "status": row[2],
+                        "sort_order": row[3],
+                    }
+                    for row in rows
+                ]
+
+        return await self._with_retry(_do)
+
+    async def upsert_code_session(
+        self,
+        *,
+        base_session_id: str,
+        code_session_id: str,
+        project_root: str,
+        project_name: str,
+    ) -> None:
+        """P4-S25 B4: persist the project enrollment so it survives restart.
+
+        Called from CodeModeManager.enter(). last_active_at refreshes on
+        every call so newest projects rise to the top of dashboards.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do() -> None:
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    await db.execute(
+                        """
+                        INSERT INTO code_sessions(
+                            base_session_id, code_session_id,
+                            project_root, project_name,
+                            created_at, last_active_at
+                        ) VALUES (?, ?, ?, ?, julianday('now'), julianday('now'))
+                        ON CONFLICT(base_session_id) DO UPDATE SET
+                            code_session_id = excluded.code_session_id,
+                            project_root    = excluded.project_root,
+                            project_name    = excluded.project_name,
+                            last_active_at  = julianday('now')
+                        """,
+                        (base_session_id, code_session_id, project_root, project_name),
+                    )
+                    await db.commit()
+
+        await self._with_retry(_do)
+
+    async def list_code_sessions(self) -> list[dict[str, Any]]:
+        """P4-S25 B4: read the persisted project list, newest first.
+
+        Used by CodeModeManager.load_persisted() at startup to repopulate
+        the in-memory state map. Order doesn't strictly matter (both
+        sidebar and dashboard sort their own way) but newest-first is
+        a sensible default if anyone iterates raw.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do() -> list[dict[str, Any]]:
+            async with aiosqlite.connect(self._db_path) as db:
+                cursor = await db.execute(
+                    """
+                    SELECT base_session_id, code_session_id,
+                           project_root, project_name,
+                           created_at, last_active_at
+                    FROM code_sessions
+                    ORDER BY last_active_at DESC
+                    """
+                )
+                rows = await cursor.fetchall()
+                await cursor.close()
+                return [
+                    {
+                        "base_session_id": r[0],
+                        "code_session_id": r[1],
+                        "project_root": r[2],
+                        "project_name": r[3],
+                        "created_at": r[4],
+                        "last_active_at": r[5],
+                    }
+                    for r in rows
+                ]
+
+        return await self._with_retry(_do)
+
+    async def delete_code_session(self, base_session_id: str) -> int:
+        """P4-S25 B4: remove a persisted project enrollment.
+
+        Called from the `code_session_delete` IPC handler alongside
+        delete_code_todos. We do NOT cascade-delete `messages` rows —
+        chat history for that code_session_id stays in the DB so re-
+        adding the same project root later resumes the same thread.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do() -> int:
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    cursor = await db.execute(
+                        "DELETE FROM code_sessions WHERE base_session_id = ?",
+                        (base_session_id,),
+                    )
+                    deleted = cursor.rowcount or 0
+                    await cursor.close()
+                    await db.commit()
+                    return int(deleted)
+
+        return await self._with_retry(_do)
+
+    # ─────────────────────────────────────────────────────────────────
+    # P5-S1: supervisor_hints — audit log for the watchdog's interventions.
+    # Every nudge / ask_user / cancel_coerced action emitted by the
+    # supervisor LLM gets a row here, plus a follow-up ``user_choice``
+    # row when the user clicks a bubble button. Used for: debugging
+    # ("why did agent suddenly try a different approach?"), Settings UI
+    # count badges, and a future cost-estimate feature.
+    # ─────────────────────────────────────────────────────────────────
+
+    async def append_supervisor_hint(
+        self,
+        *,
+        session_id: str,
+        alert_id: str,
+        hint_text: str,
+        action: str,
+        severity: str,
+        diagnosis: str = "",
+        user_button: str | None = None,
+        ts: int | None = None,
+    ) -> int:
+        """Insert one supervisor_hints row. Returns the new row id."""
+        if not self._initialized:
+            await self.initialize()
+        import time as _time
+
+        ts_val = int(ts if ts is not None else _time.time())
+
+        async def _do() -> int:
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    cursor = await db.execute(
+                        """
+                        INSERT INTO supervisor_hints(
+                            session_id, alert_id, hint_text, action, severity,
+                            diagnosis, user_button, ts
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            session_id,
+                            alert_id,
+                            hint_text,
+                            action,
+                            severity,
+                            diagnosis,
+                            user_button,
+                            ts_val,
+                        ),
+                    )
+                    new_id = int(cursor.lastrowid or 0)
+                    await cursor.close()
+                    await db.commit()
+                    return new_id
+
+        return await self._with_retry(_do)
+
+    async def list_supervisor_hints(
+        self,
+        *,
+        session_id: str | None = None,
+        since_ts: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Read supervisor audit rows newest-first.
+
+        Filter by ``session_id`` to scope to one session; ``since_ts``
+        for "today's interventions" style queries; ``limit`` caps result
+        set so a long-lived backend doesn't dump 10K rows over IPC.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do() -> list[dict[str, Any]]:
+            async with aiosqlite.connect(self._db_path) as db:
+                conditions: list[str] = []
+                params: list[Any] = []
+                if session_id is not None:
+                    conditions.append("session_id = ?")
+                    params.append(session_id)
+                if since_ts is not None:
+                    conditions.append("ts >= ?")
+                    params.append(int(since_ts))
+                where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+                params.append(int(limit))
+                cursor = await db.execute(
+                    f"""
+                    SELECT id, session_id, alert_id, hint_text, action,
+                           severity, diagnosis, user_button, ts
+                    FROM supervisor_hints
+                    {where}
+                    ORDER BY ts DESC, id DESC
+                    LIMIT ?
+                    """,
+                    tuple(params),
+                )
+                rows = await cursor.fetchall()
+                await cursor.close()
+                return [
+                    {
+                        "id": r[0],
+                        "session_id": r[1],
+                        "alert_id": r[2],
+                        "hint_text": r[3],
+                        "action": r[4],
+                        "severity": r[5],
+                        "diagnosis": r[6],
+                        "user_button": r[7],
+                        "ts": r[8],
+                    }
+                    for r in rows
+                ]
+
+        return await self._with_retry(_do)
+
+    async def count_supervisor_hints(
+        self,
+        *,
+        session_id: str | None = None,
+        since_ts: int | None = None,
+    ) -> int:
+        """Count audit rows matching filter (used by Settings UI badge)."""
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do() -> int:
+            async with aiosqlite.connect(self._db_path) as db:
+                conditions: list[str] = []
+                params: list[Any] = []
+                if session_id is not None:
+                    conditions.append("session_id = ?")
+                    params.append(session_id)
+                if since_ts is not None:
+                    conditions.append("ts >= ?")
+                    params.append(int(since_ts))
+                where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+                cursor = await db.execute(
+                    f"SELECT COUNT(*) FROM supervisor_hints {where}",
+                    tuple(params),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                return int(row[0]) if row else 0
+
+        return await self._with_retry(_do)
+
+    async def delete_code_todos(self, session_id: str) -> int:
+        """P4-S24 followup: wipe all todos for a code session.
+
+        Used by ``code_session_delete`` IPC when the user removes a
+        project from the code panel. Returns the number of rows deleted
+        (0 if the session had none).
+
+        We deliberately do NOT touch ``messages`` rows — chat history
+        for the project survives so the user can resume the same
+        ``code-<sha>`` session later if they re-add the same project
+        root. Same philosophy as ``CodeModeManager.exit``.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do() -> int:
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    cursor = await db.execute(
+                        "DELETE FROM code_todos WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    deleted = cursor.rowcount or 0
+                    await cursor.close()
+                    await db.commit()
+                    return int(deleted)
+
+        return await self._with_retry(_do)
+
 
 # ----------------------------------------------------------------------
 # Row mapping helpers
@@ -579,6 +955,10 @@ _BASE_COLUMNS = (
     "audio_file_path",
     "tool_call_id",
     "tool_calls",
+    # P4-S24: chain-of-thought from thinking-mode LLMs (DeepSeek V4 Pro,
+    # Qwen3 thinking, etc.). NULL for non-thinking models. Round-tripped
+    # back into LLM payloads via MemoryComponent so the API doesn't 400.
+    "reasoning_content",
 )
 
 

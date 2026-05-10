@@ -290,6 +290,39 @@ import type {
   ToolUseEvent,
 } from "./skillPlatform";
 
+// P4-S22 — Code mode IPC payloads.
+export interface CodeModeStateMessage {
+  type: "code_mode_state";
+  payload: {
+    enabled: boolean;
+    project_root?: string;
+    project_name?: string;
+    code_session_id?: string;
+    error?: string;
+  };
+}
+
+export interface CodeTodoUpdateMessage {
+  type: "code_todo_update";
+  payload: {
+    session_id?: string;
+    items: {
+      content: string;
+      activeForm: string;
+      status: "pending" | "in_progress" | "completed";
+      sort_order?: number;
+    }[];
+  };
+}
+
+export interface CodeModeSuggestMessage {
+  type: "code_mode_suggest";
+  payload: {
+    trigger_text: string;
+    reason?: string;
+  };
+}
+
 export type IncomingMessage =
   | ChatResponse
   | PongMessage
@@ -310,6 +343,9 @@ export type IncomingMessage =
   | MemoryL1DeleteAck
   | EmbedderStatusResponse
   | PermissionRequest
-  | ToolUseEvent;
+  | ToolUseEvent
+  | CodeModeStateMessage
+  | CodeTodoUpdateMessage
+  | CodeModeSuggestMessage;
 
 export type AudioMessage = VADEvent | TranscriptMessage | TTSEndMessage | TTSBargeInMessage | ErrorMessage;

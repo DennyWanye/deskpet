@@ -7,6 +7,14 @@ html, body, #root {
   overflow: hidden;
   width: 100%;
   height: 100%;
+  /* Block accidental text selection on the (mostly transparent) shell.
+     Without this, double-clicking the empty area selects every absolute-
+     positioned child within the click radius — and the ::selection rule
+     below paints them all in semi-transparent blue, which looks like
+     "the entire window flashed blue". Inputs/textareas/code panels
+     re-enable selection via the rule below. */
+  user-select: none;
+  -webkit-user-select: none;
   /* Font stack: 中文优先 */
   font-family:
     "Inter",
@@ -24,6 +32,37 @@ html, body, #root {
   text-rendering: optimizeLegibility;
   /* Disable text auto-zoom */
   -webkit-text-size-adjust: 100%;
+}
+
+/* Re-allow text selection inside content surfaces. The blanket
+   `user-select: none` on #root is what kills the "double-click → blue
+   flash" UX bug; we still want the user to be able to select chat
+   transcripts, settings input values, code blocks, etc.
+
+   Element selectors cover bare HTML; class selectors cover React
+   components that explicitly opt in via `className="bp-selectable"`.
+   The `[role="dialog"] *` rule lets the user freely select any text
+   inside any modal panel (Settings, Memory, ContextTrace, etc.) —
+   modals are the obvious "I want to copy this" surface. */
+input, textarea, [contenteditable="true"], pre, code,
+.bp-selectable, .bp-selectable *,
+[role="dialog"], [role="dialog"] *,
+[data-bp-selectable], [data-bp-selectable] * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text;
+}
+
+/* Chat-bubble surfaces: DialogBar (the latest assistant line over the
+   pet), UserBubble (the 2-second echo of what the user typed/said),
+   and ChatHistoryPanel (the full transcript modal) — all need to be
+   user-selectable so the user can copy quotes / commands / file paths
+   the LLM emits.  Override the blanket #root rule for these. */
+.bp-chat-bubble, .bp-chat-bubble *,
+.bp-dialog-bar, .bp-dialog-bar *,
+.bp-user-bubble, .bp-user-bubble * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
 /* Selection color — accent blue */

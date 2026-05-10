@@ -89,6 +89,27 @@ min_speech_ms_during_tts = 400
 # of the audio being played out the speakers.
 tts_cooldown_ms = 300
 
+# P5-S1: pet supervisor — Watchdog + LLM self-check for stuck Code-mode
+# sessions. Disabled = no scan loop, no LLM calls, no broadcasts (degrades
+# DeskPet to its P4 behaviour). When enabled, scan_interval_seconds caps
+# the watchdog tick rate; stuck_threshold_seconds is the inactivity
+# trigger; max_hints_per_session caps queued supervisor hints to prevent
+# context bloat.
+[supervisor]
+enabled = true
+scan_interval_seconds = 60
+stuck_threshold_seconds = 900
+dedup_seconds = 720
+startup_grace_seconds = 30
+max_hints_per_session = 3
+# llm_provider = "default" reuses the main [llm] endpoint; "main" is an
+# alias. Future: "cheap" routes to a smaller model (gpt-5-mini etc.) to
+# minimise supervisor cost. Schema kept open for future provider IDs.
+llm_provider = "default"
+# Hard timeout per supervisor LLM call. 30s tracks the spec — anything
+# longer and the supervisor itself is suspect.
+llm_timeout_seconds = 30
+
 [memory]
 # P3-S7: leave db_path empty to use the OS-standard user data directory
 # (%AppData%\deskpet\data\memory.db on Windows). Set an absolute path

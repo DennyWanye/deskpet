@@ -6,6 +6,8 @@
 
 ---
 
+> **硬件兼容性：** 当前仅支持 NVIDIA GPU（CUDA-only）。AMD / Intel / CPU-only 路径作为长期 backlog，详见 [`HARDWARE_COMPROMISES.md`](./HARDWARE_COMPROMISES.md)。
+
 ## 目录结构
 
 ```

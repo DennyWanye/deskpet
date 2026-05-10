@@ -28,6 +28,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, get_args
 
 from ..types.skill_platform import (
@@ -81,6 +82,29 @@ class PermissionGate:
         # Session-scoped allow cache.
         # Key = (session_id, category, params_shape_hash)
         self._allow_cache: dict[tuple[str, str, str], bool] = {}
+        # P4-S21 #13: when True, every permission request is auto-allowed.
+        # Toggled from the Settings panel; default OFF (safe). Useful for
+        # voice-driven sessions where the user can't easily reach the
+        # PermissionPopup, or for power users who trust their own LLM
+        # config.
+        #
+        # P4-S25: now persisted to a small JSON file under the user data
+        # dir so the choice survives backend restart. (Originally stored
+        # only in process state — caused user-confusion when popups
+        # reappeared after a tauri dev restart even though they'd
+        # toggled it on.) The persistence path is set later via
+        # ``bind_persistence_path()`` once main.py knows where the user
+        # data dir lives.
+        self.auto_mode: bool = False
+        self._auto_mode_path: Path | None = None
+        # P4-S21 #13: caller-provided source tag, used by `_prompt` to
+        # decide whether to also speak the prompt out loud. Voice pipeline
+        # sets this to "voice" before running AgentLoop; main chat handler
+        # leaves it as None ("text" implicit).
+        self.current_source: Optional[str] = None
+        # Optional TTS engine for voice prompts. Wired by main.py at
+        # startup via `set_tts_engine`.
+        self._tts_engine: Optional[Any] = None
 
     # -----------------------------------------------------------------
     # Wiring
@@ -93,6 +117,61 @@ class PermissionGate:
         matching ``permission_response`` from the frontend.
         """
         self._responder = responder
+
+    def bind_persistence_path(self, path: Path) -> None:
+        """P4-S25: install the JSON path used to persist auto_mode.
+
+        Called once at startup by main.py with
+        ``<user_data_dir>/permissions_auto_mode.json``. After binding,
+        :meth:`load_auto_mode` reads from the path; subsequent IPC
+        toggles auto-save via :meth:`set_auto_mode`.
+        """
+        self._auto_mode_path = path
+
+    def load_auto_mode(self) -> bool:
+        """Read the persisted auto_mode flag and apply it to ``self``.
+
+        Returns the loaded value. False on any error (missing file,
+        corrupt JSON, etc.) — explicit opt-in stays the safe default.
+        """
+        if self._auto_mode_path is None or not self._auto_mode_path.exists():
+            return False
+        try:
+            data = json.loads(self._auto_mode_path.read_text(encoding="utf-8"))
+            self.auto_mode = bool(data.get("enabled", False))
+            return self.auto_mode
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auto_mode_load_failed: %s", exc)
+            return False
+
+    def set_auto_mode(self, enabled: bool) -> None:
+        """P4-S25: toggle auto_mode and persist to disk.
+
+        Replaces direct ``gate.auto_mode = ...`` assignment from main.py.
+        Writes are best-effort — if the disk write fails the in-memory
+        state still flips so the current session reflects the toggle.
+        """
+        self.auto_mode = bool(enabled)
+        if self._auto_mode_path is None:
+            return
+        try:
+            self._auto_mode_path.parent.mkdir(parents=True, exist_ok=True)
+            self._auto_mode_path.write_text(
+                json.dumps({"enabled": self.auto_mode}),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auto_mode_save_failed: %s", exc)
+
+    def set_tts_engine(self, tts: Any) -> None:
+        """Install a TTS engine used for voice-context prompt narration.
+
+        When ``current_source == 'voice'`` and a popup is about to fire,
+        the gate also queues a synthesized line like "我需要确认才能执行
+        ..." so the user knows to look at the screen. Best-effort: TTS
+        failures are swallowed; the popup still fires either way.
+        """
+        self._tts_engine = tts
 
     # -----------------------------------------------------------------
     # Public API
@@ -110,6 +189,16 @@ class PermissionGate:
         """
         if category not in _VALID_CATEGORIES:
             raise ValueError(f"unknown permission category: {category!r}")
+
+        # Layer 0 (P4-S21 #13): auto-mode short-circuit. Beats deny
+        # patterns intentionally — the user explicitly opted into "yes
+        # to everything". If they want denylists to still apply, they
+        # should keep auto-mode off. We DO log so the audit trail is
+        # complete.
+        if self.auto_mode:
+            return PermissionDecision(
+                allow=True, source="auto-mode",
+            )
 
         # Layer 1: sensitive-path upgrade.
         category = self._maybe_upgrade(category, params)
@@ -208,6 +297,28 @@ class PermissionGate:
             dangerous=category in {"shell", "skill_install"},
             session_id=session_id,
         )
+        # P4-S21 #13: voice-source prompt narration. If the request was
+        # triggered by a voice utterance, we ALSO speak a short cue so
+        # the user reaches for the mouse. Best effort: TTS errors are
+        # logged once and the popup still goes ahead.
+        if self.current_source == "voice" and self._tts_engine is not None:
+            try:
+                # Don't await: we don't want the popup blocked on TTS.
+                # synthesize_pcm_stream is the streaming API; .synthesize
+                # is one-shot; we use whichever exists.
+                tts = self._tts_engine
+                voice_msg = (
+                    f"我需要确认才能执行{request.summary}，请点击屏幕上的允许按钮"
+                )
+                if hasattr(tts, "synthesize"):
+                    asyncio.create_task(tts.synthesize(voice_msg))
+                elif hasattr(tts, "synthesize_pcm_stream"):
+                    async def _drain():
+                        async for _ in tts.synthesize_pcm_stream(voice_msg):
+                            pass
+                    asyncio.create_task(_drain())
+            except Exception:  # noqa: BLE001
+                pass  # TTS failures don't block permission flow
         try:
             response: PermissionResponse = await asyncio.wait_for(
                 self._responder(request), timeout=self.config.timeout_s

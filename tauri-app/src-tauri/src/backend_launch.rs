@@ -109,7 +109,49 @@ pub fn resolve_with_fs(
 ) -> Result<BackendLaunch, ResolveError> {
     let mut tried: Vec<String> = Vec::new();
 
-    // Priority 1: bundle
+    // Priority 1: explicit dev override via env. Setting
+    // ``DESKPET_BACKEND_DIR`` is a deliberate "I'm a developer, run
+    // from source" signal, so it must beat the bundled exe — otherwise
+    // a Tauri dev-mode session always falls into Priority 2 below
+    // because Tauri copies the bundled resource into target/debug/backend/.
+    //
+    // Graceful degradation chain (P4-S22+ fix): if the dev interpreter
+    // isn't actually present (user deleted .venv during a C: cleanup,
+    // venv path moved, etc.), DON'T pop a fatal "DESKPET_PYTHON missing"
+    // dialog. Just walk down the priority chain — bundle exe is
+    // self-contained and always works as a fallback.
+    if let Some(dir_str) = env_lookup("DESKPET_BACKEND_DIR").filter(|s| !s.is_empty()) {
+        let backend_dir = PathBuf::from(&dir_str);
+        tried.push(format!("env DESKPET_BACKEND_DIR (priority): {}", backend_dir.display()));
+
+        // Probe order: explicit DESKPET_PYTHON → default <dir>/.venv/Scripts/python.exe.
+        // Each candidate is tested for existence; first hit wins. None
+        // of the misses raise — they just fall through to bundle below.
+        let candidates: Vec<PathBuf> = {
+            let mut v: Vec<PathBuf> = Vec::new();
+            if let Some(p) = env_lookup("DESKPET_PYTHON").filter(|s| !s.is_empty()) {
+                v.push(PathBuf::from(p));
+            }
+            v.push(default_venv_python(&backend_dir));
+            v
+        };
+        let mut chosen: Option<PathBuf> = None;
+        for c in &candidates {
+            if exists(c) {
+                chosen = Some(c.clone());
+                break;
+            }
+            tried.push(format!("dev python missing: {}", c.display()));
+        }
+        if let Some(python) = chosen {
+            return Ok(BackendLaunch::Dev { python, backend_dir });
+        }
+        // Fall through. Don't return DevPythonMissing — that pops a
+        // fatal dialog and traps the user. Bundle exe (priority 2)
+        // is self-contained Python so it'll work regardless.
+    }
+
+    // Priority 2: bundle
     if let Some(root) = bundle_root {
         let exe = root.join("backend").join("deskpet-backend.exe");
         tried.push(format!("bundle: {}", exe.display()));
@@ -122,7 +164,10 @@ pub fn resolve_with_fs(
         // lists this path so they can see it was checked.
     }
 
-    // Priority 2: DESKPET_BACKEND_DIR env
+    // Priority 3 (legacy): DESKPET_BACKEND_DIR env without explicit
+    // priority bump. Kept for back-compat in case priority 1 above
+    // was disabled by some future flag; falls through to the same
+    // resolution code.
     if let Some(dir_str) = env_lookup("DESKPET_BACKEND_DIR").filter(|s| !s.is_empty()) {
         let backend_dir = PathBuf::from(&dir_str);
         tried.push(format!("env DESKPET_BACKEND_DIR: {}", backend_dir.display()));

@@ -247,6 +247,14 @@ class ContextBundle:
     tool_schemas: list[dict[str, Any]] = field(default_factory=list)
     decisions: AssemblyDecisions = field(default_factory=AssemblyDecisions)
     cost_hint: dict[str, int] = field(default_factory=dict)
+    # P4-S21 #16 fix: L2 recent conversation as a real OpenAI messages[] array.
+    # MemoryComponent populates this from raw L2 rows; main.py's chat handler
+    # passes it to build_messages(history=...) so the LLM sees actual
+    # role=user/assistant turns (not a textual "近期对话" summary inside a
+    # system prompt — the old design had LLMs ignoring it as instruction noise,
+    # producing the "we just talked about VPN, why does it ask 'what do you want
+    # to do?'" failure mode).
+    history: list[dict[str, Any]] = field(default_factory=list)
 
     def build_messages(
         self,

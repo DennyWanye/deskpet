@@ -202,11 +202,22 @@ def _load_section(cls, raw_dict: dict):
 def _bundle_default_config_path() -> Path | None:
     """Return the bundle's default config.toml (seed source), or None if missing.
 
-    * Frozen (PyInstaller): ``<exe_dir>/config.toml`` (dropped there by the
-      spec via data files or alongside the bundle by Tauri's resources).
+    * Frozen (PyInstaller): ``_MEIPASS/config.toml`` (added in P4-S21 to
+      the spec's ``datas``) → ``<exe_dir>/config.toml`` (Tauri may also
+      drop one as resource) → upward search for repo-style layouts.
     * Dev: ``<repo>/config.toml`` — ``backend/../config.toml``.
     """
     if getattr(sys, "frozen", False):
+        # P4-S21 #12: prefer _MEIPASS — that's where the spec ships
+        # `../config.toml` to. Without this, frozen builds with no
+        # `<exe_dir>/config.toml` were returning None and
+        # seed_user_config_if_missing() couldn't migrate legacy schemas
+        # because the migration source itself was missing.
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            c = Path(meipass) / "config.toml"
+            if c.is_file():
+                return c
         exe_dir = Path(sys.executable).resolve().parent
         for up in (0, 1, 2, 3):
             candidate = (exe_dir.parents[up - 1] if up else exe_dir) / "config.toml"
@@ -217,15 +228,67 @@ def _bundle_default_config_path() -> Path | None:
     return dev if dev.is_file() else None
 
 
+def _is_legacy_llm_schema(raw: dict) -> bool:
+    """Detect pre-P4-S20-LLM-Unified config layout.
+
+    Old format had ``[llm.local]`` and/or ``[llm.cloud]`` subtables under
+    ``[llm]``; new format is a flat ``[llm]`` with model/base_url/api_key
+    directly. The crash source for users upgrading from old MSIs was the
+    cloud provider trying to hit ``vcrppsmofoyv.cloud.sealos.io`` even
+    though the user never configured it — that URL is hardcoded in the
+    legacy ``[llm.cloud].base_url``.
+    """
+    llm = raw.get("llm")
+    if not isinstance(llm, dict):
+        return False
+    return ("local" in llm and isinstance(llm["local"], dict)) or (
+        "cloud" in llm and isinstance(llm["cloud"], dict)
+    )
+
+
 def seed_user_config_if_missing() -> Path | None:
     """First-run: copy the bundle's config.toml into user_data_dir if the
-    user doesn't have one yet. Returns the user path on success, or None
-    if either source is missing (caller then falls through to bundle /
-    AppConfig defaults).
+    user doesn't have one yet. Also: P4-S21 #12 — if user_data_dir/config.toml
+    exists but uses the legacy ``[llm.local]/[llm.cloud]`` schema, back it up
+    (``.legacy-bak``) and replace with the bundle default. Returns the user
+    path on success, or None if seeding/migration both failed (caller then
+    falls through to bundle / AppConfig defaults).
     """
     user_target = _paths.user_data_dir() / "config.toml"
+
+    # P4-S21 #12: legacy-schema migration. Runs once per upgrade — after
+    # the swap, the file no longer matches the legacy detector so we
+    # never touch it again. Existing llm_runtime.json (the user's actual
+    # base_url/model/api_key) is intentionally NOT touched: those are
+    # the runtime overrides applied on top of config.toml at load time.
     if user_target.is_file():
+        try:
+            with open(user_target, "rb") as f:
+                raw = tomli.load(f)
+        except Exception as e:
+            logger.warning("legacy_check_parse_failed: %s", e)
+            return user_target
+        if _is_legacy_llm_schema(raw):
+            source = _bundle_default_config_path()
+            if source is None:
+                logger.warning(
+                    "legacy_llm_schema_detected_but_no_bundle_source",
+                )
+                return user_target
+            try:
+                bak = user_target.with_suffix(".legacy-bak")
+                shutil.copyfile(user_target, bak)
+                shutil.copyfile(source, user_target)
+                logger.info(
+                    "legacy_llm_schema_migrated source=%s target=%s backup=%s",
+                    source, user_target, bak,
+                )
+            except OSError as e:
+                logger.warning(
+                    "legacy_llm_schema_migrate_failed: %s", e,
+                )
         return user_target
+
     source = _bundle_default_config_path()
     if source is None:
         return None

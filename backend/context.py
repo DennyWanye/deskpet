@@ -24,6 +24,13 @@ _VALID_SERVICES = frozenset({
     "embedder",            # BGE-M3 Embedder (with mock fallback)
     "vector_worker",       # VectorWorker draining embedding queue → vec0
     "session_db",          # P4 canonical L2 SessionDB (state.db)
+    # --- P4-S22 Code Mode ----------------------------------------------------
+    "code_mode",           # CodeModeManager — per-base-session enable map
+    # --- P5-S1 Pet Supervisor ------------------------------------------------
+    "session_activity",    # SessionActivityStore — per-sid recent events + sig window
+    "watchdog",            # WatchdogLoop — periodic supervisor scan
+    "nudge_queue",         # NudgeQueue — supervisor hint injection queue
+    "supervisor",          # SupervisorAgent — LLM-based diagnosis dispatcher
 })
 
 @dataclass
@@ -46,6 +53,13 @@ class ServiceContext:
     embedder: Any | None = None
     vector_worker: Any | None = None
     session_db: Any | None = None
+    # --- P4-S22 Code Mode ----------------------------------------------------
+    code_mode: Any | None = None
+    # --- P5-S1 Pet Supervisor ------------------------------------------------
+    session_activity: Any | None = None
+    watchdog: Any | None = None
+    nudge_queue: Any | None = None
+    supervisor: Any | None = None
 
     def register(self, name: str, provider: Any) -> None:
         if name not in _VALID_SERVICES:

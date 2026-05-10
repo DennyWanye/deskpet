@@ -13,13 +13,18 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@chenglou/pretext": "^0.0.6",
     "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "live2dcubismcore": "^1.0.2",
     "pixi-live2d-display": "^0.4.0",
     "pixi.js": "^7.4.3",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^16.1.1",
+    "react-virtuoso": "^4.18.6",
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
@@ -29,6 +34,7 @@
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "@vitejs/plugin-react": "^6.0.1",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.0.1",

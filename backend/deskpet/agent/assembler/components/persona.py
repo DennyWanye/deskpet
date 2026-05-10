@@ -26,6 +26,24 @@ _DEFAULT_PERSONA_TEMPLATE = (
     "- 用户问你用的是什么模型时，直接告诉他这个名字，不要回避或说\"看不到\"。"
 )
 
+# P4-S22 — Code mode persona. Switches the pet's role from companion
+# to engineering assistant. Includes the project root so the LLM
+# always knows the working directory; tool catalog hints in the prompt
+# so the LLM proactively reaches for them.
+_CODE_MODE_PERSONA_TEMPLATE = (
+    "你正在 DeskPet 的 Code 模式 —— 一个工程助手。\n"
+    "- 你跑在底层模型 **{model}** 上；当前项目根目录: **{project_root}**\n"
+    "- 优先使用工具完成任务: read_file, write_file, edit_file, "
+    "list_directory, glob, grep, run_shell, web_fetch, web_search, "
+    "todo_write, agent (subagent)。\n"
+    "- 复杂任务先用 todo_write 拆步骤,然后逐项完成,过程中保持 todo 状态最新\n"
+    "  (一次只标一个 in_progress, 完成立即标 completed, 接着下一项)。\n"
+    "- 写文件之前先 read_file 看现状,Edit 用精确的 old_string/new_string,\n"
+    "  避免错误覆盖。\n"
+    "- 跑 run_shell 之前预估副作用; 长任务里 max 50 轮工具调用,够用即停。\n"
+    "- 完成后给用户一段简短总结 + todo_write 全部 completed。"
+)
+
 
 class PersonaComponent:
     """Emits the pet's persona block (frozen, cache-friendly)."""
@@ -48,23 +66,34 @@ def _resolve_persona(config: dict[str, Any]) -> str:
     """Compose the persona text.
 
     Priority:
-      1. ``config.agent.persona`` (user override) — used as-is.
-      2. Default template with current LLM model + base_url substituted
-         from ``config.llm.model`` / ``config.llm.base_url``.
+      1. ``config.code_mode.enabled`` true → Code mode template (P4-S22)
+      2. ``config.agent.persona`` (user override) — used as-is.
+      3. Default companion template with LLM info substituted.
     """
-    if isinstance(config, dict):
-        agent_cfg = config.get("agent")
-        if isinstance(agent_cfg, dict):
-            text = agent_cfg.get("persona")
-            if isinstance(text, str) and text.strip():
-                return text.strip()
-
     llm_cfg = config.get("llm") if isinstance(config, dict) else None
     if isinstance(llm_cfg, dict):
         model = str(llm_cfg.get("model", "未知")) or "未知"
         base_url = str(llm_cfg.get("base_url", "")) or "未知"
     else:
         model, base_url = "未知", "未知"
+
+    # P4-S22: code mode wins over user-override persona, because the
+    # user's chitchat persona ("你是个温柔的小猫") is wrong for code work.
+    if isinstance(config, dict):
+        code_cfg = config.get("code_mode")
+        if isinstance(code_cfg, dict) and code_cfg.get("enabled"):
+            project_root = str(code_cfg.get("project_root", "(未设置)"))
+            return _CODE_MODE_PERSONA_TEMPLATE.format(
+                model=model,
+                project_root=project_root,
+            )
+
+    if isinstance(config, dict):
+        agent_cfg = config.get("agent")
+        if isinstance(agent_cfg, dict):
+            text = agent_cfg.get("persona")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
 
     return _DEFAULT_PERSONA_TEMPLATE.format(model=model, base_url=base_url)
 

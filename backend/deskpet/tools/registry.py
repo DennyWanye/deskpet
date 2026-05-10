@@ -84,6 +84,10 @@ class ToolSpec:
     permission_category: str = "read_file"
     source: str = "builtin"
     dangerous: bool = False
+    # P5-S1: per-tool hard timeout in seconds. ``execute_tool`` enforces
+    # via ``asyncio.wait_for``. Defaults to 60s; bash_run / long-running
+    # MCP tools should override on registration (e.g. 300.0).
+    timeout_seconds: float = 60.0
 
     def env_satisfied(self) -> bool:
         """True iff every ``requires_env`` var is present AND non-empty."""
@@ -117,10 +121,36 @@ class ToolRegistry:
         # awaits ``gate.check(...)`` before running the handler. Tests
         # and legacy ``dispatch()`` paths leave it unset (no gating).
         self._gate = None  # type: Optional[Any]  # PermissionGate
+        # P4-S22: per-session tool-arg context. ``execute_tool`` merges
+        # this dict into the LLM-supplied params before invoking the
+        # handler, so tools like ``glob`` / ``grep`` can read
+        # ``_project_root`` without the LLM having to repeat it every
+        # call. Keys conventionally start with underscore so they don't
+        # collide with LLM-supplied ones.
+        self._session_context: dict[str, dict[str, Any]] = {}
 
     def set_permission_gate(self, gate) -> None:  # type: ignore[no-untyped-def]
         """Wire a PermissionGate. Called once at backend startup."""
         self._gate = gate
+
+    def set_session_context(
+        self,
+        session_id: str,
+        context: dict[str, Any] | None,
+    ) -> None:
+        """P4-S22 — bind extra args injected into every tool call for
+        this session. Pass None to clear. Typical use: chat handler
+        sets ``{"_project_root": str(project_root)}`` when entering
+        Code mode; clears it on exit.
+        """
+        if context is None:
+            self._session_context.pop(session_id, None)
+        else:
+            self._session_context[session_id] = dict(context)
+
+    def get_session_context(self, session_id: str) -> dict[str, Any]:
+        """Read-only snapshot of the session's tool-arg context."""
+        return dict(self._session_context.get(session_id, {}))
 
     # ------------------------------------------------------------------
     # Registration
@@ -137,6 +167,7 @@ class ToolRegistry:
         permission_category: str = "read_file",
         source: str = "builtin",
         dangerous: bool = False,
+        timeout_seconds: float = 60.0,
     ) -> None:
         """Register a single tool. Idempotent replace on duplicate name
         (with a log warning — usually a symptom of module reload during
@@ -166,6 +197,7 @@ class ToolRegistry:
             permission_category=permission_category,
             source=source,
             dangerous=dangerous,
+            timeout_seconds=float(timeout_seconds),
         )
         with self._lock:
             if name in self._tools:
@@ -388,8 +420,51 @@ class ToolRegistry:
                     "error": f"permission denied (source={decision.source})",
                 }
 
+        # P4-S22: merge per-session context into params. LLM-supplied
+        # values win on key collision so the LLM can override (e.g.
+        # explicitly passing ``path`` to glob the user's home dir
+        # instead of the project root).
+        merged_params: dict[str, Any] = {}
+        merged_params.update(self._session_context.get(session_id, {}))
+        merged_params.update(dict(params or {}))
+
+        # P4-S22: run sync handlers in a thread executor. Some new
+        # Code-mode tools (todo_write, agent) need to bridge sync→async
+        # via ``asyncio.run_coroutine_threadsafe``, which deadlocks when
+        # called from the main event-loop thread (the handler blocks
+        # waiting for a coro that can't dispatch because the thread is
+        # blocked). Running every sync handler in a worker thread is
+        # cheap and uniformly safe; handlers that are already async
+        # (rare) get awaited directly.
+        # P5-S1: tool-level hard timeout. Default 60s; specific tools may
+        # override via ``ToolSpec.timeout_seconds`` (e.g. bash_run = 300s).
+        # On timeout: return a uniform ``tool_timeout`` error envelope so
+        # the agent loop carries on instead of dying with TimeoutError.
         try:
-            result = spec.handler(dict(params or {}), task_id)
+            import asyncio as _asyncio
+            import inspect as _inspect
+
+            timeout_s = float(getattr(spec, "timeout_seconds", 60.0)) or 60.0
+
+            async def _run_handler() -> Any:
+                if _inspect.iscoroutinefunction(spec.handler):
+                    return await spec.handler(merged_params, task_id)
+                loop = _asyncio.get_running_loop()
+                return await loop.run_in_executor(
+                    None, spec.handler, merged_params, task_id
+                )
+
+            try:
+                result = await _asyncio.wait_for(_run_handler(), timeout=timeout_s)
+            except _asyncio.TimeoutError:
+                logger.warning(
+                    "execute_tool %r timed out after %.1fs", name, timeout_s
+                )
+                return {
+                    "ok": False,
+                    "result": None,
+                    "error": f"tool_timeout: {name} exceeded {timeout_s:.0f}s",
+                }
         except Exception as exc:  # noqa: BLE001 — uniform error envelope
             err = f"{type(exc).__name__}: {exc}"
             logger.info("execute_tool %r raised: %s", name, err)

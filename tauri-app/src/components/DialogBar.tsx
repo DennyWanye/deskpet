@@ -21,10 +21,11 @@ const EMPTY_PLACEHOLDER = "按住下方按钮说话，或输入消息开始聊�
 export function DialogBar({ latestAssistant, onOpenHistory }: Props) {
   const isEmpty = latestAssistant === null || latestAssistant === "";
   return (
-    <div style={barStyle} data-testid="dialog-bar">
+    <div style={barStyle} data-testid="dialog-bar" className="bp-dialog-bar">
       <div
         data-testid="dialog-bar-assistant"
         data-empty={isEmpty ? "true" : "false"}
+        data-bp-selectable=""
         style={isEmpty ? { ...textStyle, ...placeholderStyle } : textStyle}
       >
         {isEmpty ? EMPTY_PLACEHOLDER : latestAssistant}

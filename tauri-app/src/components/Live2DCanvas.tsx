@@ -11,12 +11,27 @@ interface Live2DCanvasProps {
  * Exposed via forwardRef so `App` can push emotion/action events that arrive
  * over the WebSocket control channel directly into the model without
  * re-rendering the heavy render loop.
+ *
+ * P5-S3 additions: setBlinkRate / setHeadTilt / setIdleSubset are used
+ * by PetStateMachine to "colour" the otherwise-static idle Hiyori in
+ * worried / alert states. Hiyori has no Expressions in model3.json, so
+ * we drive raw Live2D parameters instead — see render-loop application.
  */
 export interface Live2DHandle {
   /** Apply a named expression (e.g. "happy"). Silently no-ops if unknown/unloaded. */
   setExpression: (name: string) => void;
   /** Trigger a motion group by name (e.g. "wave"). Silently no-ops if unknown/unloaded. */
   playMotion: (group: string) => void;
+  /** P5-S3: set the eye-blink frequency in Hz overlaid on the base motion.
+   * 0.2 Hz = relaxed, 0.5 Hz = anxious. Set to 0 to disable supervisor blink. */
+  setBlinkRate: (hz: number) => void;
+  /** P5-S3: set head tilt in degrees (positive = up, negative = down).
+   * Visualises pet "looking down" in worried/alert states. */
+  setHeadTilt: (degrees: number) => void;
+  /** P5-S3: advisory hint for which Idle motion subset to prefer.
+   * Empty array means "use default behaviour". Hiyori only has one
+   * Idle group so this currently no-ops; reserved for future models. */
+  setIdleSubset: (motionIds: string[]) => void;
 }
 
 /**
@@ -40,6 +55,11 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
   const cleanupRef = useRef<(() => void) | null>(null);
   const mouthRef = useRef(mouthOpenY);
   mouthRef.current = mouthOpenY;
+  // P5-S3: supervisor-driven parameter overlays. Refs (not state) so the
+  // render loop reads them every frame without re-mounting. Defaults
+  // match the "idle" PetState config.
+  const blinkHzRef = useRef<number>(0.2);
+  const headTiltRef = useRef<number>(0);
   // Live2D model instance (set once init() succeeds). Kept on a ref so that
   // imperative methods can reach it without blowing up the render loop via
   // re-renders.
@@ -68,6 +88,19 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         } catch (err) {
           console.warn("[Live2D] playMotion failed:", group, err);
         }
+      },
+      setBlinkRate(hz: number) {
+        blinkHzRef.current = Math.max(0, Number.isFinite(hz) ? hz : 0);
+      },
+      setHeadTilt(degrees: number) {
+        // Clamp to the model's reasonable range. Hiyori's ParamAngleZ
+        // typically spans ±30°; we cap at ±15° to avoid jarring poses.
+        const clamped = Math.max(-15, Math.min(15, Number.isFinite(degrees) ? degrees : 0));
+        headTiltRef.current = clamped;
+      },
+      setIdleSubset(_motionIds: string[]) {
+        // Reserved for future models with multiple Idle groups.
+        // Hiyori has only one ("Idle"), so no-op.
       },
     }),
     [],
@@ -192,13 +225,46 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
               lastFpsTime = now;
             }
 
-            // Apply lip-sync mouth parameter
+            // Apply lip-sync mouth parameter + P5-S3 supervisor overlays
+            // (blink frequency + head tilt). Each is best-effort: if the
+            // model doesn't expose the param, we silently skip rather
+            // than spamming console errors at render-loop frequency.
             try {
               const coreModel = (model as any).internalModel?.coreModel;
               if (coreModel) {
-                const idx = coreModel.getParameterIndex?.("ParamMouthOpenY");
-                if (idx != null && idx >= 0) {
-                  coreModel.setParameterValueByIndex(idx, mouthRef.current);
+                // ParamMouthOpenY — lip sync
+                const mouthIdx = coreModel.getParameterIndex?.("ParamMouthOpenY");
+                if (mouthIdx != null && mouthIdx >= 0) {
+                  coreModel.setParameterValueByIndex(mouthIdx, mouthRef.current);
+                }
+                // ParamEyeLOpen / ParamEyeROpen — supervisor blink overlay.
+                // We compute a square-wave at blinkHzRef.current Hz where
+                // the eyes are closed for ~120 ms per cycle. blink_hz=0
+                // disables the override (motion's natural blink wins).
+                const hz = blinkHzRef.current;
+                if (hz > 0) {
+                  const period = 1000 / hz; // ms
+                  const phase = timestamp % period;
+                  const closed = phase < 120;
+                  const eyeVal = closed ? 0.0 : 1.0;
+                  const lIdx = coreModel.getParameterIndex?.("ParamEyeLOpen");
+                  if (lIdx != null && lIdx >= 0) {
+                    coreModel.setParameterValueByIndex(lIdx, eyeVal);
+                  }
+                  const rIdx = coreModel.getParameterIndex?.("ParamEyeROpen");
+                  if (rIdx != null && rIdx >= 0) {
+                    coreModel.setParameterValueByIndex(rIdx, eyeVal);
+                  }
+                }
+                // ParamAngleZ — head tilt. Hiyori uses degrees directly
+                // (range typically ±30°); we already clamped to ±15° in
+                // setHeadTilt.
+                const tilt = headTiltRef.current;
+                if (tilt !== 0) {
+                  const angleIdx = coreModel.getParameterIndex?.("ParamAngleZ");
+                  if (angleIdx != null && angleIdx >= 0) {
+                    coreModel.setParameterValueByIndex(angleIdx, tilt);
+                  }
                 }
               }
             } catch { /* ignore if model structure differs */ }

@@ -13,12 +13,16 @@ import { usePermissionRequests } from "./hooks/usePermissionRequests";
 import { PermissionPopup } from "./components/PermissionPopup";
 import { SkillStorePanel } from "./components/SkillStorePanel";
 import { Toolbar } from "./components/Toolbar";
+import { CodeModePanel } from "./components/CodeModePanel";
+import { PetSupervisorBubble } from "./components/PetSupervisorBubble";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { useAutostart } from "./hooks/useAutostart";
 import { useBackendLifecycle } from "./hooks/useBackendLifecycle";
+import { useSessionsStore } from "./stores/sessionsStore";
+import { PetStateMachine } from "./pet-state/PetStateMachine";
 import type { AudioMessage, LipSyncMessage } from "./types/messages";
 
 function stripMarkdown(text: string): string {
@@ -159,8 +163,21 @@ function App() {
   }, []);
 
   const handleBootExit = useCallback(async () => {
-    // Try the process-plugin exit helper first; if unavailable, close
-    // the current window which triggers our WindowEvent::Destroyed path.
+    // P4-S21 #7: prefer the dedicated `app_exit` Rust command so the
+    // backend supervisor gets a clean shutdown (no orphan deskpet-backend.exe
+    // hanging onto port 8100). Falls through to window.close on older
+    // builds that don't have the command registered yet.
+    const core = await import("@tauri-apps/api/core").catch(() => null);
+    if (core?.invoke) {
+      try {
+        await core.invoke("app_exit");
+        return;
+      } catch {
+        // Command might not be registered (older Rust binary). Fall
+        // through to window.close which triggers WindowEvent::Destroyed
+        // and the same kill_child path as a backup.
+      }
+    }
     const api = await import("@tauri-apps/api/window").catch(() => null);
     if (api?.getCurrentWindow) {
       try {
@@ -217,20 +234,31 @@ function App() {
   // channel events can drive the character directly without re-rendering.
   const liveRef = useRef<Live2DHandle>(null);
 
+  // P5-S3 — pet supervisor state machine. Single instance per App;
+  // recomputed on every relevant store update. Refs (not state) to
+  // avoid feedback loops with the render-driven tick.
+  const petSmRef = useRef<PetStateMachine>(new PetStateMachine());
+  const [petTick, setPetTick] = useState(0);  // simple "force re-tick" counter
+  const sessions = useSessionsStore((s) => s.sessions);
+  const applySupervisorAlert = useSessionsStore((s) => s.apply_supervisor_alert);
+  const clearSupervisorAlert = useSessionsStore((s) => s.clear_supervisor_alert);
+  const ensureSession = useSessionsStore((s) => s.ensure);
+  // Recompute pet state on session change OR every 5s so age_penalty
+  // grows even without new events.
+  useEffect(() => {
+    const id = window.setInterval(() => setPetTick((n) => n + 1), 5000);
+    return () => window.clearInterval(id);
+  }, []);
+
   // Control channel (text chat + interrupt + emotion/action events)
-  const { state, lastMessage, sendChat, sendChatV2, sendInterrupt, getChannel: getControlChannel } =
+  const { state, lastMessage, sendChatV2, sendInterrupt, getChannel: getControlChannel } =
     useControlChannel(8100, secret);
 
   // P4-S20: toggle to route chat through the new tool_use loop
-  // (chat_v2). Persisted in localStorage so a refresh keeps the
-  // user's preference. Defaults to off so existing behavior is
-  // unchanged for users who haven't opted in.
-  // P4-S20-LLM-Unified: chat 路径已统一 — 永远走 tool_use loop。
-  // 不再需要 🛠 toggle。保留这两个空 noop 以减少删除 props 的传播改动。
-  const useToolUseLoop = true;
-  const toggleToolUseLoop = useCallback(() => {
-    /* deprecated — chat path is now unified */
-  }, []);
+  // P4-S20-LLM-Unified: chat 路径已统一 — backend `chat` 和 `chat_v2`
+  // msg_type 都走 tool_use AgentLoop。
+  // P4-S21 #14: 删掉 useToolUseLoop 状态 + Toolbar toggle。前端永远走
+  // chat_v2 路径（即 sendChatV2）。
 
   // Reset route kind when disconnected.
   useEffect(() => {
@@ -241,6 +269,59 @@ function App() {
   const [memoryOpen, setMemoryOpen] = useState(false);
   // P4-S11 §16.5 — ContextTrace panel (decision timeline + token budget)
   const [traceOpen, setTraceOpen] = useState(false);
+
+  // P4-S22 — Code mode state + todos. Single source of truth at App
+  // level; CodeModePanel renders the banner/todo UI from these props.
+  const [codeModeState, setCodeModeState] = useState<{
+    enabled: boolean;
+    project_root?: string;
+    project_name?: string;
+  }>({ enabled: false });
+  const [codeTodos, setCodeTodos] = useState<
+    { content: string; activeForm: string; status: "pending" | "in_progress" | "completed" }[]
+  >([]);
+  const [codeSuggest, setCodeSuggest] = useState<{ trigger_text: string } | null>(null);
+  const codeEnterHandlerRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Subscribe to control-WS messages relevant to code mode.
+  useEffect(() => {
+    if (!lastMessage) return;
+    if (lastMessage.type === "code_mode_state") {
+      const p: any = lastMessage.payload || {};
+      setCodeModeState({
+        enabled: !!p.enabled,
+        project_root: p.project_root,
+        project_name: p.project_name,
+      });
+      // P4-S23: Auto-open the secondary code-panel window on enter,
+      // close it on exit. The panel takes ownership of the chat
+      // surface from here on; the pet's DialogBar shows a placeholder
+      // (see latestAssistant render below) so the user isn't seeing
+      // the same chat in two places.
+      const core = import("@tauri-apps/api/core");
+      if (p.enabled) {
+        // ask backend for current todos to render.
+        const ch = getControlChannel();
+        if (ch) ch.send({ type: "code_todo_list" });
+        core.then(({ invoke }) => {
+          invoke("open_code_panel").catch((e: unknown) =>
+            console.warn("[App] open_code_panel failed:", e),
+          );
+        });
+      } else {
+        setCodeTodos([]);
+        core.then(({ invoke }) => {
+          invoke("close_code_panel").catch(() => { /* no-op if missing */ });
+        });
+      }
+    } else if (lastMessage.type === "code_todo_update") {
+      const items = (lastMessage.payload as any)?.items || [];
+      setCodeTodos(items);
+    } else if (lastMessage.type === "code_mode_suggest") {
+      const p: any = lastMessage.payload || {};
+      setCodeSuggest({ trigger_text: p.trigger_text || "" });
+    }
+  }, [lastMessage]);
 
   // P2-1-S3 — settings panel toggle (cloud account / strategy / daily budget).
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -349,17 +430,52 @@ function App() {
           },
         ]);
         break;
-      case "chat_v2_error":
+      case "chat_v2_error": {
+        // P4-S22 fix: render whatever the backend sent — `error`
+        // (catch-all path), `detail` (AgentLoop ErrorEvent), or
+        // `reason` — and append the type if available. Only fall back
+        // to "unknown" when literally nothing is present.
+        const p: any = (lastMessage as any).payload || {};
+        const parts = [p.error, p.detail, p.reason].filter(Boolean);
+        const msg = parts.length > 0 ? parts.join(" — ") : "unknown";
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            text: `⚠ chat_v2 错误: ${(lastMessage as any).payload.error || (lastMessage as any).payload.detail || "unknown"}`,
+            text: `⚠ ${msg}`,
           },
         ]);
         break;
+      }
+      case "supervisor_alert": {
+        // P5-S2/S3 — supervisor pushed a diagnosis. Cache it on the
+        // session so PetStateMachine + bubble can read it. Also force
+        // a tick so the visual updates immediately (without waiting
+        // for the 5s polling interval).
+        const p: any = (lastMessage as any).payload || {};
+        if (p.session_id) {
+          // Make sure the session exists in the store (supervisor may
+          // alert on a panel-only sid the pet window hasn't seen yet).
+          ensureSession(p.session_id);
+          applySupervisorAlert(p.session_id, {
+            alert_id: String(p.alert_id || ""),
+            severity: (p.severity as "green" | "yellow" | "red") || "yellow",
+            action: (p.action as "nudge" | "ask_user") || "nudge",
+            diagnosis: String(p.diagnosis || ""),
+            user_message: String(p.user_message || ""),
+            suggested_buttons: Array.isArray(p.suggested_buttons)
+              ? p.suggested_buttons.map((b: any) => String(b)).slice(0, 2)
+              : [],
+            received_at: Date.now(),
+          });
+          // Force a re-tick so the bubble appears + state machine
+          // transitions on the next render.
+          setPetTick((n) => n + 1);
+        }
+        break;
+      }
     }
-  }, [lastMessage]);
+  }, [lastMessage, applySupervisorAlert, ensureSession]);
 
   // Handle audio channel JSON messages
   useEffect(() => {
@@ -437,11 +553,9 @@ function App() {
     // 触发 UserBubble —— 每次用新对象 ref 重置淡出计时，避免相同文本重发时
     // React 因为字符串相等不重置 state（追加零宽空格保证每次 text prop 唯一）。
     setLatestUserInput(chatText + "\u200B".repeat(messages.length));
-    if (useToolUseLoop) {
-      sendChatV2(chatText);
-    } else {
-      sendChat(chatText);
-    }
+    // P4-S21 #14: backend unified chat / chat_v2 — both route to tool_use
+    // AgentLoop. Always send via sendChatV2 (the toolbar toggle is gone).
+    sendChatV2(chatText);
     setChatText("");
   };
 
@@ -510,8 +624,86 @@ function App() {
   const latestAssistant =
     [...messages].reverse().find((m) => m.role === "assistant")?.text ?? null;
 
+  // P5-S3 — compute pet state every render. The `petTick` dep forces
+  // recomputation on supervisor_alert / 5s heartbeat. We immediately
+  // apply the resulting motion config to the Live2D handle (refs, no
+  // re-mount cost). Bubble visibility is derived below.
+  void petTick; // ensure this drives the memo recompute cycle
+  const petResult = petSmRef.current.tick({ sessions });
+  useEffect(() => {
+    const live = liveRef.current;
+    if (!live) return;
+    live.setBlinkRate(petResult.motion.blink_hz);
+    live.setHeadTilt(petResult.motion.head_tilt);
+    live.setIdleSubset(petResult.motion.motion_pool);
+    if (petResult.state_changed && petResult.motion.tap_on_entry) {
+      live.playMotion("TapBody");
+    }
+  }, [petResult.state, petResult.state_changed, petResult.motion.blink_hz, petResult.motion.head_tilt]);
+
+  // Resolve the active alert to surface in the bubble. We pin the bubble
+  // to the focus session's most recent alert; if none, no bubble.
+  const focusSession = petResult.focus_sid ? sessions[petResult.focus_sid] : null;
+  const focusAlert = focusSession?.supervisor_alert || null;
+  const showBubble =
+    focusAlert &&
+    (petResult.state === "worried" ||
+      petResult.state === "alert" ||
+      petResult.state === "intervening");
+
+  // Frontend → backend choice handler. Sends `supervisor_user_choice`
+  // ws message and clears the bubble locally so it disappears.
+  const handleBubbleChoice = useCallback(
+    (idx: number, text: string, alert_id: string, sid: string) => {
+      const ch = getControlChannel();
+      if (ch) {
+        ch.send({
+          type: "supervisor_user_choice",
+          payload: {
+            session_id: sid,
+            alert_id,
+            button_index: idx,
+            button_text: text,
+          },
+        });
+      }
+      clearSupervisorAlert(sid);
+    },
+    [getControlChannel, clearSupervisorAlert],
+  );
+
+  // Bubble background click → open code panel and request focus on this sid.
+  const handleBubbleClickBackground = useCallback(
+    (sid: string) => {
+      const core = import("@tauri-apps/api/core");
+      core.then(({ invoke }) => {
+        invoke("open_code_panel").catch((e: unknown) =>
+          console.warn("[Pet] open_code_panel failed:", e),
+        );
+      });
+      // Cross-window event so the code panel can switch its active sid.
+      try {
+        const bc = new BroadcastChannel("deskpet-pet-focus");
+        bc.postMessage({ type: "pet_focus_session_clicked", session_id: sid });
+        bc.close();
+      } catch (e) {
+        console.warn("[Pet] BroadcastChannel failed:", e);
+      }
+    },
+    [],
+  );
+
   return (
     <div
+      // `data-tauri-drag-region` (Tauri 2) makes any mousedown on this
+      // element start a window drag. Children that are interactive
+      // (buttons, inputs, the Live2D canvas with its own pointer events,
+      // any panel with `pointer-events: auto`) automatically swallow the
+      // event before it bubbles up here, so the drag region only kicks
+      // in when the user grabs the truly empty (transparent) shell —
+      // which is exactly the gesture users expect for "move my pet
+      // around the desktop".
+      data-tauri-drag-region
       style={{
         width: "100vw",
         height: "100vh",
@@ -531,6 +723,48 @@ function App() {
       <PermissionPopup
         request={permissionCurrent}
         onResolve={resolvePermission}
+      />
+
+      {/* P5-S3 — supervisor bubble. Only shown when state machine says
+          we should: worried / alert / intervening AND we have a real
+          alert payload to render. */}
+      {showBubble && focusAlert && petResult.focus_sid && (
+        <PetSupervisorBubble
+          severity={
+            petResult.state === "alert"
+              ? "red"
+              : petResult.state === "intervening"
+              ? "blue"
+              : "yellow"
+          }
+          message={focusAlert.user_message || focusAlert.diagnosis}
+          buttons={focusAlert.suggested_buttons}
+          session_id={petResult.focus_sid}
+          alert_id={focusAlert.alert_id}
+          onClickBackground={handleBubbleClickBackground}
+          onChoice={handleBubbleChoice}
+        />
+      )}
+
+      {/* P4-S22 — Code mode UI (banner + suggest + todos) */}
+      <CodeModePanel
+        state={codeModeState}
+        todos={codeTodos}
+        suggest={codeSuggest}
+        onDismissSuggest={() => setCodeSuggest(null)}
+        onAcceptSuggest={() => {
+          setCodeSuggest(null);
+          const h = codeEnterHandlerRef.current;
+          if (h) void h();
+        }}
+        onExitCodeMode={() => {
+          const ch = getControlChannel();
+          if (ch) ch.send({ type: "code_mode_exit" });
+        }}
+        registerEnterHandler={(fn) => {
+          codeEnterHandlerRef.current = fn;
+        }}
+        getChannel={getControlChannel}
       />
 
       {/* P4-S20 Stage C — 技能商店 */}
@@ -688,14 +922,33 @@ function App() {
         </button>
       </div>
 
-      {/* Toolbar — P4-S20-UI revamp: token-based, grouped, hover/focus states */}
+      {/* Toolbar — P4-S20-UI revamp: token-based, grouped, hover/focus states.
+          P4-S21 #7: now includes a Quit (⏻) button so users don't need
+          Task Manager to close the pet after startup. */}
       <Toolbar
-        useToolUseLoop={useToolUseLoop}
-        toggleToolUseLoop={toggleToolUseLoop}
         onMemory={() => setMemoryOpen(true)}
         onTrace={() => setTraceOpen(true)}
         onSettings={() => setSettingsOpen(true)}
         onSkillStore={() => setSkillStoreOpen(true)}
+        onExit={handleBootExit}
+        onCodeMode={() => {
+          // P4-S23 UX fix: clicking 🔧 just opens the Code panel
+          // window; project selection happens INSIDE the panel via
+          // its "+ 新项目" button. Previously we forced a folder
+          // picker upfront, which created an "untitled" placeholder
+          // session before the user even saw the panel.
+          const core = import("@tauri-apps/api/core");
+          core.then(({ invoke }) => {
+            invoke("open_code_panel").catch((e: unknown) =>
+              console.warn("[App] open_code_panel failed:", e),
+            );
+          });
+          // Also flip the Toolbar 🔧 active highlight on. We don't
+          // call `code_mode_enter` here — backend stays in companion
+          // state until the user picks a project from inside the panel.
+          setCodeModeState((s) => ({ ...s, enabled: true, project_name: "" }));
+        }}
+        codeModeActive={codeModeState.enabled}
         autostartReady={autostart.ready}
         autostartEnabled={autostart.enabled}
         onToggleAutostart={autostart.toggle}

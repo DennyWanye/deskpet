@@ -119,6 +119,11 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
         handler=run_shell,
         permission_category="shell",
         dangerous=True,
+        # P5-S1: shell commands can legitimately take a while (pip install,
+        # cargo build). 5 minutes is the operative wall — the supervisor
+        # watchdog still sits one level above this and will catch true
+        # hangs at the 15-minute session-inactivity threshold.
+        timeout_seconds=300.0,
     )
 
     # NOTE: ``web_fetch`` is intentionally NOT registered here — the

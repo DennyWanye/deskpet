@@ -490,6 +490,18 @@ export function SettingsPanel({
           <EmbedderStatusCard getChannel={getChannel} />
         </section>
 
+        {/* ================ 自动模式 (P4-S21 #13) ================ */}
+        <section style={sectionStyle}>
+          <h3 style={h3Style}>权限</h3>
+          <AutoModeToggle getChannel={getChannel} />
+        </section>
+
+        {/* ================ 桌宠 supervisor (P5-S1) ================ */}
+        <section style={sectionStyle}>
+          <h3 style={h3Style}>桌宠 supervisor（P5-S1）</h3>
+          <SupervisorToggleSection getChannel={getChannel} />
+        </section>
+
         {/* ================ 危险区 (P3-S9) ================ */}
         <DangerZoneSection />
 
@@ -508,6 +520,169 @@ export function SettingsPanel({
           </button>
         </footer>
       </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// P4-S21 #13 — Auto mode toggle.
+//
+// When ON, the backend's PermissionGate auto-allows every tool category
+// (read/write/shell/network/...). Useful for voice-driven sessions or
+// power users who don't want to click through each PermissionPopup.
+// State is per-process: turning OFF the deskpet (or restarting backend)
+// resets to disabled. Default OFF — has to be explicitly opted in.
+// ----------------------------------------------------------------------
+function AutoModeToggle({
+  getChannel,
+}: { getChannel: () => ControlChannel | null }) {
+  const [enabled, setEnabled] = useState<boolean>(() => {
+    try { return localStorage.getItem("deskpet.auto_mode") === "true"; }
+    catch { return false; }
+  });
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Push current state to backend whenever the channel becomes available.
+  // Channel may be null on first render (still connecting); the effect
+  // re-runs when getChannel returns a live channel.
+  useEffect(() => {
+    const ch = getChannel();
+    if (!ch) return;
+    try { ch.send({ type: "permission_auto_mode_set", payload: { enabled } }); }
+    catch { /* will retry on next toggle */ }
+  }, [getChannel, enabled]);
+
+  const onToggle = useCallback(() => {
+    setErr(null);
+    setPending(true);
+    const next = !enabled;
+    try {
+      const ch = getChannel();
+      if (!ch) throw new Error("控制通道未连接");
+      ch.send({ type: "permission_auto_mode_set", payload: { enabled: next } });
+      try { localStorage.setItem("deskpet.auto_mode", String(next)); }
+      catch { /* localStorage full / disabled — non-fatal */ }
+      setEnabled(next);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPending(false);
+    }
+  }, [enabled, getChannel]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 13,
+          cursor: pending ? "default" : "pointer",
+          opacity: pending ? 0.6 : 1,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={onToggle}
+          disabled={pending}
+        />
+        <span>
+          自动模式（高级）：所有工具自动允许，不弹确认窗口
+        </span>
+      </label>
+      <p style={{ fontSize: 11, color: "#64748b", margin: 0, lineHeight: 1.5 }}>
+        关闭时（默认），DeskPet 在执行写文件、运行 shell 等操作前会弹出确认。
+        语音模式下还会同时朗读"请点击允许"，提醒你回到屏幕。开启此项 = 跳过
+        所有确认（仅在你完全信任 LLM 配置时使用）。
+      </p>
+      {err && <span style={{ color: "#b91c1c", fontSize: 11 }}>{err}</span>}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// P5-S1 — supervisor toggle.
+//
+// Backend default is on. Toggling here sends `supervisor_toggle` ws msg
+// (handled in main.py). The toggle persists locally (localStorage) so
+// the user's preference survives a refresh; the backend's runtime flag
+// resyncs from this on connect.
+// ----------------------------------------------------------------------
+function SupervisorToggleSection({
+  getChannel,
+}: { getChannel: () => ControlChannel | null }) {
+  const [enabled, setEnabled] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem("deskpet.supervisor.enabled");
+      return v === null ? true : v !== "false"; // default ON
+    } catch {
+      return true;
+    }
+  });
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Sync state to backend whenever channel becomes available.
+  useEffect(() => {
+    const ch = getChannel();
+    if (!ch) return;
+    try {
+      ch.send({ type: "supervisor_toggle", payload: { enabled } });
+    } catch {
+      /* retry on next toggle */
+    }
+  }, [getChannel, enabled]);
+
+  const onToggle = useCallback(() => {
+    setErr(null);
+    setPending(true);
+    const next = !enabled;
+    try {
+      const ch = getChannel();
+      if (!ch) throw new Error("控制通道未连接");
+      ch.send({ type: "supervisor_toggle", payload: { enabled: next } });
+      try {
+        localStorage.setItem("deskpet.supervisor.enabled", String(next));
+      } catch {
+        /* non-fatal */
+      }
+      setEnabled(next);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPending(false);
+    }
+  }, [enabled, getChannel]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 13,
+          cursor: pending ? "default" : "pointer",
+          opacity: pending ? 0.6 : 1,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={onToggle}
+          disabled={pending}
+        />
+        <span>启用桌宠 supervisor（自动监督卡住的 Code 模式任务）</span>
+      </label>
+      <p style={{ fontSize: 11, color: "#64748b", margin: 0, lineHeight: 1.5 }}>
+        每 60 秒扫描一次活动 session，对 15 分钟无进展或报错的任务用 LLM
+        自检判断是否需要干预。桌宠用气泡 + 表情提示你最危险的 session。
+        关闭后所有 supervisor 行为停止；运行时切换需要重启 backend 完全生效。
+      </p>
+      {err && <span style={{ color: "#b91c1c", fontSize: 11 }}>{err}</span>}
     </div>
   );
 }

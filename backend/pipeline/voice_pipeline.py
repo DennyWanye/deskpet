@@ -44,6 +44,17 @@ class VoicePipeline:
         vad_threshold_during_tts: float = 0.65,
         min_speech_ms_during_tts: int = 400,
         tts_cooldown_ms: int = 300,
+        # P4-S21 #13 fix: optional handles for the tool-use path. When all
+        # three are present, _process_utterance routes through AgentLoop
+        # instead of plain agent.chat_stream — meaning voice input can
+        # actually trigger tools (e.g. "make me a todo.txt on the desktop"
+        # really creates the file). Backwards-compatible: tests / dev
+        # configs that pass nothing keep getting the legacy chat_stream
+        # behaviour.
+        service_context: object | None = None,
+        tool_registry_v2: object | None = None,
+        permission_gate_v2: object | None = None,
+        local_llm: object | None = None,
     ):
         self.vad = vad
         self.asr = asr
@@ -58,6 +69,11 @@ class VoicePipeline:
             cooldown_ms=tts_cooldown_ms,
             min_speech_during_tts_ms=min_speech_ms_during_tts,
         )
+        # tool-use plumbing (all None == legacy chat_stream path)
+        self._service_context = service_context
+        self._tool_registry_v2 = tool_registry_v2
+        self._permission_gate_v2 = permission_gate_v2
+        self._local_llm = local_llm
         # P2-2-M3: stash the "normal" threshold at init time (from [vad])
         # so we can restore it after TTS / interrupt. The during_tts value
         # is the raised threshold we swap in while TTS is playing — keeps
@@ -204,29 +220,23 @@ class VoicePipeline:
                 "payload": {"text": text, "role": "user"},
             })
 
-            # Step 2: Agent (streaming) — parse emotion/action tags inline,
-            # forward tag events to control channel, keep clean text for TTS.
+            # Step 2: Agent — two paths.
+            #
+            # If the tool-use stack is wired in (set via ctor in main.py),
+            # run AgentLoop so voice input can actually invoke tools (write
+            # files, run shell, fetch URLs — anything in ToolRegistryV2).
+            # Otherwise fall back to the legacy streaming chat path that
+            # ships text straight to TTS without giving the LLM any
+            # tool-calling capability.
             response_text = ""
-            messages = [{"role": "user", "content": text}]
-            parser = StreamingTagParser()
-            async with stage_timer("agent", session_id=self.session_id):
-                async for token in self.agent.chat_stream(
-                    messages, session_id=self.session_id
-                ):
-                    if self._interrupted:
-                        logger.info("agent_interrupted")
-                        break
-                    for item in parser.feed(token):
-                        if isinstance(item, TagEvent):
-                            await self._emit_tag_event(item)
-                        else:
-                            response_text += item
-                # Flush trailing buffer (e.g. dangling '[' at EOS)
-                for item in parser.flush():
-                    if isinstance(item, TagEvent):
-                        await self._emit_tag_event(item)
-                    else:
-                        response_text += item
+            if (
+                self._tool_registry_v2 is not None
+                and self._permission_gate_v2 is not None
+                and self._local_llm is not None
+            ):
+                response_text = await self._run_with_tools(text, audio_ws)
+            else:
+                response_text = await self._run_legacy_chat_stream(text)
 
             if self._interrupted or not response_text.strip():
                 return
@@ -334,6 +344,246 @@ class VoicePipeline:
             except AttributeError:
                 pass
             self._processing = False
+
+
+    async def _run_legacy_chat_stream(self, text: str) -> str:
+        """Pre-P4-S21 path: stream tokens straight from agent.chat_stream.
+
+        No tool-use, no ContextAssembler, no SessionDB write (the underlying
+        SimpleLLMAgent typically writes itself). Kept for backwards-compat
+        when VoicePipeline is constructed without the v2 stack (older
+        tests, minimal dev configs).
+        """
+        response_text = ""
+        messages = [{"role": "user", "content": text}]
+        parser = StreamingTagParser()
+        async with stage_timer("agent", session_id=self.session_id):
+            async for token in self.agent.chat_stream(
+                messages, session_id=self.session_id
+            ):
+                if self._interrupted:
+                    logger.info("agent_interrupted")
+                    break
+                for item in parser.feed(token):
+                    if isinstance(item, TagEvent):
+                        await self._emit_tag_event(item)
+                    else:
+                        response_text += item
+            # Flush trailing buffer (dangling '[' at EOS)
+            for item in parser.flush():
+                if isinstance(item, TagEvent):
+                    await self._emit_tag_event(item)
+                else:
+                    response_text += item
+        return response_text
+
+    async def _run_with_tools(self, text: str, audio_ws: WebSocket) -> str:
+        """P4-S21 #13 path: route voice through AgentLoop tool-use loop.
+
+        Mirrors main.py's `_run_chat`:
+          1. persist user msg to SessionDB + enqueue vector
+          2. ContextAssembler.assemble → bundle (with bundle.history)
+          3. AgentLoop.run with OpenAICompatibleAgentLLM shim
+          4. forward tool_call events to control channel (PermissionPopup
+             still asks the user — language is unchanged), final assistant
+             reply goes to TTS as a single string at the end of the loop
+
+        We don't try to stream chunks through TTS for the tool-use path —
+        AgentLoop emits coherent assistant turns at logical boundaries
+        (after each LLM round). Streaming each token wouldn't compose
+        cleanly with tag-parsing across round boundaries; piecing it
+        together once at the end is much simpler and the latency hit is
+        a few hundred ms of buffering at most.
+        """
+        from deskpet.agent.assembler.bundle import ContextBundle as _Bundle  # noqa: F401  (used via assembler)
+        sc = self._service_context
+
+        def _ctx(name: str):
+            getter = getattr(sc, "get", None)
+            if getter is None:
+                return None
+            return getter(name)
+
+        # Step 1 — persist user msg (mirrors main.py:1481-1491)
+        sdb = _ctx("session_db") if sc else None
+        vw = _ctx("vector_worker") if sc else None
+        user_msg_id = None
+        if sdb is not None:
+            try:
+                user_msg_id = await sdb.append_message(
+                    session_id=self.session_id, role="user", content=text,
+                )
+                if vw is not None and user_msg_id is not None:
+                    await vw.enqueue(user_msg_id, text)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("voice_chat_persist_user_failed", error=str(exc))
+
+        # Step 2 — ContextAssembler (gives us bundle.history per #16 fix)
+        bundle = None
+        assembler = _ctx("context_assembler") if sc else None
+        if assembler is not None and getattr(assembler, "enabled", True):
+            try:
+                bundle = await assembler.assemble(
+                    user_message=text,
+                    memory_manager=_ctx("memory_manager"),
+                    tool_registry=_ctx("tool_router"),
+                    skill_registry=_ctx("skill_loader"),
+                    mcp_manager=_ctx("mcp_manager"),
+                    session_id=self.session_id,
+                    config={
+                        "llm": {
+                            "model": getattr(self._local_llm, "model", "unknown"),
+                            "base_url": getattr(self._local_llm, "base_url", ""),
+                        },
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "voice_assembler_failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                bundle = None
+
+        if bundle is not None:
+            messages = bundle.build_messages(
+                user_message=text,
+                history=bundle.history,
+            )
+        else:
+            messages = [{"role": "user", "content": text}]
+
+        # Step 3 — AgentLoop
+        from agent.agent_loop import (
+            AgentLoop as _AgentLoop,
+            AssistantMessageEvent as _AsstEv,
+            ToolCallEvent as _TCEv,
+            ToolResultEvent as _TREv,
+            FinalEvent as _FinEv,
+            ErrorEvent as _ErrEv,
+        )
+        from agent.tool_use_shim import OpenAICompatibleAgentLLM as _Shim
+        shim = _Shim(provider=self._local_llm)
+        loop = _AgentLoop(
+            llm_registry=shim,
+            tool_registry=self._tool_registry_v2,
+            max_iterations=8,
+        )
+
+        final_text = ""
+        parser = StreamingTagParser()
+
+        # Tag the permission requests as voice-sourced so the gate can
+        # add a TTS audible prompt next to the popup (#13 design step C).
+        gate = self._permission_gate_v2
+        prev_source = None
+        if gate is not None:
+            prev_source = getattr(gate, "current_source", None)
+            try:
+                gate.current_source = "voice"
+            except Exception:  # noqa: BLE001 — defensive
+                pass
+
+        async with stage_timer("agent", session_id=self.session_id):
+            try:
+                async for ev in loop.run(messages, session_id=self.session_id):
+                    if self._interrupted:
+                        logger.info("agent_interrupted")
+                        break
+                    if isinstance(ev, _AsstEv):
+                        # Mid-loop assistant turn (with tool_calls). Send
+                        # to control channel as "thinking" indicator only;
+                        # the final reply comes via _FinEv to avoid
+                        # double-rendering on the frontend (same rule as
+                        # main.py:1563).
+                        if ev.content and ev.tool_calls and self.control_ws:
+                            try:
+                                await self.control_ws.send_json({
+                                    "type": "chat_response",
+                                    "payload": {"text": ev.content, "provider": "v2-voice"},
+                                })
+                            except Exception:  # noqa: BLE001
+                                pass
+                    elif isinstance(ev, _TCEv) and ev.tool_call and self.control_ws:
+                        try:
+                            await self.control_ws.send_json({
+                                "type": "tool_call",
+                                "payload": {
+                                    "name": ev.tool_call.get("name"),
+                                    "arguments": ev.tool_call.get("arguments"),
+                                },
+                            })
+                        except Exception:  # noqa: BLE001
+                            pass
+                    elif isinstance(ev, _TREv) and self.control_ws:
+                        try:
+                            await self.control_ws.send_json({
+                                "type": "tool_result",
+                                "payload": {
+                                    "tool": ev.tool_name,
+                                    "ok": ev.ok,
+                                    "result": ev.result,
+                                },
+                            })
+                        except Exception:  # noqa: BLE001
+                            pass
+                    elif isinstance(ev, _FinEv):
+                        final_text = ev.content or ""
+                    elif isinstance(ev, _ErrEv):
+                        logger.warning("agent_loop_error", error=ev.error)
+                        if self.control_ws:
+                            try:
+                                await self.control_ws.send_json({
+                                    "type": "chat_v2_error",
+                                    "payload": {"error": ev.error},
+                                })
+                            except Exception:  # noqa: BLE001
+                                pass
+                        break
+            finally:
+                if gate is not None:
+                    try:
+                        gate.current_source = prev_source
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        # Apply tag parser to extract emotion/action tags from final text.
+        # Even though we got the whole text in one shot, the parser still
+        # works on a single chunk → flush.
+        clean: list[str] = []
+        for item in parser.feed(final_text):
+            if isinstance(item, TagEvent):
+                await self._emit_tag_event(item)
+            else:
+                clean.append(item)
+        for item in parser.flush():
+            if isinstance(item, TagEvent):
+                await self._emit_tag_event(item)
+            else:
+                clean.append(item)
+
+        response_text = "".join(clean)
+
+        # Persist assistant reply (mirror main.py:1645-1658). AgentLoop
+        # doesn't write to SessionDB itself; main.py and voice_pipeline
+        # are the only writers. _process_utterance is the single in-flight
+        # task per VoicePipeline (canceled-and-replaced via _current_task),
+        # so we don't need a dedup guard here.
+        if sdb is not None and response_text:
+            try:
+                asst_id = await sdb.append_message(
+                    session_id=self.session_id,
+                    role="assistant",
+                    content=response_text,
+                )
+                if vw is not None and asst_id is not None:
+                    await vw.enqueue(asst_id, response_text)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "voice_chat_persist_assistant_failed", error=str(exc)
+                )
+
+        return response_text
 
 
 def _estimate_amplitude_from_size(chunk_size: int) -> float:

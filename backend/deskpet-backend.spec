@@ -41,6 +41,7 @@ hiddenimports: list[str] = []
 hiddenimports += collect_submodules("faster_whisper")
 hiddenimports += collect_submodules("ctranslate2")
 hiddenimports += collect_submodules("silero_vad")
+hiddenimports += ["sqlite_vec"]                    # P4-S20: L3 vector recall
 hiddenimports += [
     "tzdata",                   # zoneinfo needs this on Windows
     "prometheus_client",
@@ -69,9 +70,71 @@ datas += collect_data_files("silero_vad")          # silero_vad/data/*.jit
 datas += collect_data_files("faster_whisper")      # tokenizer.json
 datas += collect_data_files("tzdata")              # IANA tz db
 datas += collect_data_files("ctranslate2")         # any shipped configs
+datas += collect_data_files("sqlite_vec", includes=["*.dll"])  # vec0.dll for L3 recall
 datas += [
-    ("memory/migrations", "memory/migrations"),    # SQL migration scripts
+    # P4-S22 fix: ship the canonical migrations directory under
+    # ``deskpet/memory/migrations`` (where the actual v9/v10/v11 SQL
+    # files live). The legacy ``memory/migrations`` only contains
+    # ``001_initial.sql`` (long stale) — keep both for back-compat
+    # with any tests that still touch the legacy path.
+    ("memory/migrations", "memory/migrations"),    # legacy path
+    ("deskpet/memory/migrations", "deskpet/memory/migrations"),  # canonical
+    # P4-S21 #12: ship the unified-schema config.toml so seed_user_config_if_missing
+    # has a source to seed from / migrate legacy installs against. Without this,
+    # frozen builds with no <exe_dir>/config.toml returned None and the migration
+    # path was a no-op.
+    ("../config.toml", "."),
 ]
+
+# --- 2b. Bundled model weights (P4-S20+ install bundle) -----------------
+# Ship BGE-M3 (vector embedder, ~2.2 GB) and faster-whisper-large-v3-turbo
+# INT8 (ASR, ~1.5 GB) inside the frozen bundle. Lands at
+# `_internal/models/<subdir>/...` and is picked up by paths.resolve_model_dir
+# when the user has not provisioned `%LocalAppData%/deskpet/models/<subdir>/`.
+#
+# Together these add ~3.7 GB to the bundle. NSIS LZMA compression usually
+# halves it, so the final installer is ~2 GB. Acceptable for "download &
+# run, no further setup" UX.
+#
+# Sources are populated by the dev workflow:
+#   - assets/bge-m3-int8/                        (robocopy from %LocalAppData%/deskpet/models/)
+#   - assets/faster-whisper-large-v3-turbo/      (copied from HF cache,
+#                                                 mobiuslabsgmbh INT8 ct2 build)
+# Both directories are gitignored — see backend/.gitignore.
+# P4-S20 install bundle Plan A (post-NSIS-mmap-failure):
+# We previously bundled BGE-M3 (1.1 GB fp16) + faster-whisper INT8 (1.5 GB)
+# directly into the PyInstaller dist. Tauri NSIS makensis is 32-bit and
+# its cumulative mmap address space caps out around ~3.5 GB; bundling
+# 7.7 GB of resources blows that limit with `Internal compiler error
+# #12345: error mmapping file (...) is out of range`. NSIS amd64-Unicode
+# builds exist as community forks (e.g. negrutiu/nsis) but introduce a
+# trust dependency we'd rather avoid.
+#
+# Plan A: ship a thin (~1.5 GB) bundle, rely on first-run download.
+# `paths.resolve_model_dir` already does multi-source fallback
+# (user_models_dir → _MEIPASS/models → backend/assets), so:
+#  - Frozen bundle: models NOT bundled → first-run code (or user-run
+#    download script) populates `%LocalAppData%/deskpet/models/`.
+#  - Dev mode: backend/assets/ still has the weights → resolves there.
+# Either way the runtime path is identical.
+#
+# P4-S20 MSI fat bundle: ship models inside the installer for true
+# zero-config "download → install → launch" UX. Set
+# DESKPET_BUNDLE_MODELS=0 to opt out (yields a thin bundle that relies
+# on first-run download via scripts/setup_models.py).
+if os.environ.get("DESKPET_BUNDLE_MODELS", "1") == "1":
+    _BUNDLED_MODELS = [
+        ("assets/bge-m3-int8", "models/bge-m3-int8"),
+        ("assets/faster-whisper-large-v3-turbo", "models/faster-whisper-large-v3-turbo"),
+    ]
+    for _src, _dest in _BUNDLED_MODELS:
+        if os.path.isdir(_src):
+            datas.append((_src, _dest))
+            print(f"[spec] bundling model: {_src} -> {_dest}")
+        else:
+            print(f"[spec] WARN: bundled model source missing, skipping: {_src}")
+else:
+    print("[spec] thin bundle: models NOT bundled (DESKPET_BUNDLE_MODELS=0)")
 
 # --- 3. Analysis --------------------------------------------------------
 a = Analysis(
@@ -109,13 +172,17 @@ a = Analysis(
 # time so the bundle stays under P3-G2's 3.5 GB budget. On a CPU-only
 # install this filter is a no-op.
 _CUDA_DLL_PREFIXES = (
-    "torch_cuda", "cudnn", "cublas", "cufft", "cusparse", "cusolver",
-    "curand", "nvrtc", "nvjitlink", "cupti", "nvtoolsext",
-    # torch/__init__.py's `_load_dll_libraries` globs every *.dll in
-    # torch/lib/ and raises if any fails to load. These three depend on
-    # the big CUDA stack; dropping them lets torch import as CPU-only
-    # when CUDA deps are missing.
-    "c10_cuda", "caffe2_nvrtc", "cudart",
+    # P4-S20 fat MSI bundle: empty strip list — keep the full torch
+    # CUDA stack. shm.dll directly imports torch_cuda.dll which in
+    # turn lazily binds cudnn / cublas / cufft / etc., so cherry-
+    # picking what to strip is fragile (broke on first try).
+    # MSI (vs NSIS) handles 7+ GB dist sizes natively, so we don't
+    # need the strip dance.
+    # Original aggressive list (kept for reference, was active in
+    # P3-S5's NSIS-only era):
+    #   "torch_cuda", "cudnn", "cublas", "cufft", "cusparse",
+    #   "cusolver", "curand", "nvrtc", "nvjitlink", "cupti",
+    #   "nvtoolsext", "c10_cuda", "caffe2_nvrtc", "cudart",
 )
 
 
@@ -127,6 +194,14 @@ def _is_torch_cuda_bloat(entry):
     return any(name.startswith(p) for p in _CUDA_DLL_PREFIXES)
 
 
+# P4-S20 thin bundle: re-enabled strip. We keep c10_cuda + cudart in
+# torch/lib/ (removed from `_CUDA_DLL_PREFIXES`) so shm.dll's deps
+# resolve, while everything else (cudnn family, cufft, curand,
+# cusolver, cusparse — collectively ~3 GB) is dropped. main.py
+# registers `_MEIPASS/ctranslate2/` in the DLL search path BEFORE any
+# `import torch`, so torch's `_load_dll_libraries` finds cudart/cublas
+# there. Without the strip, dist is ~5 GB (vs ~1.5 GB with strip),
+# which blows NSIS 32-bit makensis's cumulative mmap budget.
 a.binaries = [b for b in a.binaries if not _is_torch_cuda_bloat(b)]
 
 # --- 3c. Re-bundle the minimal CUDA DLLs ctranslate2 actually needs -----

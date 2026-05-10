@@ -1,9 +1,15 @@
 /**
  * P2-1: push cloud config changes to a running backend.
  *
- * The secret is injected as X-Shared-Secret header so the renderer
- * never exposes it to the DOM or console.
+ * P4-S21 #1 — was a direct `fetch("http://127.0.0.1:8100/config/cloud")`,
+ * which webview blocks in release builds: the production webview origin
+ * is `https://tauri.localhost`, and browsers refuse https→http fetches
+ * (mixed-content). We now route through a Rust IPC command that proxies
+ * to the backend on our behalf — Rust holds the SHARED_SECRET, frontend
+ * doesn't need to touch it.
  */
+
+import { invoke } from "@tauri-apps/api/core";
 
 export interface CloudConfigUpdate {
   base_url: string;
@@ -22,24 +28,13 @@ export interface CloudConfigResult {
 }
 
 /**
- * POST /config/cloud to the running backend.
- * Throws on network error or non-200 status.
+ * Push cloud config to the running backend via Rust IPC. Throws on
+ * Rust-side error (the underlying HTTP error message comes through as
+ * the rejection string).
  */
 export async function updateCloudConfig(
-  secret: string,
+  _secret: string,  // kept for legacy callers; ignored — Rust knows the secret
   update: CloudConfigUpdate,
 ): Promise<CloudConfigResult> {
-  const resp = await fetch("http://127.0.0.1:8100/config/cloud", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shared-Secret": secret,
-    },
-    body: JSON.stringify(update),
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`config/cloud failed (${resp.status}): ${text}`);
-  }
-  return resp.json();
+  return invoke<CloudConfigResult>("update_cloud_config", { update });
 }

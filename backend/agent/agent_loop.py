@@ -58,6 +58,11 @@ class AgentEvent:
 @dataclass
 class AssistantMessageEvent(AgentEvent):
     content: str = ""
+    # P4-S24: chain-of-thought from thinking-mode models. Persisted to
+    # SessionDB so cross-session history rebuilds satisfy the
+    # "reasoning_content must be passed back" API constraint. Empty
+    # for non-thinking models — safe to ignore.
+    reasoning_content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: str = ""
     model: str = ""
@@ -65,6 +70,28 @@ class AssistantMessageEvent(AgentEvent):
     def __post_init__(self) -> None:
         if not self.type:
             self.type = "assistant_message"
+
+
+@dataclass
+class AssistantDeltaEvent(AgentEvent):
+    """P4-S25 A1: incremental token chunk during streaming.
+
+    Emitted only when the loop runs in streaming mode (caller uses a
+    shim with ``chat_with_fallback_stream``). Aggregating these gives
+    the same string as the AssistantMessageEvent emitted at the end of
+    each iteration, but the user sees text trickle in rather than wait
+    for the whole turn.
+
+    ``kind`` distinguishes visible content vs hidden thinking-mode
+    reasoning; the frontend can render reasoning in a faded panel and
+    content in the main bubble.
+    """
+    content: str = ""
+    kind: str = "content"  # "content" | "reasoning"
+
+    def __post_init__(self) -> None:
+        if not self.type:
+            self.type = "assistant_delta"
 
 
 @dataclass
@@ -90,6 +117,9 @@ class ToolResultEvent(AgentEvent):
 @dataclass
 class FinalEvent(AgentEvent):
     content: str = ""
+    # P4-S24: passed through so `_run_chat` can persist it on the final
+    # assistant turn (DB row's reasoning_content column).
+    reasoning_content: str = ""
     stop_reason: str = "end_turn"
     total_input_tokens: int = 0
     total_output_tokens: int = 0
@@ -163,15 +193,29 @@ class AgentLoop:
         tools_filter: Optional[list[str]] = None,
         model: Optional[str] = None,
         session_id: str = "default",
+        stream: bool = False,
         **llm_kwargs: Any,
     ) -> AsyncIterator[AgentEvent]:
-        """Drive the ReAct loop. See module docstring for event contract."""
+        """Drive the ReAct loop. See module docstring for event contract.
+
+        ``stream`` (P4-S25 A1): when True and the registry exposes
+        ``chat_with_fallback_stream``, each LLM iteration emits
+        :class:`AssistantDeltaEvent` per token chunk before the
+        :class:`AssistantMessageEvent` lands at the end of that
+        iteration. False (default) preserves the original non-streaming
+        behaviour for callers that don't need partial output.
+        """
         tid = task_id or new_task_id()
         working_messages: list[dict[str, Any]] = list(messages)
         tool_schemas = self.tools.schemas(enabled_toolsets=tools_filter)
 
         totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
         use_model = model or self.default_model
+        # Detect streaming capability lazily — agent loop tests use a
+        # mock registry that may only define chat_with_fallback.
+        stream_capable = stream and callable(
+            getattr(self.llm, "chat_with_fallback_stream", None)
+        )
 
         for iteration in range(1, self.max_iterations + 1):
             # Budget gate BEFORE the call — can't take back tokens after the fact.
@@ -186,12 +230,91 @@ class AgentLoop:
                 return
 
             try:
-                response = await self.llm.chat_with_fallback(
-                    working_messages,
-                    tools=tool_schemas or None,
-                    model=use_model,
-                    **llm_kwargs,
-                )
+                if stream_capable:
+                    # Streaming path: forward delta events, accumulate
+                    # the final dict, then build the same ChatResponse
+                    # the non-streaming path would have produced.
+                    final_dict: dict | None = None
+                    delta_count = 0
+                    stream_failed_with: Exception | None = None
+                    try:
+                        async for ev in self.llm.chat_with_fallback_stream(  # type: ignore[attr-defined]
+                            working_messages,
+                            tools=tool_schemas or None,
+                            model=use_model,
+                            **llm_kwargs,
+                        ):
+                            ev_type = ev.get("type")
+                            if ev_type == "delta":
+                                delta_count += 1
+                                yield AssistantDeltaEvent(
+                                    type="assistant_delta",
+                                    task_id=tid,
+                                    iteration=iteration,
+                                    content=ev.get("content", ""),
+                                    kind="content",
+                                )
+                            elif ev_type == "delta_reasoning":
+                                delta_count += 1
+                                yield AssistantDeltaEvent(
+                                    type="assistant_delta",
+                                    task_id=tid,
+                                    iteration=iteration,
+                                    content=ev.get("content", ""),
+                                    kind="reasoning",
+                                )
+                            elif ev_type == "final":
+                                final_dict = ev
+                    except LLMProviderError as stream_exc:
+                        # P4-S25 fix: streaming raised after exhausting its
+                        # own retry budget (typically RemoteProtocolError
+                        # 3-in-a-row from chinzy). Fall back to the non-
+                        # streaming path instead of bubbling the error
+                        # to the user — non-stream is more reliable on
+                        # chinzy in our observed traffic, AND it has its
+                        # own independent retry budget so we effectively
+                        # double the resilience without hard-coding 6
+                        # retries.
+                        stream_failed_with = stream_exc
+                        logger.warning(
+                            "agent_loop_stream_failed_falling_back "
+                            "error=%s", str(stream_exc)[:200],
+                        )
+
+                    needs_nonstream_fallback = (
+                        stream_failed_with is not None
+                        or final_dict is None
+                        or (
+                            delta_count == 0
+                            and not final_dict.get("content")
+                            and not final_dict.get("tool_calls")
+                        )
+                    )
+                    if needs_nonstream_fallback:
+                        if stream_failed_with is None:
+                            # Empty-stream case (chinzy didn't actually stream).
+                            logger.warning(
+                                "agent_loop_stream_fallback_to_nonstream "
+                                "delta_count=%d", delta_count,
+                            )
+                        response = await self.llm.chat_with_fallback(
+                            working_messages,
+                            tools=tool_schemas or None,
+                            model=use_model,
+                            **llm_kwargs,
+                        )
+                    else:
+                        # Convert to ChatResponse to share the rest of the
+                        # iteration code with the non-streaming path.
+                        from agent.tool_use_shim import _raw_to_response
+                        response = _raw_to_response(final_dict)
+                else:
+                    response = await self.llm.chat_with_fallback(
+                        working_messages,
+                        tools=tool_schemas or None,
+                        model=use_model,
+                        **llm_kwargs,
+                    )
             except LLMBudgetExceededError as exc:
                 yield ErrorEvent(
                     type="error",
@@ -221,6 +344,7 @@ class AgentLoop:
                 task_id=tid,
                 iteration=iteration,
                 content=response.content,
+                reasoning_content=response.reasoning_content,
                 tool_calls=list(response.tool_calls),
                 stop_reason=response.stop_reason,
                 model=response.model,
@@ -233,6 +357,7 @@ class AgentLoop:
                     task_id=tid,
                     iteration=iteration,
                     content=response.content,
+                    reasoning_content=response.reasoning_content,
                     stop_reason=response.stop_reason or "end_turn",
                     total_input_tokens=totals["input"],
                     total_output_tokens=totals["output"],
@@ -247,25 +372,33 @@ class AgentLoop:
             # encode here as a string since the OpenAI-compat path is
             # the most common downstream.
             import json as _json_at
-            working_messages.append(
-                {
-                    "role": "assistant",
-                    "content": response.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": _json_at.dumps(
-                                    tc.arguments, ensure_ascii=False
-                                ),
-                            },
-                        }
-                        for tc in response.tool_calls
-                    ],
-                }
-            )
+            asst_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": response.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": _json_at.dumps(
+                                tc.arguments, ensure_ascii=False
+                            ),
+                        },
+                    }
+                    for tc in response.tool_calls
+                ],
+            }
+            # P4-S24: round-trip reasoning_content for thinking-mode
+            # models. DeepSeek V4 Pro / Qwen3 thinking / GLM-4.5 etc.
+            # reject the next request with HTTP 400 if a prior
+            # assistant turn that HAD a reasoning_content arrives
+            # without it. Skip the field entirely for non-thinking
+            # models (empty string) so we don't pollute payloads to
+            # plain Ollama / GPT-4o.
+            if response.reasoning_content:
+                asst_msg["reasoning_content"] = response.reasoning_content
+            working_messages.append(asst_msg)
 
             # Dispatch all tools concurrently (spec §11.9).
             tool_coros = []

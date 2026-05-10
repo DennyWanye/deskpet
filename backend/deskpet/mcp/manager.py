@@ -69,14 +69,40 @@ ServerState = str  # "pending" | "running" | "reconnecting" | "failed" | "stoppe
 
 
 def _expand_path(value: str) -> str:
-    """Expand ``%APPDATA%`` / ``~`` etc. inside a single arg.
+    """Expand DeskPet-aware path placeholders inside a single arg.
 
-    ``os.path.expandvars`` handles ``%NAME%`` and ``$NAME``;
-    ``os.path.expanduser`` handles ``~``. We run both so the combinations
-    users actually type (``~/deskpet/x``, ``%APPDATA%\\deskpet``,
-    ``$HOME/x``) all resolve.
+    Recognised tokens (in order):
+      * ``%DESKPET_USERDATA%`` / ``$DESKPET_USERDATA`` — current
+        ``paths.user_data_dir()``. In portable mode this is
+        ``<install>/userdata/``; in dev/AppData mode it's whatever
+        platformdirs returns. Use this for any MCP-arg path that
+        should follow user-data routing.
+      * ``%APPDATA%/deskpet`` / ``%LOCALAPPDATA%/deskpet`` — legacy
+        config.toml entries. Auto-rewritten to the resolved
+        ``user_data_dir()`` so old configs keep working in portable
+        mode without manual editing.
+      * Standard ``%NAME%`` / ``$NAME`` / ``~`` via
+        ``expandvars`` + ``expanduser``.
     """
-    return os.path.expanduser(os.path.expandvars(value))
+    # Lazy import to avoid a circular import at module load time:
+    # paths imports nothing from deskpet.*, but if the import chain
+    # ever changes we want this resolution to happen *at call time*.
+    from paths import user_data_dir as _ud  # type: ignore[import-not-found]
+
+    udir = str(_ud())
+    # 1. DeskPet-specific token wins over OS env so portable mode is
+    #    consistent regardless of how the user spelled their path.
+    out = value.replace("%DESKPET_USERDATA%", udir).replace(
+        "$DESKPET_USERDATA", udir
+    )
+    # 2. Legacy %APPDATA%/deskpet → udir rewrite, before generic
+    #    expandvars so we don't double-expand to the OS roaming dir.
+    for legacy in ("%APPDATA%/deskpet", "%APPDATA%\\deskpet"):
+        out = out.replace(legacy, udir)
+    for legacy in ("%LOCALAPPDATA%/deskpet", "%LOCALAPPDATA%\\deskpet"):
+        out = out.replace(legacy, udir)
+    # 3. Anything still containing %FOO%/$FOO/~ — let stdlib finish.
+    return os.path.expanduser(os.path.expandvars(out))
 
 
 # -------------------- per-server runtime record --------------------

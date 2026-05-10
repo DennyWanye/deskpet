@@ -301,6 +301,21 @@ class ContextAssembler:
         bundle.skill_prelude = "\n\n".join(skill_chunks).strip()
         bundle.tool_schemas = merged_schemas
         bundle.cost_hint = cost_hint
+
+        # P4-S21 #16 fix: pull L2 raw history out of MemoryComponent's slice
+        # meta and promote to bundle.history (real OpenAI messages[]).
+        # The MemoryComponent is the only producer right now; if a future
+        # component also wants to inject history (e.g. multi-session merge),
+        # we'd union the lists in registration order here.
+        for sl in budget_result.slices:
+            history = sl.meta.get("l2_history") if sl.meta else None
+            if isinstance(history, list) and history:
+                bundle.history = [
+                    h for h in history
+                    if isinstance(h, dict) and h.get("role") and h.get("content")
+                ]
+                break
+
         return bundle
 
     def _build_decisions(

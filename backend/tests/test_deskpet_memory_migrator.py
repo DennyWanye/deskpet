@@ -58,12 +58,20 @@ async def test_fresh_db_initializes_v9(tmp_path: Path):
     db = tmp_path / "state.db"
     applied = await run_migrations(db)
 
-    # P4-S20-D: 002_p4s20_summarize_archive.sql added; user_version bumped to 10.
+    # P4-S20-D: 002_p4s20_summarize_archive.sql added; bumped to 10.
+    # P4-S22:    003_p4s22_code_todos.sql added;       bumped to 11.
+    # P4-S24:    004_p4s24_reasoning_content.sql added; bumped to 12.
+    # P4-S25 B4: 005_p4s25_code_sessions.sql added;    bumped to 13.
+    # P5-S1:     006_p5s1_supervisor_hints.sql added;  bumped to 14.
     assert applied == [
         "001_p4_initial_v9.sql",
         "002_p4s20_summarize_archive.sql",
+        "003_p4s22_code_todos.sql",
+        "004_p4s24_reasoning_content.sql",
+        "005_p4s25_code_sessions.sql",
+        "006_p5s1_supervisor_hints.sql",
     ]
-    assert _user_version(db) == 10
+    assert _user_version(db) == 14
 
     tables = _list_objects(db, "table")
     # 不检查 messages_vec（那个由 SessionDB 在运行时按 sqlite-vec 可用性创建）
@@ -88,10 +96,17 @@ async def test_idempotent_rerun(tmp_path: Path):
     second = await run_migrations(db)
     third = await ensure_v9(db)
 
-    assert first == ["001_p4_initial_v9.sql", "002_p4s20_summarize_archive.sql"]
+    assert first == [
+        "001_p4_initial_v9.sql",
+        "002_p4s20_summarize_archive.sql",
+        "003_p4s22_code_todos.sql",
+        "004_p4s24_reasoning_content.sql",
+        "005_p4s25_code_sessions.sql",
+        "006_p5s1_supervisor_hints.sql",
+    ]
     assert second == []
     assert third == []
-    # schema_migrations 里有 2 条 (001 + 002)
+    # schema_migrations 里有 6 条 (001 + 002 + 003 + 004 + 005 + 006)
     conn = sqlite3.connect(db)
     try:
         count = conn.execute(
@@ -99,7 +114,7 @@ async def test_idempotent_rerun(tmp_path: Path):
         ).fetchone()[0]
     finally:
         conn.close()
-    assert count == 2
+    assert count == 6
 
 
 # ---- 2.4.c 失败 → 回滚 .bak -----------------------------------------
@@ -200,8 +215,10 @@ async def test_backup_missing_db_raises(tmp_path: Path):
 async def test_ensure_v9_on_already_v9(tmp_path: Path):
     db = tmp_path / "state.db"
     await run_migrations(db)
-    # P4-S20-D: schema bumped from 9 → 10 by 002_p4s20_summarize_archive.sql.
-    assert _user_version(db) == 10
+    # P4-S22: schema bumped from 9 → 10 (002 summarize_archive) → 11
+    # (003 p4s22_code_todos). P4-S24: → 12 (004 reasoning_content).
+    # P4-S25 B4: → 13 (005 code_sessions). P5-S1: → 14 (006 supervisor_hints).
+    assert _user_version(db) == 14
     # 再跑一次 ensure 不应抛
     applied = await ensure_v9(db)
     assert applied == []

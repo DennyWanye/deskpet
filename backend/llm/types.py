@@ -52,9 +52,18 @@ class ChatResponse(BaseModel):
     stop_reason values: "end_turn" | "tool_use" | "max_tokens" | "error" |
     "content_filter" (OpenAI). agent loop branches on "tool_use" to dispatch
     tools; everything else terminates the turn.
+
+    `reasoning_content` is the chain-of-thought emitted by thinking-mode
+    models (DeepSeek V4 Pro, Qwen3 thinking, GLM-4.5, OpenAI o-series,
+    etc.). When non-empty, the agent loop MUST echo it back inside
+    subsequent turns' assistant message — those APIs reject with HTTP 400
+    "reasoning_content must be passed back" if it's stripped. Empty for
+    non-thinking models (Ollama gemma, plain GPT-4o, etc.) — round-trip
+    safely.
     """
 
     content: str = ""
+    reasoning_content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     stop_reason: str = ""
     usage: ChatUsage = Field(default_factory=ChatUsage)

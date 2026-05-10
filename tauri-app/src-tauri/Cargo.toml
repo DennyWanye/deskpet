@@ -13,7 +13,9 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# P4-S21 #7: tray-icon feature is gated; without it tauri::tray module
+# doesn't exist and the system tray (Show/Hide/Quit menu) won't compile.
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 # W5 (R17): self-update. pubkey configured in tauri.conf.json.
 tauri-plugin-updater = "2"
@@ -34,6 +36,11 @@ nvml-wrapper = "0.10"
 # P3-S2: blocking MessageDialog for the "no NVIDIA GPU" fatal-error
 # path. Default feature set is enough — we only need MessageDialog.
 tauri-plugin-dialog = "2"
+# P4-S21 #1: HTTP client for the `update_cloud_config` IPC command that
+# proxies frontend Settings saves to the backend (webview can't fetch
+# http://127.0.0.1 directly under release-build mixed-content rules).
+# Pin to native TLS so we don't drag in OpenSSL on Windows.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"

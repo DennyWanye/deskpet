@@ -65,11 +65,16 @@ class MemoryComponent:
                 meta={"error": str(exc), "error_type": type(exc).__name__},
             )
 
+        l2_rows = result.get("l2") or []
+        l3_hits = result.get("l3") or []
         frozen_text = _render_l1(result.get("l1"))
-        dynamic_text = _render_l2_l3(
-            result.get("l2") or [],
-            result.get("l3") or [],
-        )
+        # P4-S21 #16 fix: L2 raw rows are now promoted to bundle.history
+        # by the assembler stitcher (see meta["l2_history"] below). The
+        # text rendering only carries L3 semantic recall — keeping L2
+        # *also* in the system memory_block would just double-charge tokens
+        # AND risk the LLM ignoring it as instruction noise. Old behaviour
+        # was `_render_l2_l3(...)`; we now emit L3 only.
+        dynamic_text = _render_l3_only(l3_hits)
 
         # Frozen slice for L1
         combined = frozen_text
@@ -82,6 +87,31 @@ class MemoryComponent:
         tokens = _approx_tokens(combined)
         elapsed_ms = (time.monotonic() - start) * 1000.0
 
+        # Promote L2 raw rows to OpenAI message format. The assembler's
+        # `_stitch` reads meta["l2_history"] and assigns to bundle.history.
+        l2_history: list[dict[str, Any]] = []
+        for row in l2_rows:
+            role = row.get("role")
+            content = (row.get("content") or "").strip()
+            # System summaries (is_summary=1) live in messages too — keep
+            # them as system-role hints so the LLM treats them as context
+            # without confusing "assistant" turn boundaries.
+            if not content or role not in ("user", "assistant", "system"):
+                continue
+            entry: dict[str, Any] = {"role": role, "content": content}
+            # P4-S24: thinking-mode round-trip. If a prior assistant
+            # message stored a reasoning_content (DeepSeek V4 Pro /
+            # Qwen3 thinking / GLM-4.5), echo it back into history so
+            # the LLM doesn't 400 with "reasoning_content must be
+            # passed back". NULL/empty for non-thinking models — skip
+            # the field entirely so plain Ollama / GPT-4o payloads
+            # stay clean.
+            if role == "assistant":
+                rc = row.get("reasoning_content")
+                if rc:
+                    entry["reasoning_content"] = rc
+            l2_history.append(entry)
+
         return Slice(
             component_name=self.name,
             text_content=combined,
@@ -90,9 +120,11 @@ class MemoryComponent:
             bucket="dynamic" if dynamic_text else "frozen",
             meta={
                 "l1_bytes": len(frozen_text),
-                "l2_count": len(result.get("l2") or []),
-                "l3_count": len(result.get("l3") or []),
+                "l2_count": len(l2_rows),
+                "l3_count": len(l3_hits),
                 "latency_ms": round(elapsed_ms, 2),
+                # NEW: assembler picks this up and assigns to bundle.history
+                "l2_history": l2_history,
             },
         )
 
@@ -121,50 +153,53 @@ def _render_l1(l1: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _render_l3_only(l3_hits: list[dict[str, Any]]) -> str:
+    """Render only L3 (RRF semantic recall) into a system-prompt-friendly block.
+
+    L2 (recent conversation) used to be rendered here too, but as of P4-S21
+    #16 it's promoted to ``bundle.history`` (real OpenAI message turns).
+    Keeping L2 in this block as well would double-charge tokens AND risk
+    the LLM ignoring it as instruction noise — see the "VPN bug" in
+    `plans/2026-05-07-msi-known-issues.md` #16.
+
+    L3 stays as text because it pulls semantically-similar bits from
+    *anywhere* (other sessions, archived summaries, etc.) — those don't
+    belong in the conversation history per se, they're "retrieved
+    memories" the LLM should consult.
+    """
+    if not l3_hits:
+        return ""
+
+    parts: list[str] = ["## 相关记忆片段 (L3, RRF recall)"]
+    lines = []
+    for hit in l3_hits:
+        text = (hit.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) > 240:
+            text = text[:240] + "…"
+        score = hit.get("score")
+        src = hit.get("source", "?")
+        score_str = (
+            f"{score:.3f}" if isinstance(score, (int, float)) else "?"
+        )
+        lines.append(f"- [{src} {score_str}] {text}")
+    if not lines:
+        return ""
+    parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
+# Kept under the old name for any out-of-tree caller that imports it.
+# Internally everything routes through `_render_l3_only` now.
 def _render_l2_l3(
     l2_rows: list[dict[str, Any]], l3_hits: list[dict[str, Any]]
 ) -> str:
-    """Render L2 (recent session) + L3 (RRF recall) into one dynamic block."""
-    parts: list[str] = []
-
-    if l2_rows:
-        parts.append("## 近期对话 (L2, recent)")
-        lines = []
-        for row in l2_rows:
-            role = row.get("role", "?")
-            content = (row.get("content") or "").strip()
-            if not content:
-                continue
-            # Truncate long messages — keep the recall compact.
-            if len(content) > 200:
-                content = content[:200] + "…"
-            lines.append(f"- [{role}] {content}")
-        if lines:
-            parts.append("\n".join(lines))
-        else:
-            parts.pop()  # drop the header we just added
-
-    if l3_hits:
-        parts.append("## 相关记忆片段 (L3, RRF recall)")
-        lines = []
-        for hit in l3_hits:
-            text = (hit.get("text") or "").strip()
-            if not text:
-                continue
-            if len(text) > 240:
-                text = text[:240] + "…"
-            score = hit.get("score")
-            src = hit.get("source", "?")
-            score_str = (
-                f"{score:.3f}" if isinstance(score, (int, float)) else "?"
-            )
-            lines.append(f"- [{src} {score_str}] {text}")
-        if lines:
-            parts.append("\n".join(lines))
-        else:
-            parts.pop()
-
-    return "\n\n".join(parts)
+    """Deprecated — kept for backwards compatibility with tests. Use
+    ``_render_l3_only`` for new code. L2 rendering is intentionally a
+    no-op now; L2 lives in ``bundle.history`` as real messages."""
+    del l2_rows  # ignored; see docstring
+    return _render_l3_only(l3_hits)
 
 
 def _approx_tokens(text: str) -> int:

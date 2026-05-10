@@ -593,13 +593,25 @@ const MarketplaceList: React.FC<{
                 </span>
               )}
             </div>
+            {/* Marketplace cards: clamp to 4 lines so a long description
+                (e.g. docx skill ships ~1500 chars of "Triggers include …
+                Word doc / .docx / professional documents …") doesn't
+                expand the card to fill the entire scroll viewport,
+                hiding the rest of the list. InstalledList already does
+                this at line ~510. Keep both in sync. */}
             <div
               style={{
                 fontSize: tokens.text.sm.size,
                 color: tokens.color.neutral[600],
                 marginTop: 4,
                 lineHeight: 1.5,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                display: "-webkit-box",
+                WebkitLineClamp: 4,
+                WebkitBoxOrient: "vertical",
               }}
+              title={s.description}
             >
               {s.description}
             </div>

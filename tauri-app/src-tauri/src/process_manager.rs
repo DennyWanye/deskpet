@@ -90,6 +90,21 @@ impl BackendProcess {
             *guard = None;
         }
     }
+
+    /// P4-S21 #1: read-only access for the IPC bridge command.
+    /// Returns None when backend isn't running (no SHARED_SECRET captured
+    /// yet) — the caller surfaces that as "backend not running yet".
+    pub fn shared_secret_clone(&self) -> Option<String> {
+        self.shared_secret
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+    }
+
+    /// P4-S21 #1: backend listen port. Currently a const (8100) — pulled
+    /// out into an accessor so the IPC bridge doesn't have to re-import
+    /// the module-private constant.
+    pub fn port(&self) -> u16 { BACKEND_PORT }
 }
 
 /// Spawn the Python backend and read its SHARED_SECRET announcement.
@@ -149,6 +164,26 @@ fn spawn_once(launch: &BackendLaunch) -> Result<(Child, String), String> {
         // 这样 SHARED_SECRET 也能被及时读到。
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUNBUFFERED", "1");
+
+    // P4-S21 #8: suppress the orphan console window on Windows.
+    //
+    // PyInstaller spec keeps `console=True` so the bundled exe is a
+    // console-subsystem program (needed because Rust still reads
+    // SHARED_SECRET from stdout and stdout/stderr are piped to us).
+    // When Windows spawns a console-subsystem child without an explicit
+    // creation flag, it allocates a brand-new console window and shows
+    // it — that's the "black cmd window next to the pet" users complain
+    // about. The window is visually distinct from a normal app window,
+    // and closing it kills the backend (very confusing UX).
+    //
+    // CREATE_NO_WINDOW (0x08000000) tells the OS "don't allocate a
+    // console; the parent already has one or doesn't need it shown."
+    // The piped stdout / stderr handles work the same way either path.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
 
     // Read key from keychain. Errors are logged to stderr but don't
     // block startup — if the keychain itself is busted, local-only is
