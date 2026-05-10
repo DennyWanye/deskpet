@@ -264,6 +264,46 @@ function ToolCallCard({ name, args }: { name: string; args: Record<string, unkno
   );
 }
 
+// P5-S2 Phase 5.1: 把后端 os_tools 错误返回值（统一 schema）拆成
+//   { body, hint, examples }
+// 让 ToolResultCard 可以对 hint 做高亮渲染。后端 schema:
+//   { ok: false, error: "...", hint: "...", examples: [...] }
+// 没有 hint 字段或不是 JSON 时退化为 { body: 原文, hint: null, examples: null }。
+//
+// 这里挂在 export 是为了 splitToolError.test.ts 能直接 import 测纯函数。
+export interface SplitToolErrorResult {
+  body: string;
+  hint: string | null;
+  examples: unknown[] | null;
+}
+
+export function splitToolError(raw: string): SplitToolErrorResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { body: raw, hint: null, examples: null };
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return { body: JSON.stringify(parsed, null, 2), hint: null, examples: null };
+  }
+  const obj = parsed as Record<string, unknown>;
+  // hint 必须是非空 string；空白也算空
+  let hint: string | null = null;
+  if (typeof obj.hint === "string" && obj.hint.trim().length > 0) {
+    hint = obj.hint;
+  }
+  let examples: unknown[] | null = null;
+  if (Array.isArray(obj.examples)) {
+    examples = obj.examples;
+  }
+  return {
+    body: JSON.stringify(parsed, null, 2),
+    hint,
+    examples,
+  };
+}
+
 function ToolResultCard({
   name,
   ok,
@@ -273,18 +313,14 @@ function ToolResultCard({
   ok: boolean;
   result: string;
 }) {
-  // Try to pretty-print JSON, fall back to raw.
-  let display = result;
-  try {
-    const parsed = JSON.parse(result);
-    display = JSON.stringify(parsed, null, 2);
-  } catch {
-    /* keep raw */
-  }
+  // P5-S2 Phase 5.1: 走 splitToolError 提取 hint；保留原 pretty-print fallback。
+  const { body: display, hint } = splitToolError(result);
   const lineCount = display.split("\n").length;
   const [open, setOpen] = useState(lineCount <= 30);
   const status = ok ? "✓ ok" : "✗ failed";
   const statusColor = ok ? "#86efac" : "#fca5a5";
+  // 有 hint = 后端给了"修这个错误"的可读建议，整张卡加金黄色描边吸引注意。
+  const hasHint = !!hint;
   return (
     <ToolCard
       header={
@@ -296,11 +332,37 @@ function ToolResultCard({
               {lineCount} 行 — 点击展开
             </span>
           )}
+          {hasHint && (
+            <span style={{ marginLeft: 8, color: "#f59e0b", fontSize: 11 }}>
+              💡 有修复建议
+            </span>
+          )}
         </>
       }
       open={open}
       onToggle={() => setOpen((v) => !v)}
+      borderColor={hasHint ? "#f59e0b" : undefined}
     >
+      {hasHint && (
+        <div
+          data-bp-selectable=""
+          data-testid="tool-result-hint"
+          style={{
+            padding: "6px 12px",
+            background: "rgba(245, 158, 11, 0.12)",
+            color: "#fcd34d",
+            fontSize: 12,
+            borderTop: "1px solid #f59e0b",
+            borderLeft: "1px solid #f59e0b",
+            borderRight: "1px solid #f59e0b",
+            lineHeight: 1.5,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          💡 {hint}
+        </div>
+      )}
       <pre data-bp-selectable="" style={preStyle}>
         {display}
       </pre>
@@ -408,14 +470,24 @@ function ToolCard({
   open,
   onToggle,
   children,
+  borderColor,
 }: {
   header: ReactNode;
   open: boolean;
   onToggle: () => void;
   children: ReactNode;
+  /** P5-S2 Phase 5.1: optional emphasis border (e.g. golden when hint present). */
+  borderColor?: string;
 }) {
+  const accent = borderColor ?? "rgba(148, 163, 184, 0.22)";
   return (
-    <div style={{ margin: "8px 0" }}>
+    <div
+      style={{
+        margin: "8px 0",
+        // 整张卡加同色 outline，让 hint 高亮在折叠/展开两种状态下都能被看见
+        ...(borderColor ? { outline: `1px solid ${borderColor}`, outlineOffset: 0, borderRadius: 6 } : {}),
+      }}
+    >
       <button
         type="button"
         onClick={onToggle}
@@ -424,7 +496,7 @@ function ToolCard({
           textAlign: "left",
           padding: "5px 10px",
           background: "rgba(30, 41, 59, 0.6)",
-          border: "1px solid rgba(148, 163, 184, 0.22)",
+          border: `1px solid ${accent}`,
           color: "#e2e8f0",
           fontSize: 12,
           fontFamily:

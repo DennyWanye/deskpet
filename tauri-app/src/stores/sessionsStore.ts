@@ -91,6 +91,11 @@ export interface SessionState {
     suggested_buttons: string[];
     received_at: number;
   } | null;
+  // P5-S2 Phase 5: 自愈尝试计数。0 = 未在自愈中；>0 表示
+  // backend AutoResumeOrchestrator 正在第 N 次尝试。
+  // ws.ts 收到 auto_resume_started 时设为 attempt 值；
+  // succeeded / exhausted 时归 0。AutoResumeBanner 订阅此字段。
+  auto_resume_attempts?: number;
 }
 
 interface SessionsStore {
@@ -135,6 +140,7 @@ const blank_session = (sid: string): SessionState => ({
   tool_signature_repeat: 0,
   supervisor_severity: "green",
   supervisor_alert: null,
+  auto_resume_attempts: 0,
 });
 
 export const useSessionsStore = create<SessionsStore>((set) => ({

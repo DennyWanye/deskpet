@@ -958,6 +958,31 @@ class OpenAICompatibleProvider:
                     body_preview=joined[:300],
                 )
 
+        # P5-S2 Phase 1 — diagnostic dump for every accumulated tool_call
+        # buffer. chinzy / sealos sometimes truncate the SSE mid-frame
+        # leaving us with half-baked args (e.g. `{"path": "fo`); without
+        # this log we can't tell at debug-time whether the model emitted
+        # broken JSON, the proxy chopped the stream, or our parser ate
+        # fragments. Emit BEFORE assembly so the raw buf is unambiguous.
+        # Pure observation — no behaviour change.
+        for _idx in sorted(tool_buffers.keys()):
+            _buf = tool_buffers[_idx]
+            _args_str = _buf.get("args_buf", "") or ""
+            try:
+                # Empty buf {} is a legal "no-arg call" — treat as parseable.
+                _json.loads(_args_str) if _args_str else _json.loads("{}")
+                _parse_ok = True
+            except _json.JSONDecodeError:
+                _parse_ok = False
+            logger.info(
+                "p5s2_tool_call_args_dump",
+                idx=_idx,
+                name=_buf.get("name", "") or "",
+                args_len=len(_args_str),
+                args_preview=_args_str[:100],
+                parse_ok=_parse_ok,
+            )
+
         # Assemble tool_calls from buffers.
         assembled_tools: list[dict] = []
         for idx in sorted(tool_buffers.keys()):

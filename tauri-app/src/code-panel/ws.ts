@@ -142,10 +142,12 @@ function schedule_reconnect() {
     RECONNECT_BASE_MS * Math.pow(2, reconnect_attempt),
   );
   reconnect_attempt++;
-  reconnect_timer = window.setTimeout(() => {
+  // P5-S2 Phase 5: globalThis.setTimeout works in both browser + node (vitest);
+  // window.setTimeout would crash in the node test env when ws.ts is imported.
+  reconnect_timer = (globalThis as any).setTimeout(() => {
     reconnect_timer = null;
     void open_socket();
-  }, delay);
+  }, delay) as unknown as number;
 }
 
 /**
@@ -372,6 +374,50 @@ function dispatch(msg: any) {
       store.upsert(sid, { status: "permission" });
       break;
     }
+    case "auto_resume_started": {
+      // P5-S2 Phase 5: backend's AutoResumeOrchestrator started a self-healing
+      // attempt for this session. Bump auto_resume_attempts so AutoResumeBanner
+      // shows "🔄 agent 自愈中... (尝试 N/2)".
+      const p = msg.payload || {};
+      const target = p.session_id || sid;
+      const attempt = typeof p.attempt === "number" ? p.attempt : 1;
+      store.ensure(target);
+      store.upsert(target, {
+        auto_resume_attempts: attempt,
+        inflight: true,
+        status: "running",
+      });
+      break;
+    }
+    case "auto_resume_succeeded": {
+      // P5-S2 Phase 5: orchestrator landed a final response. Reset counter so
+      // banner dismisses; the regular chat_v2_final (which fires alongside)
+      // will handle status/inflight cleanup.
+      const p = msg.payload || {};
+      const target = p.session_id || sid;
+      store.upsert(target, { auto_resume_attempts: 0 });
+      break;
+    }
+    case "auto_resume_exhausted": {
+      // P5-S2 Phase 5: orchestrator gave up after max_attempts. Reset counter,
+      // surface a red error message so the user sees what failed (mirrors
+      // chat_v2_error semantics — supervisor_alert popup may also fire from a
+      // separate ws message; here we just guarantee an error bubble lands).
+      const p = msg.payload || {};
+      const target = p.session_id || sid;
+      const final_error = String(p.final_error ?? "auto-resume exhausted");
+      const attempts_n = typeof p.attempts === "number" ? p.attempts : 0;
+      store.upsert(target, {
+        auto_resume_attempts: 0,
+        status: "error",
+        inflight: false,
+      });
+      store.push_message(target, {
+        role: "error",
+        text: `自愈失败（${attempts_n} 次尝试）: ${final_error}`,
+      });
+      break;
+    }
     case "supervisor_alert": {
       // P5-S3: supervisor flagged this session. The pet window owns
       // the bubble UI; the panel uses this to colour the tile border.
@@ -420,6 +466,11 @@ export const codePanelWS: CodePanelWS = {
     return current_state;
   },
 };
+
+// P5-S2 Phase 5: vitest hook. Production never imports this; tests use it to
+// drive `dispatch` without spinning up a real WebSocket. Exported under a
+// `__test_` prefix to make the intent obvious at call sites.
+export const __test_dispatch = dispatch;
 
 // Auto-connect on import. Caller doesn't need to do anything.
 void open_socket();

@@ -39,10 +39,31 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# P5-S2 Phase 0: sensor-style error responses include hint + examples
+# so the LLM can self-correct without supervisor escalation.
+_EXAMPLES = [
+    {"command": "echo hello"},
+    {"command": "ls -la", "cwd": "."},
+    {"command": "pip install requests", "timeout": 120},
+]
+
+
+def _err(error: str, hint: str, **extra: Any) -> str:
+    body: dict[str, Any] = {
+        "ok": False,
+        "error": error,
+        "hint": hint,
+        "examples": _EXAMPLES,
+    }
+    body.update(extra)
+    return json.dumps(body, ensure_ascii=False)
 
 # Last picked shell — only used to log changes (avoid spamming the log
 # every call when the same shell stays elected). Module-global is fine
@@ -179,8 +200,14 @@ def run_shell(args: dict[str, Any], task_id: str = "") -> str:
     timeout = int(args.get("timeout", 30) or 30)
 
     if not isinstance(command, str) or not command:
-        return json.dumps({"error": "command required"})
+        return _err(
+            "command required",
+            "run_shell 的 command 字段必填，且必须是非空字符串。"
+            "例如 {\"command\": \"echo hello\"}。如需指定工作目录加 cwd，"
+            "如需调整超时加 timeout（秒）。",
+        )
 
+    start = time.monotonic()
     shell, leading = _pick_shell()
 
     # Force UTF-8 so child processes that respect PYTHONIOENCODING /
@@ -217,19 +244,27 @@ def run_shell(args: dict[str, Any], task_id: str = "") -> str:
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
+        elapsed = round(time.monotonic() - start, 3)
         partial = (exc.stdout or "")
         if isinstance(partial, bytes):
             partial = partial.decode("utf-8", errors="replace")
-        return json.dumps(
-            {
-                "error": "timeout",
-                "stdout_partial": partial[:2000],
-                "timeout_s": timeout,
-            },
-            ensure_ascii=False,
+        return _err(
+            "timeout",
+            f"命令在 {timeout} 秒内未结束已被中止。"
+            "如果是耗时操作（pip install / cargo build），请把 timeout 调大；"
+            "如果是死循环，先 Ctrl+C 排查。",
+            stdout_partial=partial[:2000],
+            timeout_s=timeout,
+            elapsed_seconds=elapsed,
         )
     except OSError as exc:
-        return json.dumps({"error": f"OSError: {exc}"})
+        return _err(
+            f"OSError: {exc}",
+            "执行命令时操作系统报错。常见原因：cwd 路径不存在、"
+            "可执行文件未安装、权限不足。请确认 cwd 是有效目录、"
+            "命令程序在 PATH 中。",
+            cwd=cwd if isinstance(cwd, str) else None,
+        )
 
     return json.dumps(
         {

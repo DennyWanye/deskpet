@@ -98,6 +98,30 @@ interface SettingsPanelProps {
   onConfigChanged?: () => void;
 }
 
+// ---------------------------------------------------------------------------
+// P5-S2 Phase 5.3 — auto-resume toggle helper.
+//
+// Spec contract (frontend-ipc-surface/auto-resume-events.md):
+//   { type: "settings_update",
+//     payload: { supervisor: { auto_resume_enabled: bool } } }
+//
+// Exported as a pure function so SettingsToggle.test.tsx can verify the wire
+// format without instantiating React. The component below uses it.
+// ---------------------------------------------------------------------------
+export interface AutoResumeSettingsMessage {
+  type: "settings_update";
+  payload: { supervisor: { auto_resume_enabled: boolean } };
+}
+
+export function buildAutoResumeSettingsMessage(
+  enabled: boolean,
+): AutoResumeSettingsMessage {
+  return {
+    type: "settings_update",
+    payload: { supervisor: { auto_resume_enabled: enabled } },
+  };
+}
+
 /**
  * Send a `budget_status` request on the control channel and resolve with the
  * next `budget_status` reply (or reject after `timeoutMs`).
@@ -501,6 +525,7 @@ export function SettingsPanel({
         <section style={sectionStyle}>
           <h3 style={h3Style}>桌宠 supervisor（P5-S1）</h3>
           <SupervisorToggleSection getChannel={getChannel} />
+          <AutoResumeToggleSection getChannel={getChannel} />
           <HiyoriMotionTuner />
         </section>
 
@@ -683,6 +708,93 @@ function SupervisorToggleSection({
         每 60 秒扫描一次活动 session，对 15 分钟无进展或报错的任务用 LLM
         自检判断是否需要干预。桌宠用气泡 + 表情提示你最危险的 session。
         关闭后所有 supervisor 行为停止；运行时切换需要重启 backend 完全生效。
+      </p>
+      {err && <span style={{ color: "#b91c1c", fontSize: 11 }}>{err}</span>}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// P5-S2 Phase 5.3 — auto-resume toggle.
+//
+// 控制 backend 的 AutoResumeOrchestrator 是否在 chat 失败时自动重试。
+// 默认 ON（spec'd default in config.toml [supervisor]）。toggle 改变时发
+// `settings_update` 给 backend；backend 持久化到 config.toml。本地
+// localStorage 也存一份以便面板刷新时记得用户偏好。
+// ----------------------------------------------------------------------
+function AutoResumeToggleSection({
+  getChannel,
+}: { getChannel: () => ControlChannel | null }) {
+  const [enabled, setEnabled] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem("deskpet.supervisor.auto_resume_enabled");
+      return v === null ? true : v !== "false"; // default ON
+    } catch {
+      return true;
+    }
+  });
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Sync to backend whenever channel becomes available.
+  useEffect(() => {
+    const ch = getChannel();
+    if (!ch) return;
+    try {
+      ch.send(buildAutoResumeSettingsMessage(enabled));
+    } catch {
+      /* retry on next toggle */
+    }
+  }, [getChannel, enabled]);
+
+  const onToggle = useCallback(() => {
+    setErr(null);
+    setPending(true);
+    const next = !enabled;
+    try {
+      const ch = getChannel();
+      if (!ch) throw new Error("控制通道未连接");
+      ch.send(buildAutoResumeSettingsMessage(next));
+      try {
+        localStorage.setItem(
+          "deskpet.supervisor.auto_resume_enabled",
+          String(next),
+        );
+      } catch {
+        /* non-fatal */
+      }
+      setEnabled(next);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPending(false);
+    }
+  }, [enabled, getChannel]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 13,
+          cursor: pending ? "default" : "pointer",
+          opacity: pending ? 0.6 : 1,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={onToggle}
+          disabled={pending}
+          data-testid="auto-resume-toggle"
+        />
+        <span>自动自愈失败任务（agent 撞 max_iterations / 工具用法错时自动重试 ≤2 次）</span>
+      </label>
+      <p style={{ fontSize: 11, color: "#64748b", margin: 0, lineHeight: 1.5 }}>
+        关闭后 agent 失败时直接弹 supervisor 提示窗口让你决定。开启时
+        AutoResumeOrchestrator 会带着 hint 重跑 1-2 次，跑通就静默；都跑不通才弹窗。
       </p>
       {err && <span style={{ color: "#b91c1c", fontSize: 11 }}>{err}</span>}
     </div>
