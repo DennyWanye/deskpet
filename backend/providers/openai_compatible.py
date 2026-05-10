@@ -34,10 +34,16 @@ class OpenAICompatibleProvider:
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
-        # P4-S25: timeout is a tuple-style budget instead of a single number:
-        #   * connect = 5s  — TCP + TLS should never exceed this; longer means
-        #                     the proxy is genuinely down, and the retry layer
-        #                     should re-dial right away.
+        # P4-S25 / P5-S2: timeout is a tuple-style budget instead of a single
+        # number:
+        #   * connect = 10s — TCP + TLS handshake. Bumped 5→10s on 2026-05-11
+        #                     after seeing real ConnectTimeout failures while
+        #                     chinzy itself reported no errors (their server
+        #                     never saw the request — handshake failed our
+        #                     side). Windows DNS cache invalidation + TLS
+        #                     slow-start on cold connections legitimately
+        #                     takes 6-8s. 10s gives headroom without making
+        #                     real outages drag.
         #   * read    = 60s — between bytes / for a full single response.
         #                     Initial 20s based on user-reported 14.4s p-max
         #                     was too tight: 2026-05-09 logs showed frequent
@@ -51,7 +57,7 @@ class OpenAICompatibleProvider:
         # Caller can still pass a scalar/Timeout; we honour that verbatim.
         if timeout is None:
             self.timeout: float | httpx.Timeout = httpx.Timeout(
-                connect=5.0, read=60.0, write=5.0, pool=5.0,
+                connect=10.0, read=60.0, write=5.0, pool=5.0,
             )
         else:
             self.timeout = timeout
@@ -984,20 +990,55 @@ class OpenAICompatibleProvider:
             )
 
         # Assemble tool_calls from buffers.
+        #
+        # P5-S2 (2026-05-11) fix: when the model emits malformed JSON for
+        # tool_call.arguments (deepseek-v4-pro on long markdown content
+        # frequently mis-escapes \n / " / \\), we used to silently swallow
+        # the JSONDecodeError and pass `args = {}` to the dispatcher. The
+        # tool then reports "missing required parameter" → LLM retries
+        # with the same broken JSON → 3 strikes → circuit breaker OPEN →
+        # user gets popup. The model never learns what went wrong.
+        #
+        # Now: stash the raw args_buf + parse error on the assembled
+        # tool_call dict (keys ``_args_raw`` + ``_args_parse_error``).
+        # Downstream (``_raw_to_response`` → ChatResponse → AgentLoop)
+        # detects these and short-circuits dispatch with a structured
+        # tool_result that tells the LLM exactly what's wrong, so it can
+        # regenerate the call with valid JSON.
         assembled_tools: list[dict] = []
         for idx in sorted(tool_buffers.keys()):
             buf = tool_buffers[idx]
-            try:
-                args = _json.loads(buf["args_buf"]) if buf["args_buf"] else {}
-                if not isinstance(args, dict):
+            args_buf = buf["args_buf"] or ""
+            args: dict = {}
+            args_parse_error: str | None = None
+            if args_buf:
+                try:
+                    parsed = _json.loads(args_buf)
+                    args = parsed if isinstance(parsed, dict) else {}
+                except _json.JSONDecodeError as _exc:
                     args = {}
-            except _json.JSONDecodeError:
-                args = {}
-            assembled_tools.append({
+                    args_parse_error = str(_exc)
+                    # Dump the FULL args_buf (capped at 5KB to keep log
+                    # readable) when parse fails. This is the only way to
+                    # diagnose model-side JSON-escape bugs vs proxy-side
+                    # truncation. Pure observation; no behaviour change.
+                    logger.warning(
+                        "p5s2_tool_call_args_malformed",
+                        idx=idx,
+                        name=buf.get("name", "") or "",
+                        args_len=len(args_buf),
+                        args_full=args_buf[:5000],
+                        parse_error=args_parse_error,
+                    )
+            tc_dict = {
                 "id": buf["id"] or f"call_{idx}",
                 "name": buf["name"],
                 "arguments": args,
-            })
+            }
+            if args_parse_error:
+                tc_dict["_args_raw"] = args_buf
+                tc_dict["_args_parse_error"] = args_parse_error
+            assembled_tools.append(tc_dict)
         # If there were tool_calls, override stop_reason — some servers
         # don't set finish_reason="tool_calls" on the streaming end frame.
         if assembled_tools and final_stop != "tool_use":

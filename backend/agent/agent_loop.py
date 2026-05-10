@@ -768,6 +768,44 @@ class AgentLoop:
           - legacy registry → ``dispatch()`` per spec §5 error contract.
         """
         import json as _json
+        # P5-S2 (2026-05-11) malformed-args short-circuit. The provider
+        # populates ``args_parse_error`` + ``args_raw`` when the model's
+        # JSON args couldn't be parsed (deepseek-v4-pro mis-escaping
+        # \n / " / \\ in long markdown content is the canonical case).
+        # Don't dispatch — the tool would just see empty args and
+        # complain about missing fields, the LLM would retry with the
+        # same broken JSON, and the circuit breaker would eventually
+        # fire. Instead, hand back a structured error tool_result that
+        # tells the model exactly what was malformed so it can
+        # regenerate with valid JSON.
+        if tc.args_parse_error:
+            args_raw = tc.args_raw or ""
+            preview = args_raw[:300]
+            if len(args_raw) > 300:
+                preview = preview + "…"
+            logger.warning(
+                "p5s2_dispatch_short_circuit_malformed_args "
+                "tool=%s args_len=%d parse_error=%s",
+                tc.name, len(args_raw), tc.args_parse_error[:200],
+            )
+            return _json.dumps(
+                {
+                    "ok": False,
+                    "error": "tool_call_args_malformed_json",
+                    "hint": (
+                        f"你刚发的 tool_call.arguments 不是合法 JSON: "
+                        f"{tc.args_parse_error}. 你写了 {len(args_raw)} 字符的 args, "
+                        "但解析失败。最常见原因：长字符串里 \\n / \\\" / \\\\ "
+                        "没正确转义。请重新生成同一个 tool_call，"
+                        "确保 JSON 严格合法（特别是 multi-line content 字段）。"
+                    ),
+                    "tool": tc.name,
+                    "args_raw_preview": preview,
+                    "parse_error": tc.args_parse_error,
+                    "args_len": len(args_raw),
+                },
+                ensure_ascii=False,
+            )
         try:
             if self._supports_execute_tool:
                 envelope = await self.tools.execute_tool(  # type: ignore[attr-defined]

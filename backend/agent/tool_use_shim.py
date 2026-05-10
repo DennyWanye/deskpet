@@ -100,6 +100,11 @@ def _raw_to_response(raw: dict) -> ChatResponse:
                 id=tc.get("id", "") or "",
                 name=tc.get("name", "") or "",
                 arguments=tc.get("arguments", {}) or {},
+                # P5-S2: forward malformed-args metadata if present so
+                # AgentLoop can short-circuit dispatch with a useful
+                # error message back to the model.
+                args_parse_error=tc.get("_args_parse_error"),
+                args_raw=tc.get("_args_raw"),
             )
             for tc in (raw.get("tool_calls") or [])
         ],

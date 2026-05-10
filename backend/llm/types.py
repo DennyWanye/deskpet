@@ -39,11 +39,22 @@ class ToolCall(BaseModel):
     OpenAI returns JSON strings that adapters MUST json.loads (and raise
     LLMProviderError on parse failure — silently returning empty arguments
     leads to tool dispatch hangs that are painful to debug).
+
+    P5-S2 (2026-05-11): when the model emits malformed JSON for arguments
+    (e.g. deepseek-v4-pro mis-escaping in long markdown content), the
+    adapter sets `arguments={}` AND populates `args_parse_error` +
+    `args_raw`. AgentLoop detects these and short-circuits dispatch with
+    a structured `tool_call_args_malformed_json` tool_result that tells
+    the LLM what went wrong, so it regenerates with valid JSON instead
+    of hammering the same broken call until the circuit breaker fires.
     """
 
     id: str
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # P5-S2: populated only when args JSON parse failed; otherwise None.
+    args_parse_error: str | None = None
+    args_raw: str | None = None
 
 
 class ChatResponse(BaseModel):

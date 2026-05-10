@@ -15,10 +15,15 @@ def test_chat_usage_defaults_zero():
 def test_tool_call_round_trip():
     tc = ToolCall(id="call_1", name="web_fetch", arguments={"url": "https://example.com"})
     data = tc.model_dump()
+    # P5-S2 (2026-05-11): ToolCall gained `args_parse_error` + `args_raw`
+    # (both default None) for the malformed-JSON-args feedback path. The
+    # dump now includes them as None when args parsed cleanly.
     assert data == {
         "id": "call_1",
         "name": "web_fetch",
         "arguments": {"url": "https://example.com"},
+        "args_parse_error": None,
+        "args_raw": None,
     }
     restored = ToolCall.model_validate(data)
     assert restored == tc
