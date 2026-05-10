@@ -108,7 +108,14 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
         toolset="os",
         schema=_schema(
             "run_shell",
-            "Execute a shell command. Captures stdout/stderr/exit_code. Default timeout 30s. Asks user permission first.",
+            (
+                "Execute a shell command. On Windows the runtime auto-picks the "
+                "best shell available: Git Bash (preferred) → bundled busybox sh "
+                "→ PowerShell → cmd. Use Linux-style commands (ls / grep / sed / "
+                "awk / find / cat / curl all work via Git Bash or busybox); "
+                "forward-slash paths are accepted. Captures stdout/stderr/"
+                "exit_code. Default timeout 30s. Asks user permission first."
+            ),
             {
                 "command": {"type": "string"},
                 "cwd": {"type": "string"},

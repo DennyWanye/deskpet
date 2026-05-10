@@ -178,18 +178,25 @@ def test_list_directory_truncates(tmp_dir: Path) -> None:
 
 
 def test_run_shell_success() -> None:
-    if platform.system() == "Windows":
-        cmd = "cmd /c echo hello"
-    else:
-        cmd = "echo hello"
-    out = json.loads(run_shell({"command": cmd, "timeout": 5}, ""))
+    # `echo hello` works in bash, busybox sh, PowerShell, and cmd —
+    # so this test passes regardless of which shell tier got picked
+    # by the new (P5-S2) shell-detection logic.
+    out = json.loads(run_shell({"command": "echo hello", "timeout": 5}, ""))
     assert out["exit_code"] == 0
     assert "hello" in out["stdout"]
 
 
 def test_run_shell_timeout() -> None:
-    if platform.system() == "Windows":
-        cmd = "cmd /c ping 127.0.0.1 -n 5"
+    # Pick a "hang" command for whichever shell will be used. P5-S2's
+    # _pick_shell() prefers bash/busybox/powershell before cmd, all of
+    # which understand `sleep N`. cmd doesn't, so on the rare path
+    # where ALL three preferred shells are absent we fall back to its
+    # `ping` trick.
+    from deskpet.tools.os_tools.run_shell import _pick_shell  # noqa: PLC0415
+
+    shell, _ = _pick_shell()
+    if "cmd.exe" in shell.lower():
+        cmd = "ping 127.0.0.1 -n 5 >NUL"
     else:
         cmd = "sleep 5"
     out = json.loads(run_shell({"command": cmd, "timeout": 1}, ""))

@@ -86,6 +86,29 @@ datas += [
     ("../config.toml", "."),
 ]
 
+# --- 2a-bis. busybox-w32 (P5-S2 — 2026-05-10) --------------------------
+# Ship the ~700KB busybox.exe so end users without Git for Windows still
+# get a competent unix-like shell for run_shell. run_shell.py picks
+# this up via _bundled_busybox_path() — checks _MEIPASS first, so the
+# datas entry below is what makes the frozen build self-sufficient.
+#
+# The file is fetched by `scripts/download_busybox.ps1` and committed
+# to the repo at `resources/busybox-w32/busybox.exe`. If that file
+# isn't present at build time, the spec gracefully omits it (the
+# runtime falls back to PowerShell or cmd, which the tier system
+# handles).
+import os as _os  # noqa: PLC0415
+_busybox_src = _os.path.join("..", "resources", "busybox-w32", "busybox.exe")
+if _os.path.isfile(_busybox_src):
+    datas += [(_busybox_src, ".")]
+    print(f"[spec] bundling busybox: {_busybox_src}")
+else:
+    print(
+        f"[spec] WARNING: busybox not found at {_busybox_src} — "
+        "frozen build will rely on Git Bash / PowerShell / cmd at runtime. "
+        "Run scripts/download_busybox.ps1 to enable bundled fallback."
+    )
+
 # --- 2b. Bundled model weights (P4-S20+ install bundle) -----------------
 # Ship BGE-M3 (vector embedder, ~2.2 GB) and faster-whisper-large-v3-turbo
 # INT8 (ASR, ~1.5 GB) inside the frozen bundle. Lands at
