@@ -28,7 +28,7 @@ import asyncio
 import inspect
 import logging
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Optional, Protocol, Union
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol, Union
 
 from agent.task_id import new_task_id
 from llm.budget import DailyBudget
@@ -173,6 +173,10 @@ class AgentLoop:
         max_iterations: int = 20,
         budget_checker: Optional[DailyBudget] = None,
         default_model: Optional[str] = None,
+        completion_probe: Optional[
+            Callable[[str], Awaitable[list[dict[str, Any]]]]
+        ] = None,
+        max_completion_nudges: int = 2,
     ) -> None:
         self.llm = llm_registry
         self.tools = tool_registry
@@ -184,6 +188,18 @@ class AgentLoop:
         # through it so user-permission popups work end-to-end. Legacy
         # registries (only `dispatch`) keep working unchanged.
         self._supports_execute_tool = callable(getattr(tool_registry, "execute_tool", None))
+        # P5-S2 Hook A: completion guard. If supplied, ``completion_probe``
+        # is called when the LLM tries to finalize (stop_reason ≠ tool_use)
+        # to check whether session-level work (todos) is actually done.
+        # The probe receives ``session_id`` and returns the list of
+        # incomplete todo dicts ({content, activeForm, status, ...}).
+        # If non-empty AND we still have nudges in budget, the loop
+        # injects a system message reminding the LLM and re-runs the
+        # iteration instead of finalizing. ``max_completion_nudges``
+        # caps the rebound count to prevent infinite loops when the LLM
+        # genuinely refuses to continue. Set to 0 to disable the hook.
+        self.completion_probe = completion_probe
+        self.max_completion_nudges = max_completion_nudges
 
     async def run(
         self,
@@ -216,6 +232,12 @@ class AgentLoop:
         stream_capable = stream and callable(
             getattr(self.llm, "chat_with_fallback_stream", None)
         )
+
+        # P5-S2 Hook A: per-run nudge counter for the completion guard.
+        # Reset every fresh ``run`` invocation so each chat turn gets a
+        # fresh nudge budget — we don't want stale "already nudged 2x"
+        # state leaking between turns.
+        completion_nudges_used = 0
 
         for iteration in range(1, self.max_iterations + 1):
             # Budget gate BEFORE the call — can't take back tokens after the fact.
@@ -352,6 +374,68 @@ class AgentLoop:
 
             # End of conversation — emit final and stop.
             if response.stop_reason != "tool_use" or not response.tool_calls:
+                # P5-S2 Hook A: completion guard. Before truly finalizing,
+                # ask the caller (via ``completion_probe``) whether session-
+                # level work (todos) is actually finished. If the LLM said
+                # "I'm done" but the SessionDB still has incomplete todos,
+                # rebound with a system message reminding it to either
+                # finish them or explicitly mark them cancelled. Capped at
+                # ``max_completion_nudges`` so we can't loop forever when
+                # the LLM digs in.
+                if (
+                    self.completion_probe is not None
+                    and self.max_completion_nudges > 0
+                    and completion_nudges_used < self.max_completion_nudges
+                ):
+                    try:
+                        incomplete = await self.completion_probe(session_id)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "p5s2_completion_probe_failed sid=%s err=%s",
+                            session_id, str(exc)[:200],
+                        )
+                        incomplete = []
+                    if incomplete:
+                        completion_nudges_used += 1
+                        # Build the rebound system message. Keep it brief
+                        # — long prompts crowd the context window.
+                        bullet_list = "\n".join(
+                            f"  - {(t.get('content') or '').strip()[:120]}"
+                            for t in incomplete[:8]
+                        )
+                        rebound = (
+                            f"你声明已完成（stop_reason={response.stop_reason or 'end_turn'}），"
+                            f"但 todos 里还有 {len(incomplete)} 项未完成：\n"
+                            f"{bullet_list}\n\n"
+                            "请继续执行剩余 todos。如果某项确实做不了 / 不该做，"
+                            "请用 todo_write 把它标成 completed 并简述原因（或者改文案明确说明放弃理由）。"
+                            "不要再次空口说『我做完了』。"
+                        )
+                        # Append the assistant message that triggered this
+                        # so the LLM sees its own prior end_turn output —
+                        # otherwise the rebound system message has no
+                        # context for "what did I just stop on".
+                        if response.content:
+                            working_messages.append({
+                                "role": "assistant",
+                                "content": response.content,
+                            })
+                        working_messages.append({
+                            "role": "system",
+                            "content": rebound,
+                        })
+                        logger.info(
+                            "p5s2_completion_nudge_injected "
+                            "sid=%s nudge=%d/%d incomplete=%d",
+                            session_id,
+                            completion_nudges_used,
+                            self.max_completion_nudges,
+                            len(incomplete),
+                        )
+                        # Skip the final emission and re-iterate. The
+                        # next LLM call sees the nudge.
+                        continue
+
                 yield FinalEvent(
                     type="final",
                     task_id=tid,

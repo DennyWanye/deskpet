@@ -205,3 +205,176 @@ async def test_start_stop_idempotent(store: SessionActivityStore):
     await wd.stop()
     assert not wd.is_running()
     await wd.stop()  # safe to call again
+
+
+# ─────────────── P5-S2 Hook B: idle-with-incomplete-todos ──────────────
+
+
+@pytest.mark.asyncio
+async def test_idle_with_incomplete_todos_triggers(store: SessionActivityStore):
+    """When status is idle (not running) BUT incomplete_todos_probe
+    returns work pending past idle_with_todos_threshold, watchdog must
+    fire — catching the 'LLM said done but todos still pending' case."""
+    sid = "code-idle-1"
+    await store.bump(sid, event_type="assistant_message")
+    sa = await store.get(sid)
+    assert sa is not None
+    sa.last_event_ts = time.time() - 90  # 90s ago
+    sa.status = "idle"  # ← NOT running; old behavior would skip
+
+    triggered: list[tuple[str, dict]] = []
+
+    async def hook(s: str, snap: dict) -> None:
+        triggered.append((s, snap))
+
+    async def _probe(s: str) -> list[dict]:
+        # Simulate 2 incomplete todos
+        return [
+            {"content": "step 1", "status": "pending"},
+            {"content": "step 2", "status": "in_progress"},
+        ]
+
+    wd = WatchdogLoop(
+        session_activity=store,
+        code_mode_manager=_FakeCMM([sid]),
+        hook=hook,
+        scan_interval_seconds=0.05,
+        stuck_threshold_seconds=900,  # high — old (b) rule won't fire
+        dedup_seconds=720,
+        startup_grace_seconds=0.0,
+        idle_with_todos_threshold_seconds=60,  # 60s; sa is 90s old
+        incomplete_todos_probe=_probe,
+    )
+    await wd._tick()
+    assert len(triggered) == 1, f"expected idle+todos trigger; got {triggered!r}"
+    assert triggered[0][0] == sid
+
+
+@pytest.mark.asyncio
+async def test_idle_no_todos_does_not_trigger(store: SessionActivityStore):
+    """Idle with NO incomplete todos = legitimate idle; no trigger."""
+    sid = "code-idle-2"
+    await store.bump(sid, event_type="assistant_message")
+    sa = await store.get(sid)
+    assert sa is not None
+    sa.last_event_ts = time.time() - 90
+    sa.status = "idle"
+
+    triggered: list[str] = []
+
+    async def hook(s: str, snap: dict) -> None:
+        triggered.append(s)
+
+    async def _probe(_s: str) -> list[dict]:
+        return []  # all done
+
+    wd = WatchdogLoop(
+        session_activity=store,
+        code_mode_manager=_FakeCMM([sid]),
+        hook=hook,
+        scan_interval_seconds=0.05,
+        stuck_threshold_seconds=900,
+        dedup_seconds=720,
+        startup_grace_seconds=0.0,
+        idle_with_todos_threshold_seconds=60,
+        incomplete_todos_probe=_probe,
+    )
+    await wd._tick()
+    assert triggered == [], "must not trigger when todos are all done"
+
+
+@pytest.mark.asyncio
+async def test_idle_within_threshold_does_not_trigger(store: SessionActivityStore):
+    """Idle but younger than the threshold = grace period; don't fire yet."""
+    sid = "code-idle-3"
+    await store.bump(sid, event_type="assistant_message")
+    sa = await store.get(sid)
+    assert sa is not None
+    sa.last_event_ts = time.time() - 10  # only 10s ago
+    sa.status = "idle"
+
+    triggered: list[str] = []
+
+    async def hook(s: str, snap: dict) -> None:
+        triggered.append(s)
+
+    async def _probe(_s: str) -> list[dict]:
+        return [{"content": "todo 1", "status": "pending"}]
+
+    wd = WatchdogLoop(
+        session_activity=store,
+        code_mode_manager=_FakeCMM([sid]),
+        hook=hook,
+        scan_interval_seconds=0.05,
+        stuck_threshold_seconds=900,
+        dedup_seconds=720,
+        startup_grace_seconds=0.0,
+        idle_with_todos_threshold_seconds=60,  # threshold > age (10s)
+        incomplete_todos_probe=_probe,
+    )
+    await wd._tick()
+    assert triggered == []
+
+
+@pytest.mark.asyncio
+async def test_no_probe_means_no_idle_trigger(store: SessionActivityStore):
+    """If probe is None (Hook B disabled), idle never fires the new rule —
+    backwards-compatible with the P5-S1 watchdog."""
+    sid = "code-idle-4"
+    await store.bump(sid, event_type="assistant_message")
+    sa = await store.get(sid)
+    assert sa is not None
+    sa.last_event_ts = time.time() - 90
+    sa.status = "idle"
+
+    triggered: list[str] = []
+
+    async def hook(s: str, snap: dict) -> None:
+        triggered.append(s)
+
+    wd = WatchdogLoop(
+        session_activity=store,
+        code_mode_manager=_FakeCMM([sid]),
+        hook=hook,
+        scan_interval_seconds=0.05,
+        stuck_threshold_seconds=900,
+        dedup_seconds=720,
+        startup_grace_seconds=0.0,
+        idle_with_todos_threshold_seconds=60,
+        incomplete_todos_probe=None,  # disabled
+    )
+    await wd._tick()
+    assert triggered == []
+
+
+@pytest.mark.asyncio
+async def test_probe_exception_does_not_crash_tick(store: SessionActivityStore):
+    """A buggy probe must not break the tick loop — degrade silently."""
+    sid = "code-idle-5"
+    await store.bump(sid, event_type="assistant_message")
+    sa = await store.get(sid)
+    assert sa is not None
+    sa.last_event_ts = time.time() - 90
+    sa.status = "idle"
+
+    triggered: list[str] = []
+
+    async def hook(s: str, snap: dict) -> None:
+        triggered.append(s)
+
+    async def _bad_probe(_s: str) -> list[dict]:
+        raise RuntimeError("DB out")
+
+    wd = WatchdogLoop(
+        session_activity=store,
+        code_mode_manager=_FakeCMM([sid]),
+        hook=hook,
+        scan_interval_seconds=0.05,
+        stuck_threshold_seconds=900,
+        dedup_seconds=720,
+        startup_grace_seconds=0.0,
+        idle_with_todos_threshold_seconds=60,
+        incomplete_todos_probe=_bad_probe,
+    )
+    await wd._tick()  # must not raise
+    assert triggered == []  # we couldn't decide, so we don't trigger

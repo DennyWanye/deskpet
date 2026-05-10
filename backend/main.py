@@ -1011,6 +1011,35 @@ async def lifespan(app: FastAPI):
             )
             service_context.register("supervisor", _supervisor_agent)
 
+            # P5-S2 Hook B probe: same logic as the agent_loop probe but
+            # captured at a different scope (lifespan vs per-chat). Maps
+            # base_sid → code_sid → SessionDB.get_code_todos → filter
+            # incomplete. Returned to the watchdog so the (c) trigger
+            # rule (idle with todos) can fire even when there's no
+            # active chat task.
+            async def _watchdog_incomplete_todos_probe(_base_sid: str) -> list[dict]:
+                try:
+                    cm_local = service_context.get("code_mode")
+                    if cm_local is None:
+                        return []
+                    code_sid = cm_local.code_session_id(_base_sid)
+                    if not code_sid:
+                        return []
+                    sdb_local = service_context.get("session_db")
+                    if sdb_local is None:
+                        return []
+                    rows = await sdb_local.get_code_todos(code_sid)
+                    return [
+                        r for r in rows
+                        if (r.get("status") or "").lower() not in ("completed", "cancelled")
+                    ]
+                except Exception as _e:  # noqa: BLE001
+                    logger.warning(
+                        "p5s2_watchdog_probe_lookup_failed sid=%s err=%s",
+                        _base_sid, str(_e)[:200],
+                    )
+                    return []
+
             _watchdog = _WatchdogLoop(
                 session_activity=service_context.get("session_activity"),
                 code_mode_manager=service_context.get("code_mode"),
@@ -1019,6 +1048,10 @@ async def lifespan(app: FastAPI):
                 stuck_threshold_seconds=float(_sup_cfg.get("stuck_threshold_seconds", 900)),
                 dedup_seconds=float(_sup_cfg.get("dedup_seconds", 720)),
                 startup_grace_seconds=float(_sup_cfg.get("startup_grace_seconds", 30)),
+                idle_with_todos_threshold_seconds=float(
+                    _sup_cfg.get("idle_with_todos_threshold_seconds", 60)
+                ),
+                incomplete_todos_probe=_watchdog_incomplete_todos_probe,
             )
             _watchdog.start()
             service_context.register("watchdog", _watchdog)
@@ -2340,10 +2373,47 @@ async def control_channel(ws: WebSocket):
                         except Exception as _exc:  # noqa: BLE001
                             logger.debug("p4s25_plan_skipped error=%s", _exc)
 
+                        # P5-S2 Hook A: completion guard probe.
+                        #
+                        # Maps base_session_id → code_session_id (via
+                        # CodeModeManager) → reads incomplete code_todos
+                        # from SessionDB. Returned to AgentLoop so it
+                        # can rebound the LLM with a "you said done but
+                        # X todos still pending" system message instead
+                        # of finalizing prematurely.
+                        #
+                        # Companion-mode sessions (no code_session_id)
+                        # short-circuit to []: no todos in scope, no
+                        # rebound. Only Code-mode sessions get the
+                        # completion check.
+                        async def _completion_probe(_base_sid: str) -> list[dict]:
+                            try:
+                                cm_local = service_context.get("code_mode")
+                                if cm_local is None:
+                                    return []
+                                code_sid = cm_local.code_session_id(_base_sid)
+                                if not code_sid:
+                                    return []
+                                if _sdb is None:
+                                    return []
+                                rows = await _sdb.get_code_todos(code_sid)
+                                return [
+                                    r for r in rows
+                                    if (r.get("status") or "").lower() not in ("completed", "cancelled")
+                                ]
+                            except Exception as _e:  # noqa: BLE001
+                                logger.warning(
+                                    "p5s2_completion_probe_lookup_failed sid=%s err=%s",
+                                    _base_sid, str(_e)[:200],
+                                )
+                                return []
+
                         _agent = _AgentLoop(
                             llm_registry=_shim,
                             tool_registry=deskpet_tool_registry_v2,
                             max_iterations=_max_iter,
+                            completion_probe=_completion_probe,
+                            max_completion_nudges=2,
                         )
                         # P4-S25 A1: stream by default — gives the user
                         # instant visible feedback on thinking-mode

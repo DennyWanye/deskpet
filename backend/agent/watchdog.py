@@ -32,6 +32,12 @@ DEFAULT_SCAN_INTERVAL_SECONDS = 60
 DEFAULT_STUCK_THRESHOLD_SECONDS = 900  # 15 min
 DEFAULT_DEDUP_SECONDS = 720  # 12 min
 DEFAULT_STARTUP_GRACE_SECONDS = 30
+# P5-S2 Hook B: idle-with-incomplete-todos.
+# Shorter threshold than the running-stuck one because "idle with work
+# pending" is a stronger signal than "running but quiet" — the agent
+# explicitly said it was done. 60s gives just enough time for legitimate
+# end-of-turn user reads / scroll-back.
+DEFAULT_IDLE_WITH_TODOS_THRESHOLD_SECONDS = 60
 
 
 # Hook signature: ``async def hook(sid: str, snapshot: dict) -> None``.
@@ -77,6 +83,10 @@ class WatchdogLoop:
         stuck_threshold_seconds: float = DEFAULT_STUCK_THRESHOLD_SECONDS,
         dedup_seconds: float = DEFAULT_DEDUP_SECONDS,
         startup_grace_seconds: float = DEFAULT_STARTUP_GRACE_SECONDS,
+        idle_with_todos_threshold_seconds: float = DEFAULT_IDLE_WITH_TODOS_THRESHOLD_SECONDS,
+        incomplete_todos_probe: Optional[
+            Callable[[str], Awaitable[list[dict[str, Any]]]]
+        ] = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._activity = session_activity
@@ -86,6 +96,13 @@ class WatchdogLoop:
         self._stuck_threshold = float(stuck_threshold_seconds)
         self._dedup = float(dedup_seconds)
         self._grace = float(startup_grace_seconds)
+        # P5-S2 Hook B: when set, watchdog scans idle sessions and
+        # triggers a supervisor pass if todos are still pending past
+        # ``idle_with_todos_threshold_seconds``. Caller (main.py)
+        # supplies this closure that does base_sid → code_sid →
+        # SessionDB.get_code_todos and filters incomplete ones.
+        self._idle_with_todos_threshold = float(idle_with_todos_threshold_seconds)
+        self._incomplete_todos_probe = incomplete_todos_probe
         self._clock = clock
         # Last supervisor scan timestamp per sid for de-duplication.
         self._last_scan_ts: dict[str, float] = {}
@@ -201,7 +218,7 @@ class WatchdogLoop:
                 continue
 
             # Trigger evaluation
-            if not self._should_trigger(sa, now):
+            if not await self._should_trigger(sa, now, sid):
                 continue
 
             # Build snapshot via the activity record's helper
@@ -225,17 +242,59 @@ class WatchdogLoop:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("supervisor_hook_failed sid=%s error=%s", sid, exc)
 
-    def _should_trigger(self, sa: Any, now: float) -> bool:
-        """Apply the two trigger rules from the spec."""
+    async def _should_trigger(self, sa: Any, now: float, sid: str) -> bool:
+        """Apply the trigger rules.
+
+        Trigger rules (in order):
+
+        (a) ``chat_v2_error`` pending — the agent loop crashed and the
+            error popup wants supervisor diagnosis.
+        (b) Long inactivity in an active state — ``last_event_ts`` is
+            older than ``stuck_threshold_seconds`` AND status is
+            ``running`` / ``permission``. Classic "stuck in a tool
+            wait" case.
+        (c) **P5-S2 Hook B**: idle but todos still incomplete. Status
+            went to ``idle`` (LLM's main agent finalized) but the
+            session still has incomplete code_todos AND age exceeds
+            ``idle_with_todos_threshold_seconds`` (60s default). Catches
+            the "premature end_turn" case where the LLM said it was
+            done but the work isn't actually finished — Hook A in
+            agent_loop is the first line of defence (rebound the LLM
+            in-loop), watchdog is the safety net for when Hook A is
+            exhausted (max_completion_nudges hit) or the LLM still
+            insists on stopping.
+        """
         # (a) chat_v2_error pending
         if getattr(sa, "error_pending_supervisor", False):
             return True
-        # (b) inactivity threshold + status filter
         last_event_ts = getattr(sa, "last_event_ts", 0.0)
         status = getattr(sa, "status", "")
         age = max(0.0, now - last_event_ts)
+        # (b) long inactivity in active state
         if age > self._stuck_threshold and status in ("running", "permission"):
             return True
+        # (c) idle with incomplete todos (Hook B)
+        if (
+            status == "idle"
+            and age > self._idle_with_todos_threshold
+            and self._incomplete_todos_probe is not None
+        ):
+            try:
+                incomplete = await self._incomplete_todos_probe(sid)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "watchdog_idle_todos_probe_failed sid=%s err=%s",
+                    sid, str(exc)[:200],
+                )
+                incomplete = []
+            if incomplete:
+                logger.info(
+                    "watchdog_idle_with_incomplete_todos sid=%s age=%.0fs todos=%d",
+                    sid, age, len(incomplete),
+                )
+                return True
         return False
 
     # ─── introspection (used by tests + observability) ─────────────────

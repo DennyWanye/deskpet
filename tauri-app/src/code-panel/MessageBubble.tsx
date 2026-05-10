@@ -22,12 +22,20 @@ export function MessageBubble({ msg }: Props) {
     case "user":
       return <UserBubble text={msg.text ?? ""} />;
     case "assistant":
-      return <AssistantBubble text={msg.text ?? ""} />;
+      // P5-S2: render with <think>...</think> stripped → collapsed
+      // reasoning bubble + the rest as normal markdown. Some thinking-
+      // mode models (deepseek-v4-pro) leak chain-of-thought into the
+      // visible content stream as `<think>...</think>` instead of the
+      // reasoning_content field. Without this split, the user sees the
+      // raw think tag and (worse) a hanging streaming cursor when the
+      // tag is unclosed.
+      return <AssistantBubbleWithThink text={msg.text ?? ""} streaming={false} />;
     case "assistant_delta":
-      // P4-S25 A1: streaming partial bubble. Same chrome as assistant
-      // but with a soft pulsing cursor at the end so the user knows
-      // text is still flowing in.
-      return <AssistantBubble text={(msg.text ?? "") + " ▍"} />;
+      // P4-S25 A1: streaming partial bubble. Same render as final but
+      // with a soft pulsing cursor — UNLESS the only content so far is
+      // a still-open <think>, in which case we let AssistantBubbleWithThink
+      // keep the reasoning bubble streaming (no main-bubble cursor).
+      return <AssistantBubbleWithThink text={msg.text ?? ""} streaming={true} />;
     case "reasoning_delta":
       // P4-S25 A1: thinking-mode chain-of-thought, rendered faded so
       // it's clear it's not the final answer.
@@ -81,6 +89,89 @@ function UserBubble({ text }: { text: string }) {
         {text}
       </div>
     </div>
+  );
+}
+
+// P5-S2: split a content string on `<think>...</think>` boundaries.
+// Handles both well-formed (closed) and unclosed (streaming or
+// premature-end_turn) think tags. Returns a flat list of segments
+// in original order; consumer renders normal segments through markdown
+// and think segments as collapsed reasoning bubbles.
+//
+// Examples:
+//   "hi <think>foo</think> bye"
+//     → [{kind:"normal","hi "},{kind:"think","foo",closed:true},{kind:"normal"," bye"}]
+//   "<think>still going..."
+//     → [{kind:"think","still going...",closed:false}]
+//   "plain text"
+//     → [{kind:"normal","plain text"}]
+type ThinkSegment =
+  | { kind: "normal"; text: string }
+  | { kind: "think"; text: string; closed: boolean };
+
+export function splitThinkBlocks(text: string): ThinkSegment[] {
+  if (!text) return [];
+  const out: ThinkSegment[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf("<think>", i);
+    if (open === -1) {
+      const tail = text.slice(i);
+      if (tail) out.push({ kind: "normal", text: tail });
+      break;
+    }
+    if (open > i) {
+      out.push({ kind: "normal", text: text.slice(i, open) });
+    }
+    const close = text.indexOf("</think>", open + 7);
+    if (close === -1) {
+      // Unclosed — everything after <think> is a still-streaming reasoning block.
+      out.push({ kind: "think", text: text.slice(open + 7), closed: false });
+      break;
+    }
+    out.push({ kind: "think", text: text.slice(open + 7, close), closed: true });
+    i = close + "</think>".length;
+  }
+  return out;
+}
+
+function AssistantBubbleWithThink({
+  text,
+  streaming,
+}: {
+  text: string;
+  streaming: boolean;
+}) {
+  const segments = splitThinkBlocks(text);
+  const hasNormal = segments.some((s) => s.kind === "normal" && s.text.trim());
+  const hasOpenThink = segments.some(
+    (s) => s.kind === "think" && !s.closed,
+  );
+  // Cursor decision: only show in the main bubble if we have visible
+  // content actively streaming. If the only thing streaming right now
+  // is an open <think> tag, the cursor lives in that reasoning bubble
+  // — not the main one. Prevents the "blank bubble + ghost cursor"
+  // ambiguity that made earlier turns look stuck.
+  const showMainCursor = streaming && hasNormal && !hasOpenThink;
+
+  return (
+    <>
+      {segments.map((seg, idx) => {
+        if (seg.kind === "think") {
+          // Open think during streaming → animate; closed/finalized → static.
+          const suffix = !seg.closed && streaming ? " ▍" : "";
+          return (
+            <ReasoningBubble key={idx} text={seg.text + suffix} />
+          );
+        }
+        return (
+          <AssistantBubble
+            key={idx}
+            text={seg.text + (showMainCursor && idx === segments.length - 1 ? " ▍" : "")}
+          />
+        );
+      })}
+    </>
   );
 }
 
