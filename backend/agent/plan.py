@@ -121,10 +121,17 @@ async def maybe_extract_plan(
         },
     ]
     try:
+        # P5-S1 D fix: bumped 800 → 2048. thinking-mode models
+        # (deepseek-v4-pro etc.) commonly use 800-1500 tokens just
+        # for <think>...</think> chain-of-thought before producing the
+        # JSON plan. The original 800 cap meant `stop_reason='length'`
+        # almost every call → `p4s25_plan_invalid_json` warnings →
+        # silent fallback to non-planned ReAct. 2048 leaves comfortable
+        # room for thinking + the small JSON output schema.
         raw = await provider.chat_with_tools(
             messages,
             tools=None,
-            max_tokens=800,
+            max_tokens=2048,
             temperature=0.3,
             response_format=PLAN_SCHEMA,
         )

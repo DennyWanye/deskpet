@@ -69,10 +69,24 @@ def test_parse_action_cancel_coerced_to_ask_user():
     assert len(a.suggested_buttons) == 2
 
 
-def test_parse_action_invalid_json():
+def test_parse_action_invalid_json_falls_back_to_ask_user():
+    """P5-S1 D fix: parse failure surfaces ask_user fallback so user
+    sees the supervisor noticed even though it couldn't decide."""
     a = _parse_action("not json at all", alert_id="x")
-    assert a.action == "wait"
-    assert a.severity == "green"
+    assert a.action == "ask_user"
+    assert a.severity == "yellow"
+    assert "invalid_json" in a.diagnosis or "parse_failed" in a.diagnosis
+    assert a.user_message
+    assert len(a.suggested_buttons) == 2
+
+
+def test_parse_action_handles_thinking_mode_prefix():
+    """deepseek-v4-pro and similar models prepend <think>...</think>
+    chain-of-thought before the actual JSON. The parser must strip it."""
+    raw = '<think>looking at the snapshot... agent seems stuck on bash_run loop</think>{"action":"nudge","severity":"yellow","diagnosis":"loop","hint_for_main_agent":"swap mirror","user_message":"hint","suggested_buttons":["go"]}'
+    a = _parse_action(raw, alert_id="x")
+    assert a.action == "nudge"
+    assert a.hint_for_main_agent == "swap mirror"
 
 
 def test_parse_action_unknown_action():
@@ -217,25 +231,35 @@ async def test_diagnose_nudge_full_dispatch():
 
 
 @pytest.mark.asyncio
-async def test_diagnose_llm_timeout_falls_back_to_wait():
+async def test_diagnose_llm_timeout_surfaces_to_user():
+    """P5-S1 D fix: supervisor LLM timeout no longer silently waits.
+    It surfaces an ``ask_user`` so the user sees the supervisor noticed
+    and can decide whether to interrupt the stuck task."""
     agent = SupervisorAgent(
         provider=_FakeProvider(delay=2.0),
         snapshot_builder=_stub_snapshot_builder,
         timeout_seconds=0.05,
     )
     a = await agent.diagnose("sid-A")
-    assert a.action == "wait"
+    assert a.action == "ask_user"
+    assert a.severity == "yellow"
     assert "timeout" in a.diagnosis.lower()
+    assert a.user_message  # has bubble text
+    assert len(a.suggested_buttons) == 2
 
 
 @pytest.mark.asyncio
-async def test_diagnose_llm_error_falls_back_to_wait():
+async def test_diagnose_llm_error_surfaces_to_user():
+    """Same as timeout: any provider exception now → ask_user fallback."""
     agent = SupervisorAgent(
         provider=_FakeProvider(raise_exc=RuntimeError("boom")),
         snapshot_builder=_stub_snapshot_builder,
     )
     a = await agent.diagnose("sid-A")
-    assert a.action == "wait"
+    assert a.action == "ask_user"
+    assert a.severity == "yellow"
+    assert "supervisor_unavailable" in a.diagnosis
+    assert a.user_message
 
 
 @pytest.mark.asyncio

@@ -2706,7 +2706,9 @@ async def control_channel(ws: WebSocket):
 
             elif msg_type == "supervisor_user_choice":
                 # P5-S2/S3: user clicked a button on the supervisor bubble.
-                # We log + persist for audit; behavior change is future work.
+                # P5-S1 D fix: also act on the choice — "Continue/重试/let it"
+                # triggers a follow-up that consumes the queued hint;
+                # "Cancel/中断/stop" cancels in-flight + clears queue.
                 _payload = raw.get("payload", {}) or {}
                 _target_sid = _payload.get("session_id") or session_id
                 _alert_id = str(_payload.get("alert_id") or "")
@@ -2729,6 +2731,49 @@ async def control_channel(ws: WebSocket):
                         )
                     except Exception as _exc:
                         logger.debug("supervisor_user_choice_audit_failed error=%s", _exc)
+
+                # Heuristic intent matching by button text. We accept
+                # both Chinese and English labels since the LLM picks
+                # them dynamically. Stop/cancel takes priority over
+                # continue if both keywords appear.
+                _btn_lower = _btn_text.lower().strip()
+                _is_stop = any(k in _btn_text for k in ("中断", "停止", "取消", "终止")) or \
+                           any(k in _btn_lower for k in ("cancel", "stop", "abort", "interrupt"))
+                _is_continue = any(k in _btn_text for k in ("继续", "重试", "再试", "让它", "再等")) or \
+                               any(k in _btn_lower for k in ("continue", "retry", "let", "wait"))
+
+                if _is_stop:
+                    # Cancel any in-flight task + clear the nudge queue
+                    _prev = _chat_inflight.get(_target_sid)
+                    if _prev is not None and not _prev.done():
+                        _prev.cancel()
+                        logger.info("supervisor_user_choice_cancelled sid=%s", _target_sid)
+                    _nq_for_stop = service_context.get("nudge_queue")
+                    if _nq_for_stop is not None:
+                        try:
+                            await _nq_for_stop.clear(_target_sid)
+                        except Exception:
+                            pass
+                elif _is_continue:
+                    # Trigger a follow-up that consumes the queued hint.
+                    # If a chat task is already running, leave it alone —
+                    # the existing done_callback will handle the queue.
+                    _cur = _chat_inflight.get(_target_sid)
+                    if _cur is None or _cur.done():
+                        try:
+                            _new_task = asyncio.create_task(
+                                _run_chat(ws, "<<supervisor_followup>>", _target_sid)
+                            )
+                            _chat_inflight[_target_sid] = _new_task
+                            logger.info(
+                                "supervisor_user_choice_followup_scheduled sid=%s",
+                                _target_sid,
+                            )
+                        except Exception as _ex_fu:
+                            logger.warning(
+                                "supervisor_user_choice_followup_failed sid=%s error=%s",
+                                _target_sid, _ex_fu,
+                            )
 
             elif msg_type == "supervisor_toggle":
                 # P5-S2: enable / disable the supervisor at runtime.
@@ -2757,6 +2802,43 @@ async def control_channel(ws: WebSocket):
                 await ws.send_json({
                     "type": "supervisor_toggle_ack",
                     "payload": {"enabled": _enabled},
+                })
+
+            elif msg_type == "__debug_force_error_pending":
+                # P5-S1 D — force a session into error_pending so the
+                # next watchdog tick triggers supervisor. Used to test
+                # fallback alert when supervisor LLM also fails.
+                _payload = raw.get("payload", {}) or {}
+                target_sid = _payload.get("session_id") or ""
+                _sa = service_context.get("session_activity")
+                if _sa is not None and target_sid:
+                    await _sa.bump(target_sid, event_type="error", snippet="forced for E2E test")
+                    await _sa.mark_error_pending(target_sid)
+                    # Also reset watchdog dedup so next scan fires
+                    _wd = service_context.get("watchdog")
+                    if _wd is not None:
+                        _wd.reset_dedup(target_sid)
+                    await ws.send_json({
+                        "type": "__debug_force_error_pending_ack",
+                        "payload": {"sid": target_sid, "ok": True},
+                    })
+
+            elif msg_type == "__debug_dump_session_activity":
+                # P5-S1 D — dump current session_activity store so we
+                # can verify error_pending got set + watchdog ran.
+                _sa = service_context.get("session_activity")
+                _wd = service_context.get("watchdog")
+                if _sa is not None:
+                    _all = await _sa.snapshot_all()
+                else:
+                    _all = {}
+                _wd_state = {
+                    "running": _wd.is_running() if _wd else False,
+                    "last_scans": dict(_wd._last_scan_ts) if _wd else {},
+                }
+                await ws.send_json({
+                    "type": "__debug_dump_response",
+                    "payload": {"session_activity": _all, "watchdog": _wd_state},
                 })
 
             elif msg_type == "__debug_inject_supervisor_alert":

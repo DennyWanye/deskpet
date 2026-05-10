@@ -73,6 +73,40 @@ pnpm tauri dev
 
 ---
 
+## 已知问题（Known Issues）
+
+### chat 偶发红框 `LLM HTTP 400 Bad Request: — llm_error`
+
+**典型场景**：Code mode 跑工具调用链，agent 完成一轮 tool 后准备让 LLM 看结果继续下一步，
+此时 chinzy 中转站偶发返回 HTTP 400。
+
+**真因**：上游 LLM 中转站（chinzy.com）问题。诊断证据（2026-05-10 实际抓到的）：
+
+| 证据 | 含义 |
+|------|------|
+| `body_len=0`，response body 完全空白 | chinzy 没说为什么 400，连错误描述都不给 |
+| 同一 messages 重发常常就 200 OK | 不是确定性 bug，是间歇性 |
+| 触发模式：`last_role=tool` 后继续 | OpenAI 标准的 tool calling 流程，messages 结构合法 |
+| 重试链 (stream → non-stream → 3 次 backoff) 大多能救回来 | <5% 才会终极失败到 chat_v2_error |
+
+**不是项目侧的 bug**：messages 是合法的 OpenAI 标准格式；同样的请求在 OpenAI 官方
+API / DashScope 上不会 400。chinzy 作为多模型路由代理，对 deepseek-v4-pro 思维模式
++ tool_calls 的某些组合**转发不稳**。
+
+**已实现的缓解**：
+- streaming 失败 → 自动 fallback 非流式（独立重试预算）
+- 非流式自带 3 次 backoff (0s / 1s / 3s) 重试
+- P4-S24 reasoning_content 400 自动 strip + retry
+- 终极失败时 P5-S1 supervisor 接管，桌宠头顶冒气泡 + [重试] / [中断] 按钮
+
+**用户体验**：偶尔看到红框是正常的，**点桌宠气泡的"重试"按钮会真的重新跑一次**
+（带 supervisor 的 hint）。绝大多数情况第二次就能成功。
+
+**根治方案**（需要切上游）：把 `[llm].base_url` 换成 OpenAI 官方 / DashScope /
+本地 Ollama 等更稳定的端点。
+
+---
+
 ## 桌宠 supervisor（P5-S1）
 
 桌宠会**主动监督**你的 Code 模式任务。如果某个 session 卡住了——LLM 反复调同一个失败工具、permission 弹窗没人理、15 分钟无活动、或者直接报错——桌宠的 supervisor 后端会用 LLM 自检判断要不要干预，然后通过桌宠头顶的气泡告诉你最危险的那个 session。

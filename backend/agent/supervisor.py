@@ -61,7 +61,14 @@ _SYSTEM_PROMPT = (
     "你是 DeskPet 的 supervisor agent，负责监督 Code 模式下主 agent 的执行情况。\n"
     "用户委派主 agent 跑一个开发任务，但有时它会卡住（死循环调同一工具、长时间无活动、\n"
     "permission 弹窗没人理、报错、或者错认为已完成）。你的工作是审视一个结构化的状态\n"
-    "快照，并给出干预建议。你只输出 JSON，不要任何额外文字、解释或 markdown 代码块包裹。\n"
+    "快照，并给出干预建议。\n"
+    "\n"
+    "**关键输出要求**：\n"
+    "- 直接输出 JSON 对象，不要任何前置解释、思考链（<think>...</think>）、\n"
+    "  markdown 代码块（```json ... ```）或额外文字。\n"
+    "- 第一个字符就必须是 `{`，最后一个字符必须是 `}`。\n"
+    "- 输出务必简洁：诊断 ≤80 字，hint ≤200 字，user_message ≤80 字。\n"
+    "- 输出长度建议在 300 字以内，避免被 token 截断。\n"
     "\n"
     "保守原则：90% 的'看起来卡住'实际只是慢，默认应该 wait。仅当有明确证据（重复调用同\n"
     "工具/参数 3 次以上、或长时间无任何事件、或最近的事件是 error）才升级为 nudge / ask_user。\n"
@@ -70,9 +77,9 @@ _SYSTEM_PROMPT = (
     "{\n"
     '  "action": "wait" | "nudge" | "ask_user" | "cancel",\n'
     '  "severity": "green" | "yellow" | "red",\n'
-    '  "diagnosis": "<=200 chars 一句话诊断>",\n'
-    '  "hint_for_main_agent": "<仅 nudge 时使用，<=500 chars，将作为 system 消息注入主 agent 下一轮>",\n'
-    '  "user_message": "<给桌宠气泡的文字，<=120 chars，wait 时为空>",\n'
+    '  "diagnosis": "<=80 chars 一句话诊断>",\n'
+    '  "hint_for_main_agent": "<仅 nudge 时用，<=200 chars，将作为 system 消息注入主 agent>",\n'
+    '  "user_message": "<给桌宠气泡的文字，<=80 chars，wait 时为空>",\n'
     '  "suggested_buttons": ["<最多 2 个按钮文本>"]\n'
     "}\n"
     "\n"
@@ -87,15 +94,35 @@ _SYSTEM_PROMPT = (
 _JSON_FENCE_PATTERN = re.compile(
     r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
 )
+# Thinking-mode models (deepseek-v4-pro, GLM-4.5, etc.) sometimes prefix
+# their JSON output with a ``<think>...</think>`` chain-of-thought block.
+# We strip those before parsing — same defensive cleanup the P4-S25 plan
+# extractor uses.
+_THINK_BLOCK_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
 def _strip_json_fences(text: str) -> str:
-    """Some models emit ```json ... ``` even when asked not to. Strip."""
+    r"""Defensive cleanup before json.loads:
+
+    1. Strip ``<think>...</think>`` chain-of-thought blocks (deepseek-v4-pro etc.)
+    2. Strip triple-backtick json fences (some models add them anyway)
+    3. If neither matches but a JSON object lives inside the text, slice
+       from the first ``{`` to the matching close brace.
+    """
     if not text:
         return ""
+    text = _THINK_BLOCK_PATTERN.sub("", text).strip()
     m = _JSON_FENCE_PATTERN.search(text)
     if m:
         return m.group(1).strip()
+    # Last-resort: find first '{' and slice. JSON object boundary detection
+    # is approximate (no brace counting) — _parse_action's json.loads is
+    # the final arbiter. If it fails, _parse_action falls back gracefully.
+    start = text.find("{")
+    if start >= 0:
+        end = text.rfind("}")
+        if end > start:
+            return text[start : end + 1].strip()
     return text.strip()
 
 
@@ -105,20 +132,35 @@ def _safe_str(x: Any, max_len: int) -> str:
 
 
 def _parse_action(text: str, *, alert_id: str) -> SupervisorAction:
-    """Parse LLM output into SupervisorAction. Falls back to wait on any error.
+    """Parse LLM output into SupervisorAction. On parse failure, surface
+    an ``ask_user`` alert so the user knows supervisor noticed but
+    couldn't decide — beats silent wait when the user is staring at a
+    visibly stuck task wondering if anyone is watching.
 
     Coerces ``cancel`` → ``ask_user`` per spec D3.
     """
+
+    def _parse_fallback(reason: str) -> SupervisorAction:
+        return SupervisorAction(
+            action="ask_user",
+            severity="yellow",
+            diagnosis=f"supervisor_parse_failed: {reason}"[:200],
+            hint_for_main_agent="",
+            user_message="发现 session 卡住，supervisor 输出无法解析。要中断吗？",
+            suggested_buttons=["中断", "再等等"],
+            alert_id=alert_id,
+        )
+
     raw = _strip_json_fences(text or "")
     if not raw:
-        return SupervisorAction(action="wait", severity="green", diagnosis="empty supervisor output", alert_id=alert_id)
+        return _parse_fallback("empty supervisor output")
     try:
         obj = json.loads(raw)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("supervisor_parse_failed error=%s raw=%s", exc, raw[:200])
-        return SupervisorAction(action="wait", severity="green", diagnosis="invalid json", alert_id=alert_id)
+        logger.warning("supervisor_parse_failed error=%s raw=%s", exc, raw[:200])
+        return _parse_fallback(f"invalid_json: {str(exc)[:60]}")
     if not isinstance(obj, dict):
-        return SupervisorAction(action="wait", severity="green", diagnosis="non-object json", alert_id=alert_id)
+        return _parse_fallback("non_object_json")
 
     action = str(obj.get("action") or "wait").strip().lower()
     severity = str(obj.get("severity") or "green").strip().lower()
@@ -228,25 +270,56 @@ class SupervisorAgent:
             {"role": "user", "content": "请审视以下 session 状态快照并按 schema 输出 JSON：\n\n" + user_payload},
         ]
         try:
+            # P5-S1 D fix: bumped max_tokens 512 → 2048. thinking-mode
+            # models (deepseek-v4-pro etc.) can use 800-1500 tokens just
+            # for the <think>...</think> chain-of-thought block before
+            # they emit the JSON. 512 led to stop_reason='length' and
+            # truncated JSON every call. 2048 leaves comfortable budget
+            # for thinking + the ~300-token JSON output spec.
             result = await asyncio.wait_for(
                 self._provider.chat_with_tools(
                     messages,
                     tools=None,
-                    max_tokens=512,
+                    max_tokens=2048,
                     temperature=0.1,
                 ),
                 timeout=self._timeout,
             )
         except asyncio.TimeoutError:
             logger.warning("supervisor_llm_timeout after=%.1fs sid=%s", self._timeout, snapshot.get("session_id"))
-            return SupervisorAction(action="wait", severity="green", diagnosis="supervisor_timeout", alert_id=alert_id)
+            # P5-S1 D fix: do NOT silently fall back to wait. The user
+            # sees a stuck session and supervisor also failed; tell the
+            # user explicitly so they can decide rather than left
+            # wondering. Yellow severity = noticed but uncertain.
+            return SupervisorAction(
+                action="ask_user",
+                severity="yellow",
+                diagnosis="supervisor_timeout",
+                hint_for_main_agent="",
+                user_message="发现 session 卡住，但 supervisor LLM 也超时了。要不要中断？",
+                suggested_buttons=["中断", "再等等"],
+                alert_id=alert_id,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "supervisor_llm_failed sid=%s error=%s", snapshot.get("session_id"), exc
             )
-            return SupervisorAction(action="wait", severity="green", diagnosis="supervisor_unavailable", alert_id=alert_id)
+            # P5-S1 D fix: same as above — surface "supervisor saw it
+            # but couldn't diagnose" instead of silent wait. Often the
+            # main agent's failures are network/provider issues that
+            # ALSO affect supervisor's LLM call; the user needs to know.
+            err_brief = str(exc)[:80] if str(exc) else type(exc).__name__
+            return SupervisorAction(
+                action="ask_user",
+                severity="yellow",
+                diagnosis=f"supervisor_unavailable: {err_brief}"[:200],
+                hint_for_main_agent="",
+                user_message="发现 session 卡住，supervisor 自己也连不上 LLM。要中断吗？",
+                suggested_buttons=["中断", "再等等"],
+                alert_id=alert_id,
+            )
 
         content = (result or {}).get("content") if isinstance(result, dict) else None
         return _parse_action(content or "", alert_id=alert_id)
