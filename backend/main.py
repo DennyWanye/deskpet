@@ -1056,6 +1056,113 @@ async def lifespan(app: FastAPI):
             _watchdog.start()
             service_context.register("watchdog", _watchdog)
             logger.info("p5_supervisor_watchdog_started")
+
+            # P5-S2 Phase 4: AutoResumeOrchestrator — closes the
+            # supervisor → main-agent loop. When the chat handler hits
+            # max_iterations / circuit_open / permanent_tool_error /
+            # hallucination, it forwards to ``orchestrator.handle_failure``;
+            # the orchestrator asks supervisor for a hint and (if action
+            # is ``nudge``) automatically spawns a fresh chat task on the
+            # same sid via the per-sid re-dispatcher closure populated
+            # by the chat handler itself.
+            try:
+                from agent.auto_resume import AutoResumeOrchestrator as _AROrch
+
+                # Dispatcher closure: orchestrator passes (sid, msgs)
+                # where ``msgs`` ends in a system msg with the supervisor
+                # hint. Production trampoline:
+                #   1. Extract hint text from the injected system msg.
+                #   2. Push it to nudge_queue (pop_all picks it up at the
+                #      top of the next chat task — uniform with P5-S1
+                #      injection path).
+                #   3. Call the per-sid re-dispatcher (registered by chat
+                #      handler each user turn) with the synthetic trigger
+                #      ``<<auto_resume>>`` so a fresh AgentLoop runs.
+                async def _auto_resume_dispatch(_sid: str, _msgs: list[dict]) -> None:
+                    # 1. Pull hint text out of the injected system msg.
+                    _hint_text = ""
+                    for _m in reversed(_msgs):
+                        if _m.get("_is_supervisor_hint"):
+                            _content = _m.get("content") or ""
+                            if _content.startswith("[Supervisor Hint] "):
+                                _hint_text = _content[len("[Supervisor Hint] "):]
+                            else:
+                                _hint_text = _content
+                            break
+                    # 2. Push to nudge_queue so the next chat task picks it up.
+                    if _hint_text:
+                        try:
+                            from agent.nudge_queue import Hint as _Hint2
+                            _nq2 = service_context.get("nudge_queue")
+                            if _nq2 is not None:
+                                await _nq2.push(
+                                    _sid,
+                                    _Hint2(
+                                        text=_hint_text,
+                                        alert_id="auto_resume",
+                                        severity="yellow",
+                                    ),
+                                )
+                        except Exception as _ex:  # noqa: BLE001
+                            logger.debug("auto_resume_hint_push_failed sid=%s err=%s", _sid, _ex)
+                    # 3. Look up the per-sid re-dispatcher and fire.
+                    _redisp = _auto_resume_redispatchers.get(_sid)
+                    _ws_for_sid = _control_connections.get(_sid) or _control_connections.get("default")
+                    if _redisp is None or _ws_for_sid is None:
+                        logger.warning(
+                            "auto_resume_no_redispatcher sid=%s ws=%s",
+                            _sid, "yes" if _ws_for_sid else "no",
+                        )
+                        return
+                    try:
+                        await _redisp(_ws_for_sid, _sid)
+                    except Exception as _ex:  # noqa: BLE001
+                        logger.warning("auto_resume_redispatch_failed sid=%s err=%s", _sid, _ex)
+
+                # ws emitter — broadcast auto_resume_* events to all control conns.
+                async def _auto_resume_emit(_typ: str, _payload: dict) -> None:
+                    if not _control_connections:
+                        return
+                    _msg = {"type": _typ, "payload": _payload}
+                    for _sid_key, _ws_obj in list(_control_connections.items()):
+                        try:
+                            await _ws_obj.send_json(_msg)
+                        except Exception as _bex:
+                            logger.debug("auto_resume_emit_failed sid=%s err=%s", _sid_key, _bex)
+
+                # Audit writer — bridge to SessionDB.append_supervisor_hint.
+                async def _auto_resume_audit(_record: dict) -> None:
+                    _sdb = service_context.get("session_db")
+                    if _sdb is None:
+                        return
+                    try:
+                        await _sdb.append_supervisor_hint(
+                            session_id=_record.get("session_id", ""),
+                            alert_id=_record.get("alert_id", ""),
+                            hint_text=_record.get("hint_text", ""),
+                            action=_record.get("action", "auto_resumed"),
+                            severity=_record.get("severity", "yellow"),
+                            diagnosis=_record.get("diagnosis", ""),
+                        )
+                    except Exception as _ex:  # noqa: BLE001
+                        logger.debug("auto_resume_audit_failed err=%s", _ex)
+
+                _orch = _AROrch(
+                    supervisor=_supervisor_agent,
+                    chat_dispatcher=_auto_resume_dispatch,
+                    activity_store=service_context.get("session_activity"),
+                    max_attempts=int(_sup_cfg.get("max_auto_resume_attempts", 2)),
+                    enabled=bool(_sup_cfg.get("auto_resume_enabled", True)),
+                    ws_emitter=_auto_resume_emit,
+                    audit_writer=_auto_resume_audit,
+                )
+                service_context.register("auto_resume", _orch)
+                logger.info(
+                    "p5s2_auto_resume_started enabled=%s max_attempts=%d",
+                    _orch._enabled, _orch.max_attempts,
+                )
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning("p5s2_auto_resume_start_failed err=%s", _exc)
         else:
             logger.info("p5_supervisor_disabled_via_config")
     except Exception as exc:  # noqa: BLE001
@@ -1119,6 +1226,14 @@ _control_connections: dict[str, WebSocket] = {}
 # P4-S23: track in-flight chat tasks per session_id so multi-session
 # panels can cancel-on-retry without leaking stale AgentLoop runs.
 _chat_inflight: dict[str, asyncio.Task] = {}
+# P5-S2 Phase 4: per-sid re-dispatchers populated by the chat handler so
+# the AutoResumeOrchestrator can spawn a follow-up turn without needing
+# direct access to the chat-handler-scoped ``_run_chat`` closure. The
+# value is an awaitable ``(ws, sid) -> None`` that re-enters _run_chat
+# with a synthetic trigger text. The chat handler refreshes this entry
+# on every user-initiated turn so the closure always captures the
+# latest local state.
+_auto_resume_redispatchers: dict[str, "Callable[[WebSocket, str], Awaitable[None]]"] = {}  # noqa: F821
 # Track active voice pipelines by session so that a control-channel `interrupt`
 # message can reach the audio-channel pipeline (they are separate WebSockets).
 _pipelines: dict[str, "VoicePipeline"] = {}  # noqa: F821 — forward ref, set at runtime
@@ -2156,6 +2271,20 @@ async def control_channel(ws: WebSocket):
                 except Exception as _exc:  # noqa: BLE001
                     logger.debug("code_mode_suggest_failed", error=str(_exc))
 
+                # P5-S2 Phase 4: a fresh user-initiated chat message means
+                # the user has implicitly granted a new auto-resume budget.
+                # Reset the attempts counter so subsequent failures may
+                # auto-resume up to ``max_attempts`` times again. Skipped
+                # for synthetic re-entry texts (`<<supervisor_followup>>`,
+                # `<<auto_resume>>`) so they consume the existing budget.
+                if not (text or "").startswith("<<"):
+                    _sa_for_reset = service_context.get("session_activity")
+                    if _sa_for_reset is not None:
+                        try:
+                            await _sa_for_reset.reset_auto_resume_attempts(_msg_sid)
+                        except Exception as _ex:  # noqa: BLE001
+                            logger.debug("auto_resume_reset_failed sid=%s err=%s", _msg_sid, _ex)
+
                 async def _run_chat(_ws, _text, _sid):
                     # P4-S20-LLM-Unified-fix: 持久化用户消息到 SessionDB
                     # 并入向量库。老 chat 路径靠 SimpleLLMAgent.chat_stream
@@ -2593,14 +2722,80 @@ async def control_channel(ws: WebSocket):
                                     "type": "chat_v2_final",
                                     "payload": {"text": ev.content, "iterations": ev.iteration, "session_id": _sid},
                                 })
+                                # P5-S2 Phase 4: if this final came from
+                                # an auto-resume cycle (attempts > 0),
+                                # emit ``auto_resume_succeeded`` so the
+                                # frontend banner can switch to a
+                                # success state. We don't reset the
+                                # counter here — only a fresh USER
+                                # message resets (per spec: the user's
+                                # implicit grant of a new budget).
+                                try:
+                                    _sa_for_check = service_context.get("session_activity")
+                                    if _sa_for_check is not None:
+                                        _sa_obj = await _sa_for_check.get(_sid)
+                                        if _sa_obj is not None and _sa_obj.auto_resume_attempts > 0:
+                                            await _ws.send_json({
+                                                "type": "auto_resume_succeeded",
+                                                "payload": {
+                                                    "session_id": _sid,
+                                                    "attempts": _sa_obj.auto_resume_attempts,
+                                                },
+                                            })
+                                            logger.info(
+                                                "auto_resume_succeeded sid=%s attempts=%d",
+                                                _sid, _sa_obj.auto_resume_attempts,
+                                            )
+                                except Exception as _ex:  # noqa: BLE001
+                                    logger.debug("auto_resume_success_emit_failed sid=%s err=%s", _sid, _ex)
                             elif isinstance(ev, _ErrEv):
-                                # P4-S25 (2026-05-09): cross-endpoint
-                                # fallback removed. LLM errors now
-                                # surface to the user directly.
-                                await _ws.send_json({
-                                    "type": "chat_v2_error",
-                                    "payload": {"reason": ev.reason, "detail": ev.detail, "session_id": _sid},
-                                })
+                                # P5-S2 Phase 4: try AutoResumeOrchestrator
+                                # FIRST for recoverable error reasons. If
+                                # the orchestrator decides to spawn a fresh
+                                # task, we suppress the chat_v2_error to
+                                # the user (the auto_resume_started ws
+                                # event already shows them a banner). If
+                                # it decides ask_user / exhausted, fall
+                                # through to the legacy error emit so the
+                                # user sees the popup as before.
+                                _ar_handled = False
+                                try:
+                                    from agent.auto_resume import is_auto_resume_trigger as _is_ar
+                                    if _is_ar(ev.reason or ""):
+                                        _orch_inst = service_context.get("auto_resume")
+                                        if _orch_inst is not None:
+                                            _snap_for_orch = {
+                                                "session_id": _sid,
+                                                "reason": ev.reason,
+                                                "detail": ev.detail,
+                                                "iteration": ev.iteration,
+                                            }
+                                            _ar_result = await _orch_inst.handle_failure(
+                                                _sid, ev.reason or "", _snap_for_orch, _msgs,
+                                            )
+                                            if _ar_result.action == "spawned":
+                                                # Orchestrator owns the user-facing event now.
+                                                _ar_handled = True
+                                                logger.info(
+                                                    "auto_resume_engaged sid=%s reason=%s attempt=%d",
+                                                    _sid, ev.reason, _ar_result.attempt,
+                                                )
+                                            elif _ar_result.action == "exhausted":
+                                                # auto_resume_exhausted ws event already
+                                                # emitted by orchestrator; suppress legacy
+                                                # error so frontend doesn't double-popup.
+                                                _ar_handled = True
+                                except Exception as _ex:  # noqa: BLE001
+                                    logger.debug("auto_resume_handle_failed sid=%s err=%s", _sid, _ex)
+
+                                if not _ar_handled:
+                                    # P4-S25 (2026-05-09): cross-endpoint
+                                    # fallback removed. LLM errors now
+                                    # surface to the user directly.
+                                    await _ws.send_json({
+                                        "type": "chat_v2_error",
+                                        "payload": {"reason": ev.reason, "detail": ev.detail, "session_id": _sid},
+                                    })
 
                         # P4-S24: assistant persistence moved INTO the
                         # FinalEvent handler above so a same-sid task
@@ -2673,6 +2868,21 @@ async def control_channel(ws: WebSocket):
                     _prev_task.cancel()
                 _chat_task = asyncio.create_task(_run_chat(ws, text, _msg_sid))
                 _chat_inflight[_msg_sid] = _chat_task
+
+                # P5-S2 Phase 4: register a per-sid re-dispatcher closure
+                # so the AutoResumeOrchestrator can spawn a follow-up
+                # task without needing access to the chat-handler-scoped
+                # ``_run_chat``. The closure captures the latest _run_chat
+                # and is overwritten on every user turn, so it always
+                # reflects the freshest local state.
+                async def _redisp(_target_ws, _target_sid):
+                    _new_task = asyncio.create_task(
+                        _run_chat(_target_ws, "<<auto_resume>>", _target_sid)
+                    )
+                    _chat_inflight[_target_sid] = _new_task
+                    _new_task.add_done_callback(_make_followup_cb(_target_sid, _target_ws))
+
+                _auto_resume_redispatchers[_msg_sid] = _redisp
 
                 # P5-S4: register a done_callback so when this task
                 # finishes (success or cancel), we check whether the
