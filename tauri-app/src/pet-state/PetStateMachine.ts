@@ -190,7 +190,11 @@ export class PetStateMachine {
       this.intervening_until = now + INTERVENING_DURATION_MS;
     }
 
-    let next_state: PetState = this.compute_state_from_score(focus_score, !!focus);
+    let next_state: PetState = this.compute_state_from_score(
+      focus_score,
+      !!focus,
+      focus?.supervisor_severity,
+    );
 
     // Apply minimum dwell time: don't change state for at least MIN_DWELL_MS.
     const dwell_age = now - this.last_transition_ms;
@@ -222,14 +226,33 @@ export class PetStateMachine {
   }
 
   /**
-   * Pure helper — given a score and whether any focus session exists,
-   * return the score-derived state with hysteresis around current state.
+   * Pure helper — given a score, whether any focus session exists, and
+   * the focus session's supervisor severity, return the score-derived
+   * state with hysteresis around current state.
+   *
+   * P5-S1 D fix: when supervisor itself flagged the focus session as
+   * red/yellow, override the score-driven mapping. Reasoning: the
+   * score formula adds at most +50 for red supervisor, and a brand-new
+   * session ensured in response to a supervisor_alert starts with
+   * status=idle (base=0) → total=50, which is in "working" range, so
+   * the bubble (worried/alert only) never shows. The supervisor's own
+   * severity is more authoritative than the score arithmetic.
    */
   private compute_state_from_score(
     score: number,
     has_focus: boolean,
+    supervisor_severity?: "green" | "yellow" | "red",
   ): PetState {
     if (!has_focus) return "idle";
+
+    // Supervisor override: red ⇒ alert, yellow ⇒ at least worried.
+    if (supervisor_severity === "red") return "alert";
+    if (supervisor_severity === "yellow") {
+      // Yellow nominally maps to worried; if score also crossed alert
+      // (e.g. status=error + repeats), promote to alert.
+      if (score >= ENTER_ALERT) return "alert";
+      return "worried";
+    }
 
     switch (this.current_state) {
       case "alert":

@@ -46,20 +46,50 @@ describe("PetStateMachine", () => {
     expect(r.focus_sid).toBeNull();
   });
 
-  it("transitions to working when score crosses 30", () => {
+  it("transitions to working when score crosses 30 without supervisor severity", () => {
     const sm = new PetStateMachine({ clock });
-    // Score = 10 (running) + 20 (yellow) = 30. ENTER_WORKING is 30.
+    // Score = 10 (running) + 20 (no supervisor) + 20 (running iter 100/50?)
+    // We want a clean "working" trigger w/ no supervisor override.
+    // status=running base=10, repeat=2 → 20, total=30. ENTER_WORKING=30.
     const sessions = {
       a: mk_session({
         base_session_id: "a",
         status: "running",
+        tool_signature_repeat: 2,  // +20
+        last_activity: now,
+      }),
+    };
+    const r1 = sm.tick({ sessions });
+    expect(r1.state).toBe("working");
+  });
+
+  it("supervisor severity=yellow forces at least worried regardless of score", () => {
+    const sm = new PetStateMachine({ clock });
+    // Even with low base, yellow supervisor drives worried.
+    const sessions = {
+      a: mk_session({
+        base_session_id: "a",
+        status: "idle",
         supervisor_severity: "yellow",
         last_activity: now,
       }),
     };
-    // Score 30 is in working range (≥ 30 and < 60)
-    const r1 = sm.tick({ sessions });
-    expect(r1.state).toBe("working");
+    const r = sm.tick({ sessions });
+    expect(r.state).toBe("worried");
+  });
+
+  it("supervisor severity=red forces alert regardless of score", () => {
+    const sm = new PetStateMachine({ clock });
+    const sessions = {
+      a: mk_session({
+        base_session_id: "a",
+        status: "idle",
+        supervisor_severity: "red",
+        last_activity: now,
+      }),
+    };
+    const r = sm.tick({ sessions });
+    expect(r.state).toBe("alert");
   });
 
   it("transitions to worried when score ≥ 60", () => {

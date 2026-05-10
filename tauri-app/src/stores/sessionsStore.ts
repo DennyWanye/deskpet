@@ -337,7 +337,13 @@ export function severity_score(s: SessionState, now: number = Date.now()): numbe
 
 /** Return the sid of the most-dangerous session (highest score), or null
  * if the store has no sessions to evaluate. Code-mode-only sessions are
- * eligible (companion sessions don't carry code_session_id). */
+ * eligible (companion sessions don't carry code_session_id) — except
+ * a session with an active supervisor_alert is ALWAYS eligible, since
+ * the supervisor's own decision says "this matters".
+ *
+ * The companion "default" sid is still excluded so the pet doesn't
+ * focus itself when an alert hypothetically targets the chitchat
+ * channel — supervisor only watches Code mode by design. */
 export function pet_focus_sid(
   sessions: Record<string, SessionState>,
   now: number = Date.now(),
@@ -345,9 +351,12 @@ export function pet_focus_sid(
   let best_sid: string | null = null;
   let best_score = -1;
   for (const [sid, s] of Object.entries(sessions)) {
-    // Only Code-mode sessions are eligible; companion "default" without
-    // a project_root never enters the pet supervisor focus loop.
-    if (!s.code_session_id && !s.project_root) continue;
+    // Companion sid is never eligible. Otherwise: Code-mode metadata
+    // OR an active supervisor_alert qualifies the session for focus.
+    if (sid === "default") continue;
+    const has_code_meta = !!(s.code_session_id || s.project_root);
+    const has_active_alert = !!s.supervisor_alert;
+    if (!has_code_meta && !has_active_alert) continue;
     const score = severity_score(s, now);
     if (score > best_score) {
       best_score = score;

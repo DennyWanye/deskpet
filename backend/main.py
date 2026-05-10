@@ -2759,6 +2759,33 @@ async def control_channel(ws: WebSocket):
                     "payload": {"enabled": _enabled},
                 })
 
+            elif msg_type == "__debug_inject_supervisor_alert":
+                # P5-S1 D — Debug IPC for visual / E2E testing. Already
+                # protected by SHARED_SECRET (the ws connection itself
+                # requires it), so we don't double-gate on DEV_MODE.
+                # Single-user desktop-pet threat model: anyone with the
+                # secret already has full backend access.
+                _payload = raw.get("payload", {}) or {}
+                # Fan out to every control WS, identical path to the
+                # real supervisor's broadcast.
+                msg = {"type": "supervisor_alert", "payload": _payload}
+                for _sid_key, _ws_obj in list(_control_connections.items()):
+                    try:
+                        await _ws_obj.send_json(msg)
+                    except Exception as _bex:
+                        logger.debug(
+                            "debug_supervisor_alert_send_failed sid=%s error=%s",
+                            _sid_key, _bex,
+                        )
+                logger.info(
+                    "__debug_inject_supervisor_alert dispatched payload=%s",
+                    _payload,
+                )
+                await ws.send_json({
+                    "type": "__debug_inject_ack",
+                    "payload": {"ok": True},
+                })
+
             else:
                 await ws.send_json({
                     "type": "error",
