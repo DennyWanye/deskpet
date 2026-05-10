@@ -25,6 +25,7 @@ import {
 } from "../bindings/secrets";
 import { updateCloudConfig } from "../bindings/config";
 import { EmbedderStatusCard } from "./EmbedderStatusCard";
+import { HiyoriMotionTuner } from "./HiyoriMotionTuner";
 import type {
   DailyBudgetStatus,
   IncomingMessage,
@@ -500,6 +501,7 @@ export function SettingsPanel({
         <section style={sectionStyle}>
           <h3 style={h3Style}>桌宠 supervisor（P5-S1）</h3>
           <SupervisorToggleSection getChannel={getChannel} />
+          <HiyoriMotionTuner />
         </section>
 
         {/* ================ 危险区 (P3-S9) ================ */}

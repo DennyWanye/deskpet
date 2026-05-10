@@ -15,6 +15,7 @@ import { SkillStorePanel } from "./components/SkillStorePanel";
 import { Toolbar } from "./components/Toolbar";
 import { CodeModePanel } from "./components/CodeModePanel";
 import { PetSupervisorBubble } from "./components/PetSupervisorBubble";
+import { PetDebugOverlay } from "./components/PetDebugOverlay";
 import { useAudioChannel } from "./hooks/useAudioChannel";
 import { useAudioRecorder } from "./hooks/useAudioRecorder";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
@@ -723,6 +724,14 @@ function App() {
       <PermissionPopup
         request={permissionCurrent}
         onResolve={resolvePermission}
+      />
+
+      {/* P5-S1 D — Debug overlay. Only renders when
+          localStorage.deskpet_debug === "1". Cheap to leave mounted. */}
+      <PetDebugOverlay
+        pet_state={petResult.state}
+        focus_sid={petResult.focus_sid}
+        focus_score={petResult.focus_score}
       />
 
       {/* P5-S3 — supervisor bubble. Only shown when state machine says

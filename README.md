@@ -73,6 +73,90 @@ pnpm tauri dev
 
 ---
 
+## 桌宠 supervisor（P5-S1）
+
+桌宠会**主动监督**你的 Code 模式任务。如果某个 session 卡住了——LLM 反复调同一个失败工具、permission 弹窗没人理、15 分钟无活动、或者直接报错——桌宠的 supervisor 后端会用 LLM 自检判断要不要干预，然后通过桌宠头顶的气泡告诉你最危险的那个 session。
+
+### 工作流程
+
+```
+主 agent ── 每个事件 ──▶ session_activity 表
+                              │
+                每 60s 扫描   ▼
+                          watchdog（独立 task）
+                              │
+              触发: chat_v2_error  或  15min 无活动
+                              ▼
+                  build_snapshot(sid) ── 不含原对话
+                              │（结构化快照）
+                              ▼
+                supervisor LLM call (30s 硬超时)
+                              │
+                  ┌──── action ────┐
+                  │                │
+              wait（不打扰）    nudge / ask_user
+                                   │
+                            broadcast supervisor_alert
+                                   │
+                  ┌────────────────┴────────────────┐
+                  ▼                                  ▼
+           桌宠气泡 + motion           code panel tile 边框变色
+              (yellow/red)
+                  │
+            点气泡背景 → 跳到该 session
+            点按钮 → supervisor_user_choice ws
+```
+
+### 关键阈值（`config.toml [supervisor]`）
+
+| 字段 | 默认 | 含义 |
+|------|------|------|
+| `enabled` | `true` | 总开关；关 = 不启动 watchdog 任务 |
+| `scan_interval_seconds` | 60 | 多久扫一次活动 session |
+| `stuck_threshold_seconds` | 900 | 多久没活动算"卡住" |
+| `dedup_seconds` | 720 | 同 sid 多久内不重扫 |
+| `max_hints_per_session` | 3 | nudge 队列每 session 上限（防 context 爆炸） |
+| `llm_timeout_seconds` | 30 | supervisor LLM 调用硬超时 |
+
+settings 面板 → "桌宠 supervisor (P5-S1)" toggle 也能现场关开。
+
+### 桌宠视觉反馈（5 状态）
+
+| state | 触发 score | motion 节奏 | 眨眼 | 气泡 |
+|-------|-----------|-----------|------|------|
+| `idle` | <30 | 默认 Idle | 0.2 Hz | 无 |
+| `working` | 30–60 | 节奏快子集 | 0.3 Hz | 无 |
+| `worried` | 60–100 | 节奏慢子集 | 0.5 Hz | 黄 |
+| `alert` | ≥100 | 慢 + TapBody | 0.6 Hz | 红（脉冲） |
+| `intervening` | nudge 触发瞬间 | TapBody | 0.3 Hz | 蓝（3 秒） |
+
+滞后阈值 +10 / -10、最短驻留 10s 防抖。`severity_score` 公式见 `src/stores/sessionsStore.ts: severity_score_breakdown()`。
+
+### 审计
+
+每次 supervisor 决策（不含 wait）写一行到 SessionDB `supervisor_hints` 表，含 `sid / alert_id / hint_text / action / severity / diagnosis / user_button / ts`。可在 settings 看累计干预次数（待实装 UI），也可手动查：
+
+```bash
+sqlite3 %APPDATA%/deskpet/data/state.db \
+  "SELECT ts, session_id, action, severity, diagnosis FROM supervisor_hints ORDER BY ts DESC LIMIT 20"
+```
+
+### 运行成本估算
+
+每次 supervisor 调用约 800 tokens 输入 + 200 tokens 输出。一个 session 因 12 分钟去重最多每小时 5 次扫描；按 2 个并发 session 估算上限 = 10 次/小时。便宜小模型（gpt-5-mini 类）月成本 < $1。
+
+### 实测证据
+
+- 单测：`backend/tests/test_p5s1_*.py`（38 项 PASS）
+- 集成：`scripts/e2e_p5s1_supervisor.py`（7/7 PASS — 包含 ws toggle ack、user_choice 持久化、in-process supervisor 完整流、watchdog inactivity 触发）
+- 视觉：浏览器 E2E 已验黄色 / 红色气泡 + 按钮点击 → ws → DB 行 `user_button='中断'`
+
+### 已知能力上限
+
+Hiyori 没有 Expression 资源，桌宠"困惑/紧张"只能靠 motion 节奏 + 眨眼频率 + 头部角度凑。气泡承担"具体在说什么"的语义。换 Live2D 模型才能突破。
+
+---
+
 ## 长期记忆 + 自动总结归档（P4-S20-D）
 
 deskpet 的对话历史用三层存储 + 自动归档维持容量与召回精度：

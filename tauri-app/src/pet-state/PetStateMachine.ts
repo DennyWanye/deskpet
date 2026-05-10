@@ -41,6 +41,34 @@ export interface PetMotionConfig {
   tap_on_entry: boolean;
 }
 
+/**
+ * Read user-calibrated motion tags from localStorage (set by
+ * HiyoriMotionTuner). Returns a Record<tag, motionIndices[]> usable
+ * to override the default motion_pool. When no calibration exists,
+ * returns null and callers fall back to STATE_CONFIG defaults.
+ */
+export function get_calibrated_motion_pools(): Record<string, number[]> | null {
+  try {
+    const raw = localStorage.getItem("deskpet_motion_labels");
+    if (!raw) return null;
+    const obj = JSON.parse(raw) as Record<string, { tag?: string }>;
+    const out: Record<string, number[]> = { fast: [], medium: [], slow: [], special: [] };
+    for (const [k, v] of Object.entries(obj)) {
+      if (!v?.tag) continue;
+      // keys look like "Idle:3" → idx 3
+      const m = /^Idle:(\d+)$/.exec(k);
+      if (!m) continue;
+      const idx = parseInt(m[1], 10);
+      if (out[v.tag]) out[v.tag].push(idx);
+    }
+    // If no tags ended up populated, treat as no calibration.
+    const total = Object.values(out).reduce((a, v) => a + v.length, 0);
+    return total > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 export const STATE_CONFIG: Record<PetState, PetMotionConfig> = {
   idle: {
     motion_pool: [], // default Idle behaviour
@@ -125,7 +153,10 @@ export class PetStateMachine {
 
   constructor(opts: PetStateMachineOptions = {}) {
     this.now = opts.clock ?? (() => Date.now());
-    this.last_transition_ms = this.now();
+    // Init far in the past so the FIRST tick can transition out of idle
+    // immediately. The 10s dwell only matters between subsequent
+    // real transitions to prevent flap.
+    this.last_transition_ms = this.now() - MIN_DWELL_MS - 1;
   }
 
   get state(): PetState {
@@ -134,7 +165,8 @@ export class PetStateMachine {
 
   reset(): void {
     this.current_state = "idle";
-    this.last_transition_ms = this.now();
+    // Same as constructor: let the next tick transition immediately.
+    this.last_transition_ms = this.now() - MIN_DWELL_MS - 1;
     this.intervening_until = 0;
   }
 

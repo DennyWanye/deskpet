@@ -196,6 +196,20 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         pixiApp.stage.addChild(model);
         modelRef.current = model;
 
+        // P5-S1 D — expose an index-targeting motion call on window for
+        // the HiyoriMotionTuner (debug-only). Lets the tuner play a
+        // *specific* Idle motion (m01..m10) instead of the random
+        // selection the imperative handle does.
+        try {
+          (window as any).__deskpet_play_motion = (group: string, idx?: number) => {
+            try {
+              model.motion?.(group, idx, 2);
+            } catch (err) {
+              console.warn("[Live2D] indexed motion failed:", group, idx, err);
+            }
+          };
+        } catch { /* ignore */ }
+
         modeRef.current = "live2d";
         console.warn("[Live2D] render loop starting");
 
