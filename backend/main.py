@@ -939,6 +939,31 @@ async def lifespan(app: FastAPI):
             )
             from agent.snapshot import build_snapshot as _build_snap_func
 
+            # P5-S2 Phase 6: wire per-(sid, tool) circuit breaker into
+            # the v2 tool registry. The registry checks ``can_call``
+            # before every dispatch and ``record_call`` after, so the
+            # breaker doesn't need to be reachable from chat handlers
+            # directly. Knobs come from [supervisor] so they live next
+            # to the rest of the self-healing config.
+            try:
+                from agent.circuit_breaker import ToolCircuitBreaker as _ToolBreaker
+                if deskpet_tool_registry_v2 is not None:
+                    _breaker = _ToolBreaker(
+                        threshold=int(_sup_cfg.get("circuit_breaker_threshold", 3)),
+                        cooldown_seconds=float(
+                            _sup_cfg.get("circuit_breaker_cooldown_seconds", 60)
+                        ),
+                    )
+                    deskpet_tool_registry_v2.set_circuit_breaker(_breaker)
+                    service_context.register("tool_circuit_breaker", _breaker)
+                    logger.info(
+                        "p5s2_circuit_breaker_wired threshold=%d cooldown=%.0fs",
+                        int(_sup_cfg.get("circuit_breaker_threshold", 3)),
+                        float(_sup_cfg.get("circuit_breaker_cooldown_seconds", 60)),
+                    )
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning("p5s2_circuit_breaker_wire_failed err=%s", _exc)
+
             # Snapshot builder closure — pulls services lazily so each
             # tick reads fresh state.
             async def _snap_builder(sid: str):
@@ -1052,6 +1077,10 @@ async def lifespan(app: FastAPI):
                     _sup_cfg.get("idle_with_todos_threshold_seconds", 60)
                 ),
                 incomplete_todos_probe=_watchdog_incomplete_todos_probe,
+                # P5-S2 Phase 6 rule (d): proactive death-loop trigger.
+                tool_signature_repeat_threshold=int(
+                    _sup_cfg.get("tool_signature_repeat_threshold", 3)
+                ),
             )
             _watchdog.start()
             service_context.register("watchdog", _watchdog)
@@ -2537,12 +2566,23 @@ async def control_channel(ws: WebSocket):
                                 )
                                 return []
 
+                        # P5-S2 Phase 6: pull supervisor-section knobs
+                        # for the AgentLoop's in-loop death-loop
+                        # suppression. Read fresh from config so a
+                        # config reload (future) takes effect on the
+                        # next chat task without restart.
+                        _sig_repeat_thr = int(
+                            ((config.raw.get("supervisor") or {}).get(
+                                "tool_signature_repeat_threshold", 3
+                            ))
+                        )
                         _agent = _AgentLoop(
                             llm_registry=_shim,
                             tool_registry=deskpet_tool_registry_v2,
                             max_iterations=_max_iter,
                             completion_probe=_completion_probe,
                             max_completion_nudges=2,
+                            signature_repeat_threshold=_sig_repeat_thr,
                         )
                         # P4-S25 A1: stream by default — gives the user
                         # instant visible feedback on thinking-mode

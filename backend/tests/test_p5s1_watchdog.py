@@ -378,3 +378,109 @@ async def test_probe_exception_does_not_crash_tick(store: SessionActivityStore):
     )
     await wd._tick()  # must not raise
     assert triggered == []  # we couldn't decide, so we don't trigger
+
+
+# ─────────── P5-S2 Phase 6: tool signature repeat trigger (rule d) ───────────
+
+
+@pytest.mark.asyncio
+async def test_watchdog_triggers_on_tool_signature_repeat(store: SessionActivityStore):
+    """When tool_signature_window shows the same (tool, args_hash) ≥ N
+    times consecutively, watchdog rule (d) MUST fire — proactively
+    catching a death-loop even when the session looks 'running' and
+    didn't yet emit an explicit ErrorEvent.
+
+    Spec: openspec/changes/p5-s2-self-healing-harness/specs/
+    pet-supervisor/auto-resume.md ("Repeated identical tool call wakes
+    watchdog").
+    """
+    sid = "code-loop-1"
+    # Seed activity: 3 consecutive identical tool_calls — store records
+    # them in tool_signature_window as {sig: 3}.
+    await store.bump(
+        sid,
+        event_type="tool_call",
+        name="write_file",
+        args={"path": "/sys/foo"},
+    )
+    await store.bump(
+        sid,
+        event_type="tool_call",
+        name="write_file",
+        args={"path": "/sys/foo"},
+    )
+    await store.bump(
+        sid,
+        event_type="tool_call",
+        name="write_file",
+        args={"path": "/sys/foo"},
+    )
+    sa = await store.get(sid)
+    assert sa is not None
+    # Sanity: window must reflect 3 consecutive same-sig calls.
+    assert max(sa.tool_signature_window.values(), default=0) >= 3
+    # Status running, recent activity — neither rule (a)(b)(c) would fire.
+    sa.status = "running"
+    sa.last_event_ts = time.time()  # fresh
+
+    triggered: list[tuple[str, dict]] = []
+
+    async def hook(s: str, snap: dict) -> None:
+        triggered.append((s, snap))
+
+    wd = WatchdogLoop(
+        session_activity=store,
+        code_mode_manager=_FakeCMM([sid]),
+        hook=hook,
+        scan_interval_seconds=0.05,
+        stuck_threshold_seconds=900,        # rule (b) won't fire
+        dedup_seconds=720,
+        startup_grace_seconds=0.0,
+        idle_with_todos_threshold_seconds=60,
+        tool_signature_repeat_threshold=3,  # rule (d) threshold
+    )
+    await wd._tick()
+    assert len(triggered) == 1, (
+        f"expected rule (d) to fire on 3x same-signature loop; got {triggered!r}"
+    )
+    assert triggered[0][0] == sid
+
+
+@pytest.mark.asyncio
+async def test_watchdog_signature_repeat_below_threshold_no_trigger(
+    store: SessionActivityStore,
+):
+    """2 consecutive same-sig calls (below default threshold=3) must NOT
+    fire rule (d). Guards against hair-trigger false positives."""
+    sid = "code-loop-2"
+    await store.bump(
+        sid, event_type="tool_call", name="write_file", args={"path": "/x"},
+    )
+    await store.bump(
+        sid, event_type="tool_call", name="write_file", args={"path": "/x"},
+    )
+    sa = await store.get(sid)
+    assert sa is not None
+    assert max(sa.tool_signature_window.values(), default=0) == 2
+    sa.status = "running"
+    sa.last_event_ts = time.time()
+
+    triggered: list[str] = []
+
+    async def hook(s: str, snap: dict) -> None:
+        triggered.append(s)
+
+    wd = WatchdogLoop(
+        session_activity=store,
+        code_mode_manager=_FakeCMM([sid]),
+        hook=hook,
+        scan_interval_seconds=0.05,
+        stuck_threshold_seconds=900,
+        dedup_seconds=720,
+        startup_grace_seconds=0.0,
+        tool_signature_repeat_threshold=3,
+    )
+    await wd._tick()
+    assert triggered == [], (
+        f"rule (d) fired below threshold; got {triggered!r}"
+    )

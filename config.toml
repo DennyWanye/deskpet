@@ -110,6 +110,44 @@ llm_provider = "default"
 # longer and the supervisor itself is suspect.
 llm_timeout_seconds = 30
 
+# ─── P5-S2: self-healing harness knobs ───────────────────────────────
+# When `auto_resume_enabled = true`, the AutoResumeOrchestrator closes
+# the supervisor → main-agent loop: on max_iterations / circuit_open /
+# permanent_tool_error / hallucination, it asks the supervisor for a
+# hint and (if action=nudge) automatically spawns a fresh chat task on
+# the same sid — no user click required. Capped by
+# `max_auto_resume_attempts` per user-initiated turn (counter resets on
+# the next user message). Set false to fall through to the P5-S1 popup
+# path.
+auto_resume_enabled = true
+max_auto_resume_attempts = 2
+
+# Per-(session, tool) circuit breaker (CLOSED → OPEN → HALF_OPEN). The
+# tool registry checks `can_call(sid, name)` before every dispatch and
+# records the outcome after. `circuit_breaker_threshold` consecutive
+# failures opens the breaker; subsequent calls return
+# `{ok: false, error: "circuit_open", available_alternatives: [...]}`
+# without invoking the handler. After
+# `circuit_breaker_cooldown_seconds`, a single probe is allowed
+# (HALF_OPEN). Per-session isolation means one bad sid doesn't blow
+# up the same tool for everyone else.
+circuit_breaker_threshold = 3
+circuit_breaker_cooldown_seconds = 60
+
+# AgentLoop in-loop death-loop suppression: if the LLM emits the same
+# (tool_name, args_hash) signature this many consecutive times, the
+# loop suppresses the dispatch and injects a system nudge instead, so
+# the LLM gets a chance to change tactics. Watchdog rule (d) reuses
+# this same threshold to fire the supervisor mid-flight.
+tool_signature_repeat_threshold = 3
+
+# P5-S2 Hook B knob (already in use): when status flips to `idle` but
+# code todos are still incomplete, watchdog fires the supervisor after
+# the session sits silent for this many seconds. Shorter than
+# stuck_threshold_seconds because "idle with work pending" is a stronger
+# signal than "running but quiet".
+idle_with_todos_threshold_seconds = 60
+
 [memory]
 # P3-S7: leave db_path empty to use the OS-standard user data directory
 # (%AppData%\deskpet\data\memory.db on Windows). Set an absolute path

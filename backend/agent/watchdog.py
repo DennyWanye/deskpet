@@ -38,6 +38,14 @@ DEFAULT_STARTUP_GRACE_SECONDS = 30
 # explicitly said it was done. 60s gives just enough time for legitimate
 # end-of-turn user reads / scroll-back.
 DEFAULT_IDLE_WITH_TODOS_THRESHOLD_SECONDS = 60
+# P5-S2 Phase 6 rule (d): tool signature repeat — if the same
+# (tool_name, args_hash) signature appears ≥ N consecutive times in
+# session_activity.tool_signature_window, fire supervisor regardless
+# of stuck age. Catches death-loops mid-flight (the agent is "running"
+# but is hammering the same broken call over and over). Default 3
+# matches ``[supervisor].tool_signature_repeat_threshold`` and the
+# AgentLoop's in-loop nudge threshold (`_REPEAT_THRESHOLD`).
+DEFAULT_TOOL_SIGNATURE_REPEAT_THRESHOLD = 3
 
 
 # Hook signature: ``async def hook(sid: str, snapshot: dict) -> None``.
@@ -87,6 +95,7 @@ class WatchdogLoop:
         incomplete_todos_probe: Optional[
             Callable[[str], Awaitable[list[dict[str, Any]]]]
         ] = None,
+        tool_signature_repeat_threshold: int = DEFAULT_TOOL_SIGNATURE_REPEAT_THRESHOLD,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._activity = session_activity
@@ -103,6 +112,9 @@ class WatchdogLoop:
         # SessionDB.get_code_todos and filters incomplete ones.
         self._idle_with_todos_threshold = float(idle_with_todos_threshold_seconds)
         self._incomplete_todos_probe = incomplete_todos_probe
+        # P5-S2 Phase 6 rule (d) — see DEFAULT_TOOL_SIGNATURE_REPEAT_THRESHOLD
+        # docstring above. Set to 0 / negative to disable rule (d).
+        self._tool_sig_repeat_threshold = int(tool_signature_repeat_threshold)
         self._clock = clock
         # Last supervisor scan timestamp per sid for de-duplication.
         self._last_scan_ts: dict[str, float] = {}
@@ -263,6 +275,16 @@ class WatchdogLoop:
             in-loop), watchdog is the safety net for when Hook A is
             exhausted (max_completion_nudges hit) or the LLM still
             insists on stopping.
+        (d) **P5-S2 Phase 6 — tool signature repeat**: any signature in
+            ``session_activity.tool_signature_window`` has consecutive
+            count ≥ ``tool_signature_repeat_threshold``. Fires even if
+            the session looks "running" with fresh activity — the
+            point is to catch a death-loop *mid-flight*, before
+            ``max_iterations`` or the per-tool circuit breaker would
+            otherwise terminate it. AgentLoop's in-loop suppression
+            (Phase 3.3) is the first line of defence; this watchdog
+            rule is the safety net when the LLM keeps re-emitting the
+            same broken call across iterations.
         """
         # (a) chat_v2_error pending
         if getattr(sa, "error_pending_supervisor", False):
@@ -295,6 +317,21 @@ class WatchdogLoop:
                     sid, age, len(incomplete),
                 )
                 return True
+        # (d) tool signature repeat — proactive death-loop detection
+        if self._tool_sig_repeat_threshold > 0:
+            sig_window = getattr(sa, "tool_signature_window", None) or {}
+            if sig_window:
+                # session_activity stores consecutive count per signature;
+                # a same-sig run resets all other entries via .clear() on
+                # different signatures, so any value here ≥ threshold
+                # means the LLM hammered the same call N times in a row.
+                top_sig, top_count = max(sig_window.items(), key=lambda kv: kv[1])
+                if top_count >= self._tool_sig_repeat_threshold:
+                    logger.info(
+                        "watchdog_tool_signature_repeat sid=%s sig=%s count=%d",
+                        sid, top_sig, top_count,
+                    )
+                    return True
         return False
 
     # ─── introspection (used by tests + observability) ─────────────────

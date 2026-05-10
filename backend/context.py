@@ -31,6 +31,9 @@ _VALID_SERVICES = frozenset({
     "watchdog",            # WatchdogLoop — periodic supervisor scan
     "nudge_queue",         # NudgeQueue — supervisor hint injection queue
     "supervisor",          # SupervisorAgent — LLM-based diagnosis dispatcher
+    # --- P5-S2 Self-Healing Harness ------------------------------------------
+    "auto_resume",         # AutoResumeOrchestrator — closes supervisor loop
+    "tool_circuit_breaker",  # ToolCircuitBreaker — per-(sid, tool) 3-state breaker
 })
 
 @dataclass
@@ -60,6 +63,9 @@ class ServiceContext:
     watchdog: Any | None = None
     nudge_queue: Any | None = None
     supervisor: Any | None = None
+    # --- P5-S2 Self-Healing Harness ------------------------------------------
+    auto_resume: Any | None = None
+    tool_circuit_breaker: Any | None = None
 
     def register(self, name: str, provider: Any) -> None:
         if name not in _VALID_SERVICES:

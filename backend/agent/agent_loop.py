@@ -282,6 +282,7 @@ class AgentLoop:
         ] = None,
         max_completion_nudges: int = 2,
         activity_store: Optional[Any] = None,
+        signature_repeat_threshold: Optional[int] = None,
     ) -> None:
         self.llm = llm_registry
         self.tools = tool_registry
@@ -314,6 +315,16 @@ class AgentLoop:
         # Pre-Phase-3 callers leave this as None and the branch is a
         # no-op (verified by ``test_no_activity_store_means_no_repeat_detection``).
         self.activity_store = activity_store
+        # P5-S2 Phase 6: per-instance override for the consecutive
+        # same-(name, args) repeat threshold. Defaults to module
+        # constant ``_REPEAT_THRESHOLD`` (3) so legacy callers keep
+        # the existing behaviour. main.py wires
+        # ``[supervisor].tool_signature_repeat_threshold`` here.
+        self._signature_repeat_threshold = (
+            int(signature_repeat_threshold)
+            if signature_repeat_threshold is not None
+            else _REPEAT_THRESHOLD
+        )
 
     async def run(
         self,
@@ -583,7 +594,7 @@ class AgentLoop:
                     for tc in response.tool_calls:
                         sig = f"{tc.name}:{_args_hash(tc.arguments)}"
                         prior = int(sig_window.get(sig, 0))
-                        if prior >= (_REPEAT_THRESHOLD - 1):
+                        if prior >= (self._signature_repeat_threshold - 1):
                             repeat_hit = (tc.name, prior + 1)
                             break
 
