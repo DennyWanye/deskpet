@@ -432,6 +432,13 @@ class AgentLoop:
             if signature_repeat_threshold is not None
             else _REPEAT_THRESHOLD
         )
+        # P5-S2 B1: per-AgentLoop tool-result-ref store. Long tool_results
+        # are replaced inline with a "[truncated, ref_id=X]" marker and
+        # the full body is kept here. Future ``fetch_tool_result`` tool
+        # uses this to retrieve slices on demand. Per-loop scope keeps
+        # the store from leaking across sessions.
+        from agent.tool_result_truncator import ToolResultRefStore as _TRRStore
+        self._tool_result_refs = _TRRStore()
 
     async def run(
         self,
@@ -502,7 +509,57 @@ class AgentLoop:
         # the loop injects a forced-stop system message.
         tools_used_count = 0
 
+        # P5-S2 B3: warn-once latch so we don't spam the WARN log every
+        # iteration once we're in the 80-95% band.
+        _budget_warn_emitted = False
+
         for iteration in range(1, self.max_iterations + 1):
+            # P5-S2 B3: token budget guard. Runs BEFORE the LLM call so
+            # we can surface an actionable error (BLOCK) or pre-emptive
+            # warning (WARN) instead of waiting for the model to choke
+            # on context_length_exceeded.
+            try:
+                from agent.token_budget import (
+                    check_budget as _check_budget,
+                    BudgetCheck as _BudgetCheck,
+                )
+                # Use the FIRST provider's model as the context-window
+                # reference (chain mode). In legacy single-provider mode
+                # fall back to default_model.
+                _budget_model = use_model
+                if chain_mode and provider_chain:
+                    _first = provider_chain[0]
+                    _budget_model = getattr(_first, "model", None) or use_model
+                _budget = _check_budget(working_messages, model=_budget_model)
+                if _budget.verdict is _BudgetCheck.BLOCK:
+                    logger.error(
+                        "p5s2_token_budget_block sid=%s tid=%s iter=%d "
+                        "tokens=%d window=%d ratio=%.2f",
+                        session_id, tid, iteration,
+                        _budget.estimated_tokens, _budget.context_window,
+                        _budget.ratio,
+                    )
+                    yield ErrorEvent(
+                        type="error",
+                        task_id=tid,
+                        iteration=iteration,
+                        reason="context_budget_block",
+                        detail=_budget.advice,
+                    )
+                    return
+                elif _budget.verdict is _BudgetCheck.WARN and not _budget_warn_emitted:
+                    logger.warning(
+                        "p5s2_token_budget_warn sid=%s tid=%s iter=%d "
+                        "tokens=%d window=%d ratio=%.2f",
+                        session_id, tid, iteration,
+                        _budget.estimated_tokens, _budget.context_window,
+                        _budget.ratio,
+                    )
+                    _budget_warn_emitted = True
+            except Exception as _b_exc:  # noqa: BLE001
+                # Budget check is advisory — never fail the loop on it.
+                logger.debug("token_budget_check_failed err=%s", str(_b_exc)[:100])
+
             # Budget gate BEFORE the call — can't take back tokens after the fact.
             if self.budget_checker is not None and not self.budget_checker.check_allowed():
                 yield ErrorEvent(
@@ -957,12 +1014,32 @@ class AgentLoop:
                     tool_name=tc.name,
                     result=result_str,
                 )
+                # P5-S2 B1: truncate long tool_result bodies before they
+                # land in working_messages — same content is re-sent on
+                # every iteration, so a single 60 KB read_file × 30
+                # iterations = 1.8 MB context bloat. The truncated form
+                # keeps head + tail visible + a ref_id the LLM can
+                # fetch later. Original result_str stays in the
+                # ToolResultEvent above so the UI sees the full body.
+                from agent.tool_result_truncator import (
+                    maybe_truncate_tool_result as _maybe_truncate,
+                )
+                _content_for_history, _trunc_ref = _maybe_truncate(
+                    result_str, store=self._tool_result_refs
+                )
+                if _trunc_ref is not None:
+                    logger.info(
+                        "p5s2_tool_result_truncated sid=%s tool=%s "
+                        "orig_len=%d kept_len=%d ref_id=%s",
+                        session_id, tc.name, len(result_str),
+                        len(_content_for_history), _trunc_ref,
+                    )
                 working_messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "name": tc.name,
-                        "content": result_str,
+                        "content": _content_for_history,
                     }
                 )
 
