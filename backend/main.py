@@ -2723,6 +2723,44 @@ async def control_channel(ws: WebSocket):
                         # 把它指向 Ollama 还是任何 OpenAI 兼容云端都一样。
                         _provider = local_llm or cloud_llm
                         _shim = _Shim(provider=_provider)
+
+                        # ─── P5-S2 Phase 3.15: provider_chain resolution ───
+                        # If the LLMProviderRegistry is wired up (Phase 1+2)
+                        # and we have a SessionDB, resolve a chain for THIS
+                        # session (code → per-session binding may pin to one
+                        # provider; companion → always global chain). Each
+                        # ProviderEntry becomes a fresh OpenAICompatibleProvider
+                        # instance with its own api_key from keychain. Empty
+                        # chain leaves _provider_chain=None so AgentLoop falls
+                        # through to its legacy single-provider path.
+                        _provider_chain: list[Any] | None = None
+                        try:
+                            _registry = service_context.get("provider_registry")
+                            if _registry is not None and _sdb is not None:
+                                from llm.resolution import resolve_provider_for_session as _resolve_chain
+                                _entries = await _resolve_chain(
+                                    _sid,
+                                    is_code_session=_in_code_mode,
+                                    registry=_registry,
+                                    session_db=_sdb,
+                                )
+                                if _entries:
+                                    _chain: list[Any] = []
+                                    for _entry in _entries:
+                                        _api_key = _registry.resolve_api_key(_entry.id) or "ollama"
+                                        _chain.append(OpenAICompatibleProvider(
+                                            base_url=_entry.base_url,
+                                            api_key=_api_key,
+                                            model=_entry.model,
+                                            temperature=getattr(_entry, "temperature", 0.7),
+                                        ))
+                                    _provider_chain = _chain
+                        except Exception as _resolve_exc:  # noqa: BLE001
+                            logger.warning(
+                                "p5s2_provider_chain_resolve_failed sid=%s err=%s — falling back to legacy single-provider path",
+                                _sid, str(_resolve_exc)[:200],
+                            )
+                            _provider_chain = None
                         # P4-S22: Code mode bumps max_iterations to 50 so
                         # long tool-use chains (read → grep → edit → bash
                         # → repeat) can finish a real task. Companion
@@ -2855,7 +2893,12 @@ async def control_channel(ws: WebSocket):
                             except Exception:
                                 pass
 
-                        async for ev in _agent.run(_msgs, session_id=_sid, stream=True):
+                        async for ev in _agent.run(
+                            _msgs,
+                            session_id=_sid,
+                            stream=True,
+                            provider_chain=_provider_chain,
+                        ):
                             # P5-S1: bump activity BEFORE forwarding so the
                             # watchdog sees the latest event even if the
                             # WS send fails. Best-effort — never let a
