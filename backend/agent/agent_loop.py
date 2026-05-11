@@ -327,6 +327,31 @@ class ErrorEvent(AgentEvent):
             self.type = "error"
 
 
+@dataclass
+class ProviderChainFallbackEvent(AgentEvent):
+    """P5-S2 Phase 3.6 — emitted when a provider in the chain fails
+    transiently and the loop moves to the next provider.
+
+    main.py forwards this as
+    ``{type: "provider_chain_fallback", session_id, from, to, reason}``
+    over the ws so the frontend can pop a diagnostic banner ("auto
+    switched to backup B because A timed out").
+
+    ``from_`` uses the trailing underscore because ``from`` is a Python
+    keyword. Frontend serializer renames it to ``from`` over the wire
+    (see main.py forwarder).
+    """
+
+    session_id: str = ""
+    from_: str = ""
+    to: str = ""
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.type:
+            self.type = "provider_chain_fallback"
+
+
 # ───────────────────── protocols for caller dependencies ─────────────────────
 
 
@@ -417,6 +442,7 @@ class AgentLoop:
         model: Optional[str] = None,
         session_id: str = "default",
         stream: bool = False,
+        provider_chain: Optional[list[Any]] = None,
         **llm_kwargs: Any,
     ) -> AsyncIterator[AgentEvent]:
         """Drive the ReAct loop. See module docstring for event contract.
@@ -434,6 +460,32 @@ class AgentLoop:
 
         totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
         use_model = model or self.default_model
+
+        # ──────────────── P5-S2 Phase 3: provider chain mode ────────────────
+        #
+        # When ``provider_chain`` is supplied, AgentLoop walks the chain
+        # itself instead of delegating to ``self.llm.chat_with_fallback``.
+        # Each provider is tried in order; LLMProviderError (transient)
+        # falls through to the next; permanent errors (args_parse_error
+        # etc. — surfaced via ChatResponse, NOT exceptions) short-circuit
+        # the chain because the next provider would just see the same
+        # broken request and fail identically.
+        #
+        # Empty chain is an actionable user-facing error — emit it once
+        # at the top of run() so the loop never tries to call anything.
+        chain_mode = provider_chain is not None
+        if chain_mode and not provider_chain:
+            yield ErrorEvent(
+                type="error",
+                task_id=tid,
+                iteration=0,
+                reason="no_provider_configured",
+                detail=(
+                    "未配置任何 LLM provider。"
+                    "请打开设置 → LLM Providers → 添加"
+                ),
+            )
+            return
         # Detect streaming capability lazily — agent loop tests use a
         # mock registry that may only define chat_with_fallback.
         stream_capable = stream and callable(
@@ -504,7 +556,77 @@ class AgentLoop:
                 )
 
             try:
-                if stream_capable:
+                if chain_mode:
+                    # ─── Phase 3: walk the chain ───
+                    # On transient LLMProviderError, yield a
+                    # ProviderChainFallbackEvent and try the next
+                    # provider. On success, accept the response and
+                    # break. If every provider fails, emit
+                    # ErrorEvent(reason="all_providers_failed").
+                    from agent.tool_use_shim import _raw_to_response
+
+                    response = None  # type: ignore[assignment]
+                    last_exc: Optional[Exception] = None
+                    for idx, prov in enumerate(provider_chain):  # type: ignore[arg-type]
+                        try:
+                            raw = await prov.chat_with_tools(
+                                working_messages,
+                                tools=tool_schemas or None,
+                                max_tokens=int(llm_kwargs.get("max_tokens", 2048)),
+                                temperature=llm_kwargs.get("temperature"),
+                                response_format=llm_kwargs.get("response_format"),
+                            )
+                        except LLMProviderError as exc:
+                            last_exc = exc
+                            prov_id = getattr(prov, "id", f"provider_{idx}")
+                            next_idx = idx + 1
+                            if next_idx < len(provider_chain):  # type: ignore[arg-type]
+                                next_prov = provider_chain[next_idx]  # type: ignore[index]
+                                next_id = getattr(
+                                    next_prov, "id", f"provider_{next_idx}"
+                                )
+                                reason = str(exc) or type(exc).__name__
+                                logger.warning(
+                                    "provider_chain_fallback from=%s to=%s "
+                                    "reason=%s sid=%s tid=%s",
+                                    prov_id, next_id, reason[:200],
+                                    session_id, tid,
+                                )
+                                yield ProviderChainFallbackEvent(
+                                    type="provider_chain_fallback",
+                                    task_id=tid,
+                                    iteration=iteration,
+                                    session_id=session_id,
+                                    from_=prov_id,
+                                    to=next_id,
+                                    reason=reason,
+                                )
+                            else:
+                                logger.warning(
+                                    "provider_chain_last_provider_failed "
+                                    "id=%s reason=%s sid=%s",
+                                    prov_id, str(exc)[:200], session_id,
+                                )
+                            continue
+                        else:
+                            response = _raw_to_response(raw)
+                            break
+
+                    if response is None:
+                        # All providers in the chain raised.
+                        tried = len(provider_chain)  # type: ignore[arg-type]
+                        last_text = str(last_exc) if last_exc else "unknown"
+                        yield ErrorEvent(
+                            type="error",
+                            task_id=tid,
+                            iteration=iteration,
+                            reason="all_providers_failed",
+                            detail=(
+                                f"tried {tried}, last_error: {last_text}"
+                            ),
+                        )
+                        return
+                elif stream_capable:
                     # Streaming path: forward delta events, accumulate
                     # the final dict, then build the same ChatResponse
                     # the non-streaming path would have produced.

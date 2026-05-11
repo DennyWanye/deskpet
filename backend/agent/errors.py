@@ -66,6 +66,11 @@ PERMANENT_KEYWORDS: frozenset[str] = frozenset({
     "missing_required_parameters",
     "schema_invalid",
     "invalid_argument",
+    # P5-S2 Phase 3: malformed JSON in tool_call.arguments. The dispatch
+    # short-circuit ALREADY hands the LLM a structured hint to regenerate,
+    # but if the LLM keeps emitting the same broken JSON the loop should
+    # break out rather than waste turns. Same-args = same-parse-error.
+    "tool_call_args_malformed_json",
     # Domain-level guards.
     "would_overwrite",
     "file_not_found",
