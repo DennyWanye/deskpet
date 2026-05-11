@@ -34,6 +34,8 @@ _VALID_SERVICES = frozenset({
     # --- P5-S2 Self-Healing Harness ------------------------------------------
     "auto_resume",         # AutoResumeOrchestrator — closes supervisor loop
     "tool_circuit_breaker",  # ToolCircuitBreaker — per-(sid, tool) 3-state breaker
+    # --- P5-S2 multi-provider-management Phase 2 -----------------------------
+    "provider_registry",   # LLMProviderRegistry — owns [[llm.providers]] list
 })
 
 @dataclass
@@ -66,6 +68,8 @@ class ServiceContext:
     # --- P5-S2 Self-Healing Harness ------------------------------------------
     auto_resume: Any | None = None
     tool_circuit_breaker: Any | None = None
+    # --- P5-S2 multi-provider-management Phase 2 -----------------------------
+    provider_registry: Any | None = None
 
     def register(self, name: str, provider: Any) -> None:
         if name not in _VALID_SERVICES:

@@ -261,6 +261,28 @@ billing_ledger = BillingLedger(
 )
 service_context.register("billing_ledger", billing_ledger)
 
+# P5-S2 multi-provider-management Phase 2: LLMProviderRegistry
+# 单一 source of truth for [[llm.providers]] 列表。Phase 0/1 已实现底层,
+# 这里在启动时执行 legacy migration + 构造 registry,放到 service_context
+# 供 ws handler (`settings_providers_*`) 读写。
+try:
+    from llm.provider_registry import (
+        LLMProviderRegistry,
+        _migrate_legacy_provider_config,
+    )
+    try:
+        _migrate_legacy_provider_config(_CONFIG_PATH)
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("provider_registry_migration_failed: %s", _exc)
+    _provider_registry = LLMProviderRegistry(_CONFIG_PATH)
+    service_context.register("provider_registry", _provider_registry)
+    logger.info(
+        "provider_registry_initialized providers=%d",
+        len(_provider_registry.list_providers()),
+    )
+except Exception as _exc:  # noqa: BLE001
+    logger.warning("provider_registry_init_failed: %s", _exc)
+
 llm = HybridRouter(
     local=local_llm,
     cloud=cloud_llm,
@@ -2250,6 +2272,237 @@ async def control_channel(ws: WebSocket):
                     "type": "code_sessions_list_response",
                     "payload": {"items": items_list},
                 })
+
+            elif msg_type in (
+                "settings_providers_list_request",
+                "settings_providers_add",
+                "settings_providers_update",
+                "settings_providers_remove",
+                "settings_providers_reorder",
+            ):
+                # P5-S2 multi-provider-management Phase 2:
+                # CRUD + reorder against LLMProviderRegistry. Mutations
+                # broadcast a `providers_changed` event to ALL control
+                # connections so multi-window UIs (pet panel + code panel)
+                # stay in sync without polling.
+                #
+                # Spec: openspec/changes/multi-provider-management/specs/
+                #       frontend-ipc-surface/spec.md
+                _payload = raw.get("payload", {}) or {}
+                _reg = service_context.get("provider_registry")
+                if _reg is None:
+                    await ws.send_json({
+                        "type": "settings_providers_error",
+                        "payload": {
+                            "reason": "registry_unavailable",
+                            "detail": "provider_registry not initialized",
+                        },
+                    })
+                    continue
+
+                async def _broadcast_providers_changed() -> None:
+                    """Fan out the new provider list to every open control
+                    ws. Mirrors the pattern used by `_todo_broadcaster` /
+                    supervisor alert broadcaster."""
+                    snapshot = {
+                        "type": "providers_changed",
+                        "payload": {"providers": _reg.list_providers()},
+                    }
+                    if not _control_connections:
+                        return
+                    for _sid_key, _ws_obj in list(_control_connections.items()):
+                        try:
+                            await _ws_obj.send_json(snapshot)
+                        except Exception as _bex:  # noqa: BLE001
+                            logger.debug(
+                                "providers_changed_broadcast_failed sid=%s err=%s",
+                                _sid_key, _bex,
+                            )
+
+                if msg_type == "settings_providers_list_request":
+                    await ws.send_json({
+                        "type": "settings_providers_list_response",
+                        "payload": {"providers": _reg.list_providers()},
+                    })
+
+                elif msg_type == "settings_providers_add":
+                    try:
+                        entry = await _reg.add_provider(_payload)
+                    except ValueError as exc:
+                        # Classify error: duplicate vs missing_field vs
+                        # invalid_id. The registry raises a single
+                        # ValueError for all of these; we sniff the text.
+                        _msg = str(exc)
+                        if "already exists" in _msg:
+                            _reason = "duplicate_id"
+                        elif "missing required fields" in _msg or "api_key is required" in _msg:
+                            _reason = "missing_field"
+                        elif "invalid provider id" in _msg:
+                            _reason = "invalid_id"
+                        else:
+                            _reason = "invalid_payload"
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": _reason, "detail": _msg},
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "internal_error", "detail": str(exc)},
+                        })
+                    else:
+                        await ws.send_json({
+                            "type": "settings_providers_added",
+                            "payload": {"provider": entry.to_public_dict()},
+                        })
+                        await _broadcast_providers_changed()
+
+                elif msg_type == "settings_providers_update":
+                    _pid = _payload.get("id")
+                    _patch = _payload.get("patch", {}) or {}
+                    if not _pid:
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "missing_field", "detail": "id required"},
+                        })
+                        continue
+                    try:
+                        entry = await _reg.update_provider(_pid, **_patch)
+                    except KeyError:
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "not_found", "detail": f"provider {_pid!r} not found"},
+                        })
+                    except ValueError as exc:
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "invalid_payload", "detail": str(exc)},
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "internal_error", "detail": str(exc)},
+                        })
+                    else:
+                        await ws.send_json({
+                            "type": "settings_providers_updated",
+                            "payload": {"provider": entry.to_public_dict()},
+                        })
+                        await _broadcast_providers_changed()
+
+                elif msg_type == "settings_providers_remove":
+                    _pid = _payload.get("id")
+                    if not _pid:
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "missing_field", "detail": "id required"},
+                        })
+                        continue
+                    try:
+                        await _reg.remove_provider(_pid)
+                    except KeyError:
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "not_found", "detail": f"provider {_pid!r} not found"},
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "internal_error", "detail": str(exc)},
+                        })
+                    else:
+                        # Clean up orphan code_session_provider bindings
+                        # so resolution doesn't surface a stale pin.
+                        _sdb_clean = service_context.get("session_db")
+                        if _sdb_clean is not None:
+                            try:
+                                await _sdb_clean.clear_bindings_for_provider(_pid)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "clear_bindings_for_provider_failed pid=%s err=%s",
+                                    _pid, exc,
+                                )
+                        await ws.send_json({
+                            "type": "settings_providers_removed",
+                            "payload": {"id": _pid},
+                        })
+                        await _broadcast_providers_changed()
+
+                elif msg_type == "settings_providers_reorder":
+                    _ordered = _payload.get("ordered_ids") or []
+                    try:
+                        await _reg.reorder(list(_ordered))
+                    except ValueError as exc:
+                        _msg = str(exc)
+                        # Compute the missing-id detail for nicer UX.
+                        _have = {p["id"] for p in _reg.list_providers()}
+                        _missing = sorted(_have - set(_ordered))
+                        _detail = f"missing: {', '.join(_missing)}" if _missing else _msg
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "incomplete_order", "detail": _detail},
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        await ws.send_json({
+                            "type": "settings_providers_error",
+                            "payload": {"reason": "internal_error", "detail": str(exc)},
+                        })
+                    else:
+                        await ws.send_json({
+                            "type": "settings_providers_reordered",
+                            "payload": {"providers": _reg.list_providers()},
+                        })
+                        await _broadcast_providers_changed()
+
+            elif msg_type in ("code_session_set_provider", "code_session_set_model"):
+                # P5-S2 multi-provider-management Phase 2:
+                # Per-session override binding. set_provider rewrites the
+                # provider_id (preserving preferred_model); set_model
+                # rewrites preferred_model alone (preserving provider_id,
+                # which may stay null = "still global chain"). Both
+                # respond with the full resolved binding so the frontend
+                # can update its session card without a separate fetch.
+                _payload = raw.get("payload", {}) or {}
+                _sid_target = _payload.get("session_id")
+                _sdb_bind = service_context.get("session_db")
+                if not _sid_target or _sdb_bind is None:
+                    await ws.send_json({
+                        "type": "settings_providers_error",
+                        "payload": {
+                            "reason": "missing_field",
+                            "detail": "session_id required + session_db must be initialized",
+                        },
+                    })
+                    continue
+
+                current = await _sdb_bind.get_code_session_provider_binding(_sid_target)
+                if msg_type == "code_session_set_provider":
+                    new_pid = _payload.get("provider_id")  # may be None
+                    new_model = current.get("preferred_model")
+                    out_type = "code_session_provider_set"
+                else:
+                    new_pid = current.get("provider_id")  # preserve
+                    new_model = _payload.get("model")  # may be None
+                    out_type = "code_session_model_set"
+
+                try:
+                    await _sdb_bind.set_code_session_provider_binding(
+                        _sid_target, new_pid, new_model,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    await ws.send_json({
+                        "type": "settings_providers_error",
+                        "payload": {"reason": "internal_error", "detail": str(exc)},
+                    })
+                else:
+                    await ws.send_json({
+                        "type": out_type,
+                        "payload": {
+                            "session_id": _sid_target,
+                            "provider_id": new_pid,
+                            "preferred_model": new_model,
+                        },
+                    })
 
             elif msg_type in ("chat", "chat_v2"):
                 # P4-S20-LLM-Unified: 单一对话路径。

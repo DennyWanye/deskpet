@@ -628,6 +628,34 @@ class SessionDB:
 
         await self._with_retry(_do)
 
+    async def clear_bindings_for_provider(self, provider_id: str) -> int:
+        """删除所有指向某 provider_id 的 code_session_provider 绑定行.
+
+        P5-S2 Phase 2 minor extension: 当 provider 被 IPC 删除时,孤儿绑定行
+        (sid → 已删除的 provider) 需要清理,避免 resolution 拿到一个不存在的
+        provider_id。返回删除的行数。
+
+        Spec: frontend-ipc-surface Scenario "remove cleanup" + design.md
+        "Resolution algorithm" 步骤 2.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async def _do():
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    cursor = await db.execute(
+                        "DELETE FROM code_session_provider WHERE provider_id = ?",
+                        (provider_id,),
+                    )
+                    await db.commit()
+                    removed = cursor.rowcount or 0
+                    await cursor.close()
+                    return removed
+
+        return await self._with_retry(_do)
+
     async def clear_all(self) -> int:
         """Delete all messages and return the number of removed rows."""
         if not self._initialized:
