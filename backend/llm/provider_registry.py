@@ -1,0 +1,592 @@
+"""LLMProviderRegistry — P5-S2 Phase 1 (multi-provider-management).
+
+This is the single source of truth for the user's list of LLM providers.
+Owns:
+  - In-memory list of ProviderEntry dataclasses
+  - Atomic persistence to `config.toml` `[[llm.providers]]` array
+  - API keys stored in OS keychain under service "deskpet", account
+    "provider.<provider_id>" (NEVER plaintext in toml)
+  - Migration of legacy `[llm.local]` single-provider schema → new list
+
+Schema in config.toml::
+
+    [[llm.providers]]
+    id = "chinzy-deepseek"
+    name = "Chinzy DeepSeek"
+    base_url = "https://api.chinzy.example/v1"
+    model = "deepseek-v3"
+    api_key_ref = "deskpet.provider.chinzy-deepseek"
+    priority = 1
+    enabled = true
+
+`api_key_ref` is the only secret-shaped field. The real key lives in the
+OS keychain at `keyring.get_password("deskpet", "provider.<id>")`. The
+``api_key_ref`` string is just a UI hint; persistence is keyed by ``id``.
+
+Public API::
+
+    reg = LLMProviderRegistry(path_to_config_toml)
+    await reg.add_provider({...})
+    reg.list_providers()                # api_key redacted to "********"
+    reg.get_chain()                     # enabled, ordered by priority
+    await reg.remove_provider(id)
+    await reg.set_enabled(id, enabled)
+    await reg.reorder([id1, id2, ...])
+    await reg.update_provider(id, **patch)
+
+All mutating methods are async because Phase 2 will broadcast a
+``providers_changed`` ws event; for Phase 1 we just keep the signature
+shape so chat-handler can await without refactor later.
+
+Migration: ``_migrate_legacy_provider_config(path)`` is a free function so
+``main.py`` lifespan can call it before constructing the registry.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import re
+import tomli
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger("deskpet.llm.provider_registry")
+
+# ───────────────────────── keyring (optional) ─────────────────────────
+# Mirrors backend/llm/keys.py — CI environments without a keyring backend
+# should still import this module; we just degrade keychain ops to no-ops
+# in that case (and tests will inject a fake).
+try:
+    import keyring as _keyring_mod  # type: ignore[import-untyped]
+
+    keyring = _keyring_mod
+    _KEYRING_AVAILABLE = True
+except Exception:  # pragma: no cover — depends on host env
+    keyring = None  # type: ignore[assignment]
+    _KEYRING_AVAILABLE = False
+
+
+# ───────────────────────── constants ─────────────────────────
+
+KEYCHAIN_SERVICE = "deskpet"
+"""Service name shared with backend/llm/keys.py — single namespace under
+the Windows Credential Manager / macOS Keychain."""
+
+KEYCHAIN_ACCOUNT_PREFIX = "provider."
+"""Per-provider keychain accounts: ``provider.<id>``."""
+
+KEYCHAIN_REF_PREFIX = "deskpet.provider."
+"""Public-facing ``api_key_ref`` shown in toml; just documentation."""
+
+LEGACY_CLOUD_KEYCHAIN_REF = "deskpet.cloud_api_key"
+"""Pre-P5-S2 single-provider keychain entry. Migration points the
+auto-created provider here so existing users don't have to re-type."""
+
+REDACTED_API_KEY = "********"
+"""Sentinel value list_providers() returns instead of any real key."""
+
+_KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_MAX_ID_LEN = 32
+
+
+# ───────────────────────── exceptions ─────────────────────────
+
+
+class NoProviderConfiguredError(RuntimeError):
+    """get_chain() called but no provider is enabled.
+
+    Callers (chat handler) translate this into an ``ErrorEvent`` with
+    ``reason="no_provider_configured"`` so the frontend can pop the
+    settings → providers panel.
+    """
+
+    def __init__(self, message: str = "no LLM provider configured") -> None:
+        super().__init__(message)
+
+
+# ───────────────────────── data ─────────────────────────
+
+
+@dataclass
+class ProviderEntry:
+    """In-memory representation of one ``[[llm.providers]]`` row.
+
+    ``api_key_ref`` is the keychain reference (string identifier shown
+    in toml). The real key is fetched from keyring on demand via
+    ``LLMProviderRegistry.resolve_api_key(provider_id)`` — never stored
+    on the dataclass itself, so accidental ``asdict()`` / log dumps
+    cannot leak it.
+    """
+
+    id: str
+    name: str
+    base_url: str
+    model: str
+    api_key_ref: str
+    priority: int = 1
+    enabled: bool = True
+
+    def to_toml_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """Shape returned by ``list_providers()`` — api_key redacted."""
+        d = asdict(self)
+        d["api_key"] = REDACTED_API_KEY
+        return d
+
+
+# ───────────────────────── validation ─────────────────────────
+
+
+def _validate_provider_id(provider_id: str) -> None:
+    if not isinstance(provider_id, str) or not provider_id:
+        raise ValueError("invalid provider id: must be non-empty kebab-case string")
+    if len(provider_id) > _MAX_ID_LEN:
+        raise ValueError(
+            f"invalid provider id: must be kebab-case, ≤{_MAX_ID_LEN} chars (got {len(provider_id)})"
+        )
+    if not _KEBAB_CASE_RE.match(provider_id):
+        raise ValueError(
+            f"invalid provider id {provider_id!r}: must be kebab-case "
+            "(lowercase letters/digits separated by single dashes)"
+        )
+
+
+# ───────────────────────── toml writer ─────────────────────────
+
+
+def _escape_toml_string(value: str) -> str:
+    """Escape a string for basic TOML string literal use.
+
+    We hand-write the providers section (no `tomli_w` dependency); inputs
+    are user-supplied URLs / names so backslashes and quotes need escaping.
+    Newlines and control chars are intentionally not allowed here — the
+    provider model/base_url/name fields are not expected to contain them.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _format_providers_section(entries: list[ProviderEntry]) -> str:
+    """Render `entries` as a TOML `[[llm.providers]]` block.
+
+    Stable ordering by current list order — caller controls priority via
+    the ``priority`` field, not text order, but we still emit them in
+    list order so diffs stay readable.
+    """
+    out: list[str] = []
+    for e in entries:
+        out.append("[[llm.providers]]")
+        out.append(f'id = "{_escape_toml_string(e.id)}"')
+        out.append(f'name = "{_escape_toml_string(e.name)}"')
+        out.append(f'base_url = "{_escape_toml_string(e.base_url)}"')
+        out.append(f'model = "{_escape_toml_string(e.model)}"')
+        out.append(f'api_key_ref = "{_escape_toml_string(e.api_key_ref)}"')
+        out.append(f"priority = {int(e.priority)}")
+        out.append(f"enabled = {'true' if e.enabled else 'false'}")
+        out.append("")  # blank line between entries
+    return "\n".join(out)
+
+
+def _strip_existing_providers_block(text: str) -> str:
+    """Remove any existing `[[llm.providers]]` array-of-tables blocks from
+    the toml *text*, preserving everything else (including comments)."""
+    lines = text.splitlines()
+    out: list[str] = []
+    in_block = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[[llm.providers]]"):
+            in_block = True
+            continue
+        if in_block:
+            # End of block on next [section] / [[section]] / EOF
+            if stripped.startswith("[") and not stripped.startswith("[["):
+                in_block = False
+                out.append(line)
+                continue
+            if stripped.startswith("[[") and not stripped.startswith("[[llm.providers]]"):
+                in_block = False
+                out.append(line)
+                continue
+            # Still inside the block — skip its key=value / blank lines.
+            continue
+        out.append(line)
+    # Trim trailing blank lines so we don't accumulate them across writes.
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out) + "\n"
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write `content` to `path` atomically: write tmp, then os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+# ───────────────────────── registry ─────────────────────────
+
+
+class LLMProviderRegistry:
+    """Owns the canonical list of LLM providers.
+
+    Construct once per backend process. Pass ``config.toml`` path. The
+    constructor loads existing ``[[llm.providers]]`` entries from disk;
+    if absent, the registry starts empty.
+
+    Concurrency: mutating methods (``add_provider``, ``remove_provider``,
+    ``set_enabled``, ``reorder``, ``update_provider``) are async to leave
+    room for a ws broadcast in Phase 2. Within a single backend process
+    the ws handler serializes ``settings_providers_*`` messages, so we
+    don't need an asyncio.Lock for the in-memory list mutations.
+    """
+
+    def __init__(self, config_path: Path | str) -> None:
+        self._config_path = Path(config_path)
+        self._entries: list[ProviderEntry] = []
+        self._load_from_toml()
+
+    # ───────── persistence ─────────
+
+    def _load_from_toml(self) -> None:
+        if not self._config_path.exists():
+            return
+        try:
+            with self._config_path.open("rb") as fh:
+                data = tomli.load(fh)
+        except (tomli.TOMLDecodeError, OSError) as exc:
+            logger.warning("provider_registry: failed to load toml: %s", exc)
+            return
+        raw_list = (data.get("llm") or {}).get("providers") or []
+        self._entries = []
+        for raw in raw_list:
+            try:
+                self._entries.append(
+                    ProviderEntry(
+                        id=str(raw["id"]),
+                        name=str(raw.get("name", raw["id"])),
+                        base_url=str(raw["base_url"]),
+                        model=str(raw["model"]),
+                        api_key_ref=str(raw.get("api_key_ref", f"{KEYCHAIN_REF_PREFIX}{raw['id']}")),
+                        priority=int(raw.get("priority", 1)),
+                        enabled=bool(raw.get("enabled", True)),
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("provider_registry: skipping malformed entry %r: %s", raw, exc)
+
+    def _persist_to_toml(self) -> None:
+        """Rewrite the providers section in `config.toml` atomically.
+
+        Preserves all non-`[[llm.providers]]` content verbatim (comments,
+        other sections). The new block is appended at the end of the file
+        — toml's array-of-tables semantics don't care about position.
+        """
+        if not self._config_path.exists():
+            # Brand-new file; just write the providers block + a header.
+            content = "schema_version = 1\n\n" + _format_providers_section(self._entries)
+            _atomic_write_text(self._config_path, content)
+            return
+
+        existing = self._config_path.read_text(encoding="utf-8")
+        cleaned = _strip_existing_providers_block(existing)
+        block = _format_providers_section(self._entries)
+        if block:
+            if not cleaned.endswith("\n"):
+                cleaned += "\n"
+            new_content = cleaned + "\n" + block
+        else:
+            new_content = cleaned
+        _atomic_write_text(self._config_path, new_content)
+
+    # ───────── keychain ─────────
+
+    @staticmethod
+    def _keychain_account(provider_id: str) -> str:
+        return f"{KEYCHAIN_ACCOUNT_PREFIX}{provider_id}"
+
+    @classmethod
+    def _keychain_save(cls, provider_id: str, api_key: str) -> None:
+        if not _KEYRING_AVAILABLE or keyring is None:
+            logger.warning(
+                "keyring backend unavailable; api_key for %s NOT persisted to OS credential store",
+                provider_id,
+            )
+            return
+        try:
+            keyring.set_password(KEYCHAIN_SERVICE, cls._keychain_account(provider_id), api_key)
+        except Exception as exc:  # pragma: no cover — backend-specific
+            logger.error("keyring.set_password failed for %s: %s", provider_id, exc)
+            raise
+
+    @classmethod
+    def _keychain_load(cls, provider_id: str) -> str | None:
+        if not _KEYRING_AVAILABLE or keyring is None:
+            return None
+        try:
+            return keyring.get_password(KEYCHAIN_SERVICE, cls._keychain_account(provider_id))
+        except Exception as exc:  # pragma: no cover — backend-specific
+            logger.warning("keyring.get_password failed for %s: %s", provider_id, exc)
+            return None
+
+    @classmethod
+    def _keychain_delete(cls, provider_id: str) -> None:
+        if not _KEYRING_AVAILABLE or keyring is None:
+            return
+        try:
+            keyring.delete_password(KEYCHAIN_SERVICE, cls._keychain_account(provider_id))
+        except Exception as exc:  # pragma: no cover — backend-specific / entry already gone
+            logger.debug("keyring.delete_password for %s: %s (ignored)", provider_id, exc)
+
+    def resolve_api_key(self, provider_id: str) -> str | None:
+        """Look up the real api_key for a provider. Returns None if not
+        set or keychain is unavailable. Callers should treat None as a
+        configuration error and surface to the user via settings UI."""
+        return self._keychain_load(provider_id)
+
+    # ───────── public mutators ─────────
+
+    async def add_provider(self, fields: dict[str, Any]) -> ProviderEntry:
+        """Register a new provider. Atomically:
+          1. Validate id (kebab-case + unique)
+          2. Write api_key to keychain
+          3. Append entry to in-memory list
+          4. Persist toml atomically
+
+        Returns the inserted ProviderEntry (with api_key NOT included).
+        """
+        provider_id = fields.get("id", "")
+        _validate_provider_id(provider_id)
+        if any(e.id == provider_id for e in self._entries):
+            raise ValueError(f"provider id {provider_id!r} already exists (must be unique)")
+
+        required = ("base_url", "model")
+        missing = [k for k in required if not fields.get(k)]
+        if missing:
+            raise ValueError(f"missing required fields: {missing}")
+
+        api_key = fields.get("api_key")
+        if not api_key:
+            raise ValueError("api_key is required when adding a provider")
+
+        entry = ProviderEntry(
+            id=provider_id,
+            name=str(fields.get("name") or provider_id),
+            base_url=str(fields["base_url"]),
+            model=str(fields["model"]),
+            api_key_ref=f"{KEYCHAIN_REF_PREFIX}{provider_id}",
+            priority=int(fields.get("priority", len(self._entries) + 1)),
+            enabled=bool(fields.get("enabled", True)),
+        )
+
+        self._keychain_save(provider_id, str(api_key))
+        self._entries.append(entry)
+        try:
+            self._persist_to_toml()
+        except Exception:
+            # Rollback in-memory append + keychain entry on persist failure
+            # so retries don't see a half-written state.
+            self._entries.pop()
+            self._keychain_delete(provider_id)
+            raise
+
+        logger.info("provider_registry: added %s (priority=%d)", provider_id, entry.priority)
+        return entry
+
+    async def remove_provider(self, provider_id: str) -> None:
+        idx = self._find_index(provider_id)
+        if idx is None:
+            raise KeyError(f"provider {provider_id!r} not found")
+        removed = self._entries.pop(idx)
+        self._keychain_delete(provider_id)
+        self._persist_to_toml()
+        logger.info("provider_registry: removed %s", removed.id)
+
+    async def set_enabled(self, provider_id: str, enabled: bool) -> None:
+        idx = self._find_index(provider_id)
+        if idx is None:
+            raise KeyError(f"provider {provider_id!r} not found")
+        self._entries[idx].enabled = bool(enabled)
+        self._persist_to_toml()
+        logger.info("provider_registry: set_enabled %s=%s", provider_id, enabled)
+
+    async def reorder(self, ordered_ids: list[str]) -> None:
+        """Reorder + reassign priorities so chain follows ``ordered_ids``.
+
+        ``ordered_ids`` MUST contain every current provider id exactly once.
+        Priority is rewritten 1..N to match the new order; insertion order
+        of the internal list is also updated so equal-priority tie-break
+        stays consistent.
+        """
+        current = {e.id: e for e in self._entries}
+        if set(ordered_ids) != set(current.keys()):
+            raise ValueError(
+                f"reorder requires complete provider list; got {ordered_ids}, "
+                f"have {list(current.keys())}"
+            )
+        new_list: list[ProviderEntry] = []
+        for i, pid in enumerate(ordered_ids, start=1):
+            entry = current[pid]
+            entry.priority = i
+            new_list.append(entry)
+        self._entries = new_list
+        self._persist_to_toml()
+        logger.info("provider_registry: reordered %s", ordered_ids)
+
+    async def update_provider(self, provider_id: str, **patch: Any) -> ProviderEntry:
+        """Partial update. Only fields present in `patch` change.
+
+        If ``api_key`` is in the patch and non-empty, the keychain entry
+        is rewritten; otherwise keychain stays as-is. ``id`` cannot be
+        renamed (would orphan keychain entry).
+        """
+        idx = self._find_index(provider_id)
+        if idx is None:
+            raise KeyError(f"provider {provider_id!r} not found")
+        entry = self._entries[idx]
+
+        if "id" in patch and patch["id"] != provider_id:
+            raise ValueError("provider id is immutable (delete + re-add to rename)")
+
+        api_key = patch.pop("api_key", None)
+        if api_key:
+            self._keychain_save(provider_id, str(api_key))
+
+        for k, v in patch.items():
+            if k == "priority":
+                entry.priority = int(v)
+            elif k == "enabled":
+                entry.enabled = bool(v)
+            elif k in ("name", "base_url", "model"):
+                setattr(entry, k, str(v))
+            elif k == "api_key_ref":
+                entry.api_key_ref = str(v)
+            # Silently ignore unknown keys — IPC layer validates first.
+
+        self._persist_to_toml()
+        return entry
+
+    # ───────── public readers ─────────
+
+    def list_providers(self) -> list[dict[str, Any]]:
+        """Return all providers (enabled + disabled) with api_key redacted."""
+        return [e.to_public_dict() for e in self._entries]
+
+    def get_chain(self) -> list[dict[str, Any]]:
+        """Return enabled providers ordered by (priority asc, insertion order).
+
+        Raises ``NoProviderConfiguredError`` if no enabled provider exists
+        — callers (chat handler) translate to an actionable error event.
+        """
+        enabled = [e for e in self._entries if e.enabled]
+        if not enabled:
+            raise NoProviderConfiguredError()
+        # Use Python's stable sort: equal priorities preserve insertion order.
+        enabled.sort(key=lambda e: e.priority)
+        return [e.to_public_dict() for e in enabled]
+
+    def get_entry(self, provider_id: str) -> ProviderEntry | None:
+        """Internal helper for agent_loop / resolution code. Returns the
+        raw dataclass (still no api_key inside) or None."""
+        idx = self._find_index(provider_id)
+        return self._entries[idx] if idx is not None else None
+
+    # ───────── internal ─────────
+
+    def _find_index(self, provider_id: str) -> int | None:
+        for i, e in enumerate(self._entries):
+            if e.id == provider_id:
+                return i
+        return None
+
+
+# ───────────────────────── migration ─────────────────────────
+
+
+def _migrate_legacy_provider_config(config_path: Path | str) -> bool:
+    """One-time migration from `[llm.local]` single-provider schema to
+    `[[llm.providers]]` list. Idempotent. Safe to call on every startup.
+
+    Returns True if the file was modified, False if migration was a no-op
+    (already migrated / nothing to migrate).
+
+    Migration rules (matches design.md):
+      - If `[[llm.providers]]` already present → no-op
+      - If `[llm.local]` absent → no-op (fresh install)
+      - Else: create one entry with id="legacy-default", api_key_ref
+        pointing at the existing keychain slot (``deskpet.cloud_api_key``)
+      - Write atomically; if keychain key missing, still create entry
+        + emit warning so UI can prompt user to re-enter
+    """
+    path = Path(config_path)
+    if not path.exists():
+        return False
+
+    try:
+        with path.open("rb") as fh:
+            data = tomli.load(fh)
+    except (tomli.TOMLDecodeError, OSError) as exc:
+        logger.error("migration: cannot parse %s: %s", path, exc)
+        return False
+
+    llm = data.get("llm") or {}
+    if llm.get("providers"):
+        return False  # already migrated
+
+    legacy = llm.get("local")
+    if not legacy:
+        return False  # fresh install — nothing to migrate
+
+    # Build the new entry.
+    model = str(legacy.get("model", "default"))
+    base_url = str(legacy.get("base_url", ""))
+    if not base_url:
+        logger.warning("migration: legacy [llm.local] missing base_url; skipping")
+        return False
+
+    entry = ProviderEntry(
+        id="legacy-default",
+        name=f"{model} (auto-migrated)",
+        base_url=base_url,
+        model=model,
+        api_key_ref=LEGACY_CLOUD_KEYCHAIN_REF,
+        priority=1,
+        enabled=True,
+    )
+
+    # Check keychain for the existing cloud key.
+    existing_key = None
+    if _KEYRING_AVAILABLE and keyring is not None:
+        try:
+            existing_key = keyring.get_password(KEYCHAIN_SERVICE, "cloud_api_key")
+        except Exception as exc:  # pragma: no cover — backend-specific
+            logger.warning("migration: keychain read failed: %s", exc)
+            existing_key = None
+
+    if not existing_key:
+        logger.warning(
+            "migration: api_key for legacy-default not found in keychain; "
+            "please re-enter via Settings → LLM Providers"
+        )
+
+    # Append the providers block to the existing file content (preserves
+    # comments + other sections).
+    existing_text = path.read_text(encoding="utf-8")
+    block = _format_providers_section([entry])
+    sep = "" if existing_text.endswith("\n") else "\n"
+    new_content = existing_text + sep + "\n" + block
+
+    _atomic_write_text(path, new_content)
+    logger.info("migrated_legacy_llm_local_to_providers id=%s", entry.id)
+    return True
+
+
+__all__ = [
+    "LLMProviderRegistry",
+    "ProviderEntry",
+    "NoProviderConfiguredError",
+    "_migrate_legacy_provider_config",
+]
