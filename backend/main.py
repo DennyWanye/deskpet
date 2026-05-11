@@ -2859,6 +2859,34 @@ async def control_channel(ws: WebSocket):
                         _in_code_mode = bool(_cmm and _cmm.is_enabled(_sid))
                         _max_iter = 50 if _in_code_mode else 8
 
+                        # P5-S2 D2: long tool_call args reliability hint.
+                        # Models (deepseek-v4-pro etc.) corrupt JSON escapes
+                        # in args > ~3000 chars about 30-40% of the time when
+                        # streaming — observed parse_ok=False on 7552/7594/7661
+                        # char write_file args. Guidance prepended to message
+                        # stack so the model prefers small multi-call writes
+                        # over a single huge one.
+                        if _in_code_mode:
+                            _long_args_hint = {
+                                "role": "system",
+                                "content": (
+                                    "[Tool reliability guidance]\n"
+                                    "When calling `write_file` (or any tool with a long string arg):\n"
+                                    "1. Keep each call's `content` ≤ 2000 chars. Long strings (>3KB) "
+                                    "are unreliable due to JSON escape errors in streaming output — "
+                                    "the call will be rejected as malformed.\n"
+                                    "2. To write a longer file: call write_file with `mode=\"write\"` "
+                                    "for the first chunk, then call again with `mode=\"append\"` for "
+                                    "each subsequent chunk. Two-three medium calls beat one giant call.\n"
+                                    "3. If unsure of length, break early — over-splitting is free, "
+                                    "but a corrupted single call wastes the whole turn."
+                                ),
+                            }
+                            _insert_at = 0
+                            while _insert_at < len(_msgs) and _msgs[_insert_at].get("role") == "system":
+                                _insert_at += 1
+                            _msgs.insert(_insert_at, _long_args_hint)
+
                         # ─── P5-S2 Phase 3.15: provider_chain resolution ───
                         # If the LLMProviderRegistry is wired up (Phase 1+2)
                         # and we have a SessionDB, resolve a chain for THIS

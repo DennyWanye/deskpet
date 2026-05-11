@@ -699,6 +699,55 @@ class OpenAICompatibleProvider:
             else "read-timeout" if isinstance(last_exc, httpx.ReadTimeout)
             else "transient-other"
         )
+        # P5-S2 D1: stream → non-stream same-provider fallback.
+        # Chinzy-like proxies idle-timeout long SSE streams (>~30s) and reset
+        # the connection. A single POST that returns the whole completion
+        # in one body completes inside the idle window, so falling back to
+        # non-streaming after stream retries are exhausted typically
+        # recovers without ever touching another provider.
+        # Skip fallback only for `pre-handshake` (base_url wrong → non-stream
+        # would fail identically) and HTTP-4xx (already raised above).
+        if _phase in ("mid-stream-drop", "read-timeout", "transient-other"):
+            try:
+                logger.warning(
+                    "p5s2_stream_fallback_to_nonstream phase=%s base_url=%s",
+                    _phase, self.base_url,
+                )
+                # Use the REAL non-stream path (_legacy_chat_with_tools_nonstream).
+                # chat_with_tools is actually stream-as-transport internally
+                # (see its docstring), so it would re-enter the same broken
+                # SSE path. _legacy_chat_with_tools_nonstream issues a single
+                # `stream: false` POST + JSON parse — which completes inside
+                # the chinzy proxy idle window and recovers cleanly.
+                fallback_result = await self._legacy_chat_with_tools_nonstream(
+                    messages,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                )
+                # Yield a synthetic terminal event so the streaming consumer
+                # can treat this exactly like a completed SSE stream. No
+                # delta events — the UI flips straight from "streaming" to
+                # "done" but the final content is correct, which is better
+                # than the alternative ("provider unavailable").
+                yield {
+                    "type": "final",
+                    "content": fallback_result.get("content", ""),
+                    "reasoning_content": fallback_result.get("reasoning_content", ""),
+                    "tool_calls": fallback_result.get("tool_calls", []),
+                    "stop_reason": fallback_result.get("stop_reason", "end_turn"),
+                    "model": fallback_result.get("model", self.model),
+                    "usage": fallback_result.get("usage", {}),
+                    "fallback_used": "non_stream",
+                }
+                return
+            except Exception as _fb_exc:  # noqa: BLE001
+                logger.warning(
+                    "p5s2_stream_fallback_to_nonstream_failed err=%s",
+                    str(_fb_exc)[:200],
+                )
+                # Continue to raise the original stream error with diagnosis.
         _advice = {
             "pre-handshake": (
                 f"无法连接到 LLM endpoint {self.base_url}（DNS/TCP/TLS 握手失败）。"
