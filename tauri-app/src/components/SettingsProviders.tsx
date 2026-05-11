@@ -250,12 +250,25 @@ function SortableRow({ provider, onToggle, onDelete, onEdit }: SortableRowProps)
     border: "1px solid #e5e7eb",
     borderRadius: 4,
     padding: "8px 10px",
-    display: "grid",
-    gridTemplateColumns: "16px 1fr 80px 60px 60px",
-    alignItems: "center",
-    gap: 8,
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
     background: provider.enabled ? "white" : "#f3f4f6",
     fontSize: 12,
+    minWidth: 0,
+  };
+  const headerRow: React.CSSProperties = {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 8,
+    minWidth: 0,
+  };
+  const actionsRow: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
   };
 
   return (
@@ -265,49 +278,54 @@ function SortableRow({ provider, onToggle, onDelete, onEdit }: SortableRowProps)
       data-testid={`provider-row-${provider.id}`}
       aria-label={`provider ${provider.name}`}
     >
-      <span
-        {...attributes}
-        {...listeners}
-        aria-label={`拖拽 ${provider.name}`}
-        style={{ cursor: "grab", color: "#9ca3af", userSelect: "none" }}
-      >
-        ⠿
-      </span>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{provider.name}</div>
-        <div style={{ color: "#6b7280", fontSize: 11, overflowWrap: "anywhere", wordBreak: "break-all" }}>
-          {provider.default_model || provider.model || (provider.models && provider.models[0]) || "(no model)"}
-          {provider.models && provider.models.length > 1 ? ` (+${provider.models.length - 1} more)` : ""}
-          {" · "}
-          {provider.base_url}
-        </div>
-        <div style={{ color: "#9ca3af", fontSize: 11 }}>
-          API Key: {displayApiKey(provider)}
+      <div style={headerRow}>
+        <span
+          {...attributes}
+          {...listeners}
+          aria-label={`拖拽 ${provider.name}`}
+          style={{ cursor: "grab", color: "#9ca3af", userSelect: "none", flexShrink: 0, lineHeight: "16px" }}
+        >
+          ⠿
+        </span>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{provider.name}</div>
+          <div style={{ color: "#6b7280", fontSize: 11, overflowWrap: "anywhere" }}>
+            {provider.default_model || provider.model || (provider.models && provider.models[0]) || "(no model)"}
+            {provider.models && provider.models.length > 1 ? ` (+${provider.models.length - 1})` : ""}
+          </div>
+          <div style={{ color: "#9ca3af", fontSize: 11, overflowWrap: "anywhere" }}>
+            {provider.base_url}
+          </div>
+          <div style={{ color: "#9ca3af", fontSize: 11 }}>
+            API Key: {displayApiKey(provider)}
+          </div>
         </div>
       </div>
-      <label style={{ display: "flex", gap: 4, fontSize: 11 }}>
-        <input
-          type="checkbox"
-          checked={provider.enabled}
-          onChange={(e) => onToggle(provider.id, e.target.checked)}
-          aria-label={`启用 ${provider.name}`}
-        />
-        启用
-      </label>
-      <button
-        type="button"
-        onClick={() => onEdit(provider)}
-        style={{ ...rowBtn }}
-      >
-        编辑
-      </button>
-      <button
-        type="button"
-        onClick={() => onDelete(provider.id)}
-        style={{ ...rowBtn, color: "#b91c1c" }}
-      >
-        删除
-      </button>
+      <div style={actionsRow}>
+        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+          <input
+            type="checkbox"
+            checked={provider.enabled}
+            onChange={(e) => onToggle(provider.id, e.target.checked)}
+            aria-label={`启用 ${provider.name}`}
+          />
+          启用
+        </label>
+        <button
+          type="button"
+          onClick={() => onEdit(provider)}
+          style={{ ...rowBtn }}
+        >
+          编辑
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(provider.id)}
+          style={{ ...rowBtn, color: "#b91c1c" }}
+        >
+          删除
+        </button>
+      </div>
     </li>
   );
 }
