@@ -550,6 +550,84 @@ class SessionDB:
             for row in rows
         ]
 
+    # ---- P5-S2 code_session_provider binding -------------------------
+
+    async def get_code_session_provider_binding(
+        self, base_session_id: str
+    ) -> dict[str, Any]:
+        """读取 code 会话的 provider/model override 绑定.
+
+        返回 ``{"provider_id": str|None, "preferred_model": str|None}``。
+        没有 binding 行的 sid 返回 ``{"provider_id": None, "preferred_model": None}``
+        ——上层据此知道"走全局 chain"。
+
+        Spec: code-session-provider-binding → Requirement "Resolution algorithm"
+        步骤 1（读 SessionDB）.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT provider_id, preferred_model "
+                "FROM code_session_provider WHERE base_session_id = ?",
+                (base_session_id,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+
+        if row is None:
+            return {"provider_id": None, "preferred_model": None}
+        return {"provider_id": row[0], "preferred_model": row[1]}
+
+    async def set_code_session_provider_binding(
+        self,
+        base_session_id: str,
+        provider_id: str | None,
+        preferred_model: str | None,
+    ) -> None:
+        """写入/更新/清除 code 会话的 provider/model override 绑定.
+
+        语义：
+          * 任一字段非 None → upsert 一行
+          * 两字段都 None → 删除该 sid 的 binding 行（如果有）
+
+        Spec: code-session-provider-binding → Scenarios
+          "Set provider override creates row"
+          "Set preferred_model without provider keeps chain"
+          "Clear override (set provider_id to null) restores global chain"
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        clearing = provider_id is None and preferred_model is None
+
+        async def _do():
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    if clearing:
+                        await db.execute(
+                            "DELETE FROM code_session_provider "
+                            "WHERE base_session_id = ?",
+                            (base_session_id,),
+                        )
+                    else:
+                        # SQLite UPSERT —— ON CONFLICT(PK) DO UPDATE
+                        await db.execute(
+                            "INSERT INTO code_session_provider "
+                            "(base_session_id, provider_id, preferred_model, updated_at) "
+                            "VALUES (?, ?, ?, julianday('now')) "
+                            "ON CONFLICT(base_session_id) DO UPDATE SET "
+                            "  provider_id = excluded.provider_id, "
+                            "  preferred_model = excluded.preferred_model, "
+                            "  updated_at = excluded.updated_at",
+                            (base_session_id, provider_id, preferred_model),
+                        )
+                    await db.commit()
+
+        await self._with_retry(_do)
+
     async def clear_all(self) -> int:
         """Delete all messages and return the number of removed rows."""
         if not self._initialized:
