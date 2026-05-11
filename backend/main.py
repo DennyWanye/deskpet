@@ -2454,6 +2454,76 @@ async def control_channel(ws: WebSocket):
                         })
                         await _broadcast_providers_changed()
 
+            elif msg_type == "settings_providers_probe_models":
+                # P5-S2 v2: GET <base_url>/models for an OpenAI-compat endpoint
+                # to discover available models. Used by AddProviderModal "🔍
+                # auto-fetch" so users don't have to type model names by hand.
+                # Reply: { ok, models: [string], detail? }
+                _payload = raw.get("payload", {}) or {}
+                _base_url = str(_payload.get("base_url") or "").rstrip("/")
+                _api_key = str(_payload.get("api_key") or "")
+                if not _base_url:
+                    await ws.send_json({
+                        "type": "settings_providers_probe_models_response",
+                        "payload": {
+                            "ok": False,
+                            "models": [],
+                            "detail": "base_url required",
+                        },
+                    })
+                    continue
+                try:
+                    import httpx as _httpx
+                    _models_url = f"{_base_url}/models"
+                    _headers = {"Accept": "application/json"}
+                    if _api_key and _api_key.lower() != "ollama":
+                        _headers["Authorization"] = f"Bearer {_api_key}"
+                    async with _httpx.AsyncClient(timeout=15.0) as _hc:
+                        _resp = await _hc.get(_models_url, headers=_headers)
+                    if _resp.status_code != 200:
+                        await ws.send_json({
+                            "type": "settings_providers_probe_models_response",
+                            "payload": {
+                                "ok": False,
+                                "models": [],
+                                "detail": f"HTTP {_resp.status_code}: {_resp.text[:200]}",
+                            },
+                        })
+                    else:
+                        _body = _resp.json()
+                        # OpenAI-format: {"data": [{"id": "..."}, ...]}
+                        # Ollama-format: {"models": [{"name": "..."}, ...]}
+                        # tolerate either.
+                        _items = _body.get("data") if isinstance(_body, dict) else None
+                        if not isinstance(_items, list):
+                            _items = _body.get("models") if isinstance(_body, dict) else None
+                        if not isinstance(_items, list):
+                            _items = []
+                        _names: list[str] = []
+                        for _it in _items:
+                            if isinstance(_it, dict):
+                                _n = _it.get("id") or _it.get("name") or _it.get("model")
+                                if _n:
+                                    _names.append(str(_n))
+                            elif isinstance(_it, str):
+                                _names.append(_it)
+                        await ws.send_json({
+                            "type": "settings_providers_probe_models_response",
+                            "payload": {
+                                "ok": True,
+                                "models": _names,
+                            },
+                        })
+                except Exception as _probe_exc:  # noqa: BLE001
+                    await ws.send_json({
+                        "type": "settings_providers_probe_models_response",
+                        "payload": {
+                            "ok": False,
+                            "models": [],
+                            "detail": str(_probe_exc)[:300],
+                        },
+                    })
+
             elif msg_type in ("code_session_set_provider", "code_session_set_model"):
                 # P5-S2 multi-provider-management Phase 2:
                 # Per-session override binding. set_provider rewrites the

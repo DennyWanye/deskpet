@@ -5,13 +5,15 @@
  * rationale matching the existing project convention.
  *
  * Each test name corresponds to Phase 4.3 tasks in
- * openspec/changes/multi-provider-management/tasks.md.
+ * openspec/changes/multi-provider-management/tasks.md. v2 multi-model
+ * schema additions are marked inline.
  */
 import { describe, it, expect } from "vitest";
 
 import {
   buildAddProviderMessage,
   buildUpdateProviderMessage,
+  buildProbeModelsMessage,
   prefillFromProvider,
   validateProviderDraft,
   type ProviderDraft,
@@ -22,7 +24,8 @@ const valid_draft: ProviderDraft = {
   id: "chinzy-ds",
   name: "Chinzy DeepSeek",
   base_url: "https://chinzy.com/v1",
-  model: "deepseek-chat",
+  models: ["deepseek-chat"],
+  default_model: "deepseek-chat",
   api_key: "sk-real-key",
 };
 
@@ -67,10 +70,10 @@ describe("validateProviderDraft (add mode)", () => {
     expect(v.errors.base_url).toMatch(/http/);
   });
 
-  it("test_add_modal_validates_required_fields_clientside — empty model fails", () => {
-    const v = validateProviderDraft({ ...valid_draft, model: "" }, { editing: false });
+  it("test_add_modal_validates_required_fields_clientside — empty models array fails", () => {
+    const v = validateProviderDraft({ ...valid_draft, models: [], default_model: "" }, { editing: false });
     expect(v.ok).toBe(false);
-    expect(v.errors.model).toMatch(/不能为空/);
+    expect(v.errors.models).toMatch(/至少/);
   });
 
   it("test_add_modal_validates_required_fields_clientside — add without api_key fails", () => {
@@ -92,7 +95,8 @@ describe("prefillFromProvider (edit mode)", () => {
     id: "chinzy",
     name: "DeepSeek via Chinzy",
     base_url: "https://chinzy.com/v1",
-    model: "deepseek-chat",
+    models: ["deepseek-chat", "gpt-4o"],
+    default_model: "deepseek-chat",
     api_key: "********",
     priority: 1,
     enabled: true,
@@ -103,7 +107,8 @@ describe("prefillFromProvider (edit mode)", () => {
     expect(draft.id).toBe("chinzy");
     expect(draft.name).toBe("DeepSeek via Chinzy");
     expect(draft.base_url).toBe("https://chinzy.com/v1");
-    expect(draft.model).toBe("deepseek-chat");
+    expect(draft.models).toEqual(["deepseek-chat", "gpt-4o"]);
+    expect(draft.default_model).toBe("deepseek-chat");
   });
 
   it("test_edit_modal_pre_fills_existing_values_except_api_key — api_key blanked, never the redaction sentinel", () => {
@@ -123,11 +128,28 @@ describe("prefillFromProvider (edit mode)", () => {
       id: "Legacy_ID",
       name: "Legacy",
       base_url: "https://x.com/v1",
-      model: "m",
+      models: ["m"],
+      default_model: "m",
       api_key: "",
     };
     const v = validateProviderDraft(draft, { editing: true });
     expect(v.errors.id).toBeUndefined();
+  });
+
+  it("legacy provider with only `model` field (no `models` array) backfills correctly", () => {
+    const legacy_existing: Provider = {
+      id: "old",
+      name: "Old",
+      base_url: "https://o/v1",
+      models: [],
+      model: "old-model",
+      api_key: "********",
+      priority: 1,
+      enabled: true,
+    } as Provider;
+    const draft = prefillFromProvider(legacy_existing);
+    expect(draft.models).toEqual(["old-model"]);
+    expect(draft.default_model).toBe("old-model");
   });
 });
 
@@ -143,28 +165,42 @@ describe("buildAddProviderMessage / buildUpdateProviderMessage", () => {
       id: "chinzy-ds",
       name: "Chinzy DeepSeek",
       base_url: "https://chinzy.com/v1",
-      model: "deepseek-chat",
+      models: ["deepseek-chat"],
+      default_model: "deepseek-chat",
       api_key: "sk-real-key",
       enabled: true,
     });
   });
 
-  it("test_save_emits_correct_ws_message — add trims whitespace on id/name/base_url/model", () => {
+  it("test_save_emits_correct_ws_message — add trims whitespace on id/name/base_url and each model", () => {
     const padded: ProviderDraft = {
       id: "  trimme  ",
       name: "  N  ",
       base_url: "  https://a/v1  ",
-      model: "  m  ",
+      models: ["  m1  ", "  m2  "],
+      default_model: "  m1  ",
       api_key: "sk-x",
     };
     const msg = buildAddProviderMessage(padded);
     expect(msg.payload.id).toBe("trimme");
     expect(msg.payload.name).toBe("N");
     expect(msg.payload.base_url).toBe("https://a/v1");
-    expect(msg.payload.model).toBe("m");
+    expect(msg.payload.models).toEqual(["m1", "m2"]);
+    expect(msg.payload.default_model).toBe("m1");
   });
 
-  it("test_save_emits_correct_ws_message — update with new api_key includes patch.api_key", () => {
+  it("test_save_emits_correct_ws_message — multi-model draft preserves order and default", () => {
+    const multi: ProviderDraft = {
+      ...valid_draft,
+      models: ["a", "b", "c"],
+      default_model: "b",
+    };
+    const msg = buildAddProviderMessage(multi);
+    expect(msg.payload.models).toEqual(["a", "b", "c"]);
+    expect(msg.payload.default_model).toBe("b");
+  });
+
+  it("test_save_emits_correct_ws_message — update with new api_key includes patch.api_key + models", () => {
     const msg = buildUpdateProviderMessage("chinzy", {
       ...valid_draft,
       api_key: "sk-new",
@@ -176,7 +212,8 @@ describe("buildAddProviderMessage / buildUpdateProviderMessage", () => {
         patch: {
           name: "Chinzy DeepSeek",
           base_url: "https://chinzy.com/v1",
-          model: "deepseek-chat",
+          models: ["deepseek-chat"],
+          default_model: "deepseek-chat",
           api_key: "sk-new",
         },
       },
@@ -190,5 +227,19 @@ describe("buildAddProviderMessage / buildUpdateProviderMessage", () => {
     });
     expect(msg.payload.patch).not.toHaveProperty("api_key");
     expect(msg.payload.patch.name).toBe("Chinzy DeepSeek");
+    expect(msg.payload.patch.models).toEqual(["deepseek-chat"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2: probe-models ws message shape
+// ---------------------------------------------------------------------------
+
+describe("buildProbeModelsMessage", () => {
+  it("emits settings_providers_probe_models with trimmed base_url + api_key passthrough", () => {
+    const m = buildProbeModelsMessage("  https://x.com/v1  ", "sk-real");
+    expect(m.type).toBe("settings_providers_probe_models");
+    expect(m.payload.base_url).toBe("https://x.com/v1");
+    expect(m.payload.api_key).toBe("sk-real");
   });
 });

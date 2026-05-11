@@ -40,7 +40,12 @@ export interface Provider {
   id: string;
   name: string;
   base_url: string;
-  model: string;
+  /** P5-S2 v2: canonical model list (a provider can serve multiple models). */
+  models: string[];
+  /** P5-S2 v2: which model in `models` is used by default for chain calls. */
+  default_model?: string | null;
+  /** Back-compat scalar — server includes it derived from models[0]/default_model. */
+  model?: string;
   /** Always `"********"` when sourced from backend list (sanitized). */
   api_key: string;
   priority: number;
@@ -271,7 +276,10 @@ function SortableRow({ provider, onToggle, onDelete, onEdit }: SortableRowProps)
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{provider.name}</div>
         <div style={{ color: "#6b7280", fontSize: 11, overflowWrap: "anywhere", wordBreak: "break-all" }}>
-          {provider.model} · {provider.base_url}
+          {provider.default_model || provider.model || (provider.models && provider.models[0]) || "(no model)"}
+          {provider.models && provider.models.length > 1 ? ` (+${provider.models.length - 1} more)` : ""}
+          {" · "}
+          {provider.base_url}
         </div>
         <div style={{ color: "#9ca3af", fontSize: 11 }}>
           API Key: {displayApiKey(provider)}
@@ -393,12 +401,15 @@ export function SettingsProviders({ getChannel, lastMessage }: SettingsProviders
 
   const handleSaveDraft = useCallback(
     (draft: ProviderDraft, editing: Provider | null) => {
+      const models = draft.models.map((m) => m.trim()).filter(Boolean);
+      const default_model = draft.default_model.trim() || models[0] || "";
       if (editing) {
         // Build update patch — only include fields the user might've changed.
         const patch: Record<string, unknown> = {
           name: draft.name,
           base_url: draft.base_url,
-          model: draft.model,
+          models,
+          default_model,
         };
         if (draft.api_key && draft.api_key.trim().length > 0) {
           patch.api_key = draft.api_key.trim();
@@ -414,7 +425,8 @@ export function SettingsProviders({ getChannel, lastMessage }: SettingsProviders
             id: draft.id,
             name: draft.name,
             base_url: draft.base_url,
-            model: draft.model,
+            models,
+            default_model,
             api_key: draft.api_key,
             enabled: true,
           },
@@ -422,6 +434,40 @@ export function SettingsProviders({ getChannel, lastMessage }: SettingsProviders
       }
       setAddOpen(false);
       setEditTarget(null);
+    },
+    [send],
+  );
+
+  // ---- Probe models flow (auto-fetch /models from base_url) ----------
+  const [probedModels, setProbedModels] = useState<string[]>([]);
+  const [probeError, setProbeError] = useState<string | null>(null);
+  const [probing, setProbing] = useState(false);
+
+  // Watch for the backend's probe response on the shared ws inbox.
+  useEffect(() => {
+    if (!lastMessage) return;
+    const msg = lastMessage as { type: string; payload?: any };
+    if (msg.type !== "settings_providers_probe_models_response") return;
+    setProbing(false);
+    if (msg.payload?.ok) {
+      const list: string[] = Array.isArray(msg.payload.models) ? msg.payload.models : [];
+      setProbedModels(list);
+      setProbeError(null);
+    } else {
+      setProbedModels([]);
+      setProbeError(String(msg.payload?.detail || "未知错误"));
+    }
+  }, [lastMessage]);
+
+  const handleProbeModels = useCallback(
+    (base_url: string, api_key: string) => {
+      setProbing(true);
+      setProbeError(null);
+      setProbedModels([]);
+      send({
+        type: "settings_providers_probe_models",
+        payload: { base_url, api_key },
+      });
     },
     [send],
   );
@@ -491,8 +537,14 @@ export function SettingsProviders({ getChannel, lastMessage }: SettingsProviders
           onClose={() => {
             setAddOpen(false);
             setEditTarget(null);
+            setProbedModels([]);
+            setProbeError(null);
           }}
           onSave={(draft) => handleSaveDraft(draft, editTarget)}
+          onProbeModels={handleProbeModels}
+          probedModels={probedModels}
+          probeError={probeError}
+          probing={probing}
         />
       )}
     </div>

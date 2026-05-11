@@ -329,7 +329,9 @@ def test_migrate_legacy_llm_local_to_providers(legacy_toml: Path, fake_keyring):
     entry = providers[0]
     assert entry["id"] == "legacy-default"
     assert entry["base_url"] == "https://api.chinzy.example/v1"
-    assert entry["model"] == "chinzy-deepseek-v3"
+    # v2 schema: models is the canonical array
+    assert entry["models"] == ["chinzy-deepseek-v3"]
+    assert entry.get("default_model") == "chinzy-deepseek-v3"
     assert entry["api_key_ref"] == "deskpet.cloud_api_key"
     assert entry["priority"] == 1
     assert entry["enabled"] is True

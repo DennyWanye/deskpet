@@ -117,23 +117,57 @@ class ProviderEntry:
     ``LLMProviderRegistry.resolve_api_key(provider_id)`` — never stored
     on the dataclass itself, so accidental ``asdict()`` / log dumps
     cannot leak it.
+
+    P5-S2 v2: ``model`` (single str) → ``models`` (list of str) +
+    ``default_model`` (one selected for chain calls). Legacy single-model
+    rows are coerced on load (see ``_load_from_toml``).
     """
 
     id: str
     name: str
     base_url: str
-    model: str
+    models: list[str]
     api_key_ref: str
+    default_model: str | None = None
     priority: int = 1
     enabled: bool = True
+
+    @property
+    def model(self) -> str:
+        """Back-compat accessor — returns the resolved default model.
+
+        Falls back to first entry in ``models`` if ``default_model`` is
+        unset, or empty string if the list is empty.
+        """
+        if self.default_model:
+            return self.default_model
+        return self.models[0] if self.models else ""
+
+    @model.setter
+    def model(self, value: str) -> None:
+        """Back-compat setter — used by resolve_provider_for_session when
+        applying a session-level ``preferred_model`` override. Writes to
+        ``default_model`` (and adds to ``models`` if not already present
+        so ``model`` getter stays consistent)."""
+        v = str(value) if value else ""
+        if not v:
+            return
+        self.default_model = v
+        if v not in self.models:
+            self.models = [*self.models, v]
 
     def to_toml_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def to_public_dict(self) -> dict[str, Any]:
-        """Shape returned by ``list_providers()`` — api_key redacted."""
+        """Shape returned by ``list_providers()`` — api_key redacted.
+
+        Includes both ``models`` (the array) and a derived ``model``
+        scalar for any legacy UI/test code that still expects it.
+        """
         d = asdict(self)
         d["api_key"] = REDACTED_API_KEY
+        d["model"] = self.model  # derived, for back-compat
         return d
 
 
@@ -181,7 +215,14 @@ def _format_providers_section(entries: list[ProviderEntry]) -> str:
         out.append(f'id = "{_escape_toml_string(e.id)}"')
         out.append(f'name = "{_escape_toml_string(e.name)}"')
         out.append(f'base_url = "{_escape_toml_string(e.base_url)}"')
-        out.append(f'model = "{_escape_toml_string(e.model)}"')
+        # P5-S2 v2: models is the canonical array; emit empty list if unset
+        # to keep schema explicit (loader expects array-of-string).
+        models_payload = (
+            "[" + ", ".join(f'"{_escape_toml_string(m)}"' for m in e.models) + "]"
+        )
+        out.append(f"models = {models_payload}")
+        if e.default_model:
+            out.append(f'default_model = "{_escape_toml_string(e.default_model)}"')
         out.append(f'api_key_ref = "{_escape_toml_string(e.api_key_ref)}"')
         out.append(f"priority = {int(e.priority)}")
         out.append(f"enabled = {'true' if e.enabled else 'false'}")
@@ -269,12 +310,27 @@ class LLMProviderRegistry:
         self._entries = []
         for raw in raw_list:
             try:
+                # P5-S2 v2: prefer `models` array; fall back to legacy `model`
+                # scalar (single-model row pre-v2) and coerce.
+                raw_models = raw.get("models")
+                if isinstance(raw_models, list) and raw_models:
+                    models = [str(m) for m in raw_models]
+                else:
+                    legacy_single = raw.get("model")
+                    models = [str(legacy_single)] if legacy_single else []
+                default_model_raw = raw.get("default_model")
+                default_model = (
+                    str(default_model_raw)
+                    if default_model_raw
+                    else (models[0] if models else None)
+                )
                 self._entries.append(
                     ProviderEntry(
                         id=str(raw["id"]),
                         name=str(raw.get("name", raw["id"])),
                         base_url=str(raw["base_url"]),
-                        model=str(raw["model"]),
+                        models=models,
+                        default_model=default_model,
                         api_key_ref=str(raw.get("api_key_ref", f"{KEYCHAIN_REF_PREFIX}{raw['id']}")),
                         priority=int(raw.get("priority", 1)),
                         enabled=bool(raw.get("enabled", True)),
@@ -368,20 +424,39 @@ class LLMProviderRegistry:
         if any(e.id == provider_id for e in self._entries):
             raise ValueError(f"provider id {provider_id!r} already exists (must be unique)")
 
-        required = ("base_url", "model")
+        # P5-S2 v2: accept either `models: list[str]` (preferred) or
+        # legacy `model: str` (single model). At least one must be set.
+        raw_models = fields.get("models")
+        if isinstance(raw_models, list) and raw_models:
+            models = [str(m).strip() for m in raw_models if str(m).strip()]
+        elif fields.get("model"):
+            models = [str(fields["model"]).strip()]
+        else:
+            models = []
+
+        required = ("base_url",)
         missing = [k for k in required if not fields.get(k)]
-        if missing:
-            raise ValueError(f"missing required fields: {missing}")
+        if missing or not models:
+            missing_msg = list(missing) + (["models"] if not models else [])
+            raise ValueError(f"missing required fields: {missing_msg}")
 
         api_key = fields.get("api_key")
         if not api_key:
             raise ValueError("api_key is required when adding a provider")
 
+        default_model_raw = fields.get("default_model")
+        default_model = (
+            str(default_model_raw)
+            if default_model_raw and str(default_model_raw) in models
+            else models[0]
+        )
+
         entry = ProviderEntry(
             id=provider_id,
             name=str(fields.get("name") or provider_id),
             base_url=str(fields["base_url"]),
-            model=str(fields["model"]),
+            models=models,
+            default_model=default_model,
             api_key_ref=f"{KEYCHAIN_REF_PREFIX}{provider_id}",
             priority=int(fields.get("priority", len(self._entries) + 1)),
             enabled=bool(fields.get("enabled", True)),
@@ -465,8 +540,26 @@ class LLMProviderRegistry:
                 entry.priority = int(v)
             elif k == "enabled":
                 entry.enabled = bool(v)
-            elif k in ("name", "base_url", "model"):
+            elif k in ("name", "base_url"):
                 setattr(entry, k, str(v))
+            elif k == "models":
+                # P5-S2 v2: replace the models list. Filter empties.
+                if isinstance(v, list):
+                    new_models = [str(m).strip() for m in v if str(m).strip()]
+                    if new_models:
+                        entry.models = new_models
+                        # Keep default_model if still in the new list; else
+                        # snap to the first entry.
+                        if entry.default_model not in new_models:
+                            entry.default_model = new_models[0]
+            elif k == "model":
+                # Legacy single-model update — coerce to a 1-element list.
+                if v:
+                    entry.models = [str(v).strip()]
+                    entry.default_model = entry.models[0]
+            elif k == "default_model":
+                if v and str(v) in entry.models:
+                    entry.default_model = str(v)
             elif k == "api_key_ref":
                 entry.api_key_ref = str(v)
             # Silently ignore unknown keys — IPC layer validates first.
@@ -560,7 +653,8 @@ def _migrate_legacy_provider_config(config_path: Path | str) -> bool:
         id="legacy-default",
         name=f"{model} (auto-migrated)",
         base_url=base_url,
-        model=model,
+        models=[model],
+        default_model=model,
         api_key_ref=LEGACY_CLOUD_KEYCHAIN_REF,
         priority=1,
         enabled=True,
