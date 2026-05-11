@@ -13,6 +13,11 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionsStore } from "../stores/sessionsStore";
+// P5-S2 Phase 5 — code session binding events
+import { useProvidersStore } from "./providersStore";
+import { pickProviderRemovedFallback } from "./SessionGridView";
+// P5-S2 Phase 4 — settings panel provider mutation events
+import { dispatchProviderEvent } from "../components/SettingsProviders";
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
@@ -317,9 +322,19 @@ function dispatch(msg: any) {
           project_root: it.project_root ?? null,
           project_name: it.project_name ?? "(untitled)",
         });
+        // P5-S2 Phase 5 — code session binding events
+        // List response carries per-session provider binding; write whatever
+        // the backend says (including explicit nulls so a cleared binding
+        // round-trips correctly).
+        const next_provider_id =
+          it.provider_id === undefined ? null : it.provider_id;
+        const next_preferred_model =
+          it.preferred_model === undefined ? null : it.preferred_model;
         store.upsert(bsid, {
           project_root: it.project_root ?? null,
           project_name: it.project_name ?? "(untitled)",
+          provider_id: next_provider_id,
+          preferred_model: next_preferred_model,
         });
         if (!was_present) newly_added.push(bsid);
       }
@@ -439,6 +454,88 @@ function dispatch(msg: any) {
     }
     case "supervisor_toggle_ack": {
       // Settings panel may listen separately; nothing to do here.
+      break;
+    }
+    // P5-S2 Phase 5 — code session binding events
+    case "providers_changed": {
+      // Settings-side mutation broadcast. Refresh providersStore + reconcile
+      // any per-session bindings whose pinned provider no longer exists in
+      // the new list (those cards silently fall back to "Global Chain" so a
+      // deleted provider doesn't leave dangling state).
+      const incoming = Array.isArray(msg.payload?.providers)
+        ? msg.payload.providers
+        : [];
+      useProvidersStore.getState().set_providers(incoming);
+      // Mirror into Phase 4 settings store so SettingsProviders re-renders.
+      dispatchProviderEvent(msg);
+      const valid_ids = new Set<string>(
+        incoming.map((p: any) => String(p?.id)).filter(Boolean),
+      );
+      const cur_sessions = useSessionsStore.getState().sessions;
+      for (const [bsid, s] of Object.entries(cur_sessions)) {
+        const pid = s.provider_id;
+        if (pid && !valid_ids.has(pid)) {
+          const fallback = pickProviderRemovedFallback(pid);
+          store.upsert(bsid, { provider_id: fallback.provider_id });
+          // Toast surfacing is the panel's job — emit a console hint so the
+          // UI listener (or a future toast bus) can pick it up. We avoid
+          // pulling a toast library into ws.ts; the message stream already
+          // surfaces explicit errors when relevant.
+          console.info("[code-panel]", fallback.toast);
+        }
+      }
+      break;
+    }
+    case "settings_providers_list_response": {
+      // Initial provider list (frontend asks on panel mount). Same shape as
+      // the broadcast — populate the store without binding reconciliation
+      // (no UI state to reconcile yet on first load).
+      const incoming = Array.isArray(msg.payload?.providers)
+        ? msg.payload.providers
+        : [];
+      useProvidersStore.getState().set_providers(incoming);
+      // Mirror into Phase 4 settings store.
+      dispatchProviderEvent(msg);
+      break;
+    }
+    // P5-S2 Phase 4 — individual provider mutation events route to
+    // SettingsProviders' internal store only (no per-session reconciliation
+    // needed — the upstream `providers_changed` broadcast handles that).
+    case "settings_providers_reordered":
+    case "settings_providers_added":
+    case "settings_providers_updated":
+    case "settings_providers_removed":
+    case "settings_providers_error": {
+      dispatchProviderEvent(msg);
+      break;
+    }
+    case "code_session_provider_set": {
+      // Ack from backend for a code_session_set_provider request. Mirror the
+      // authoritative provider_id + preferred_model back into the store so
+      // the UI reflects what backend actually persisted (in case of clamp /
+      // sanitisation differences from the optimistic UI write).
+      const p = msg.payload || {};
+      const target = p.session_id || sid;
+      store.ensure(target);
+      store.upsert(target, {
+        provider_id: p.provider_id === undefined ? null : p.provider_id,
+        preferred_model:
+          p.preferred_model === undefined ? null : p.preferred_model,
+      });
+      break;
+    }
+    case "code_session_model_set": {
+      // Ack from backend for code_session_set_model. Same merge as above —
+      // backend echoes both fields so we keep them in sync even if the user
+      // only changed the model.
+      const p = msg.payload || {};
+      const target = p.session_id || sid;
+      store.ensure(target);
+      store.upsert(target, {
+        provider_id: p.provider_id === undefined ? null : p.provider_id,
+        preferred_model:
+          p.preferred_model === undefined ? null : p.preferred_model,
+      });
       break;
     }
     default:

@@ -96,6 +96,13 @@ export interface SessionState {
   // ws.ts 收到 auto_resume_started 时设为 attempt 值；
   // succeeded / exhausted 时归 0。AutoResumeBanner 订阅此字段。
   auto_resume_attempts?: number;
+  // multi-provider-management Phase 5: per-session provider binding.
+  // `provider_id == null` 表示走全局 chain；非空时表示 pin 到某 provider。
+  // `preferred_model` 可选 model 覆盖，独立于 provider 选择。
+  // ws.ts 在 code_sessions_list_response / code_session_provider_set /
+  // code_session_model_set 时写入这两个字段。
+  provider_id?: string | null;
+  preferred_model?: string | null;
 }
 
 interface SessionsStore {
@@ -141,6 +148,9 @@ const blank_session = (sid: string): SessionState => ({
   supervisor_severity: "green",
   supervisor_alert: null,
   auto_resume_attempts: 0,
+  // multi-provider-management Phase 5: default = no binding ⇒ "Global Chain".
+  provider_id: null,
+  preferred_model: null,
 });
 
 export const useSessionsStore = create<SessionsStore>((set) => ({

@@ -15,6 +15,80 @@ import { useSessionsStore, chatLimiter, severity_score } from "../stores/session
 import type { Message, SessionState, SessionStatus, Todo } from "../stores/sessionsStore";
 import { codePanelWS } from "./ws";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ChangeModelModal } from "./ChangeModelModal";
+import {
+  useProvidersStore,
+  build_provider_dropdown_options,
+  format_provider_label,
+  type ProviderEntry,
+} from "./providersStore";
+
+// ---------------------------------------------------------------------------
+// multi-provider-management Phase 5 — pure helpers for the per-session
+// provider dropdown. Exposed here (rather than baked into the JSX) so the
+// vitest node-env tests can verify dropdown behaviour without a DOM.
+// ---------------------------------------------------------------------------
+
+/** Build the outbound `code_session_set_provider` ws message.
+ * `provider_id == null` clears the binding (card falls back to Global Chain).
+ */
+export function buildSetProviderMessage(
+  session_id: string,
+  provider_id: string | null,
+): { type: string; payload: Record<string, unknown> } {
+  return {
+    type: "code_session_set_provider",
+    payload: { session_id, provider_id },
+  };
+}
+
+/** Build the outbound `code_session_set_model` ws message.
+ * An empty string is normalised to `null` so the backend treats it as
+ * "clear preferred_model" (no accidental empty-string model id). */
+export function buildSetModelMessage(
+  session_id: string,
+  model: string | null,
+): { type: string; payload: Record<string, unknown> } {
+  const normalized = model && model.trim() !== "" ? model : null;
+  return {
+    type: "code_session_set_model",
+    payload: { session_id, model: normalized },
+  };
+}
+
+export interface CardDropdownDisplay {
+  label: string;
+  /** True when the card overrides global chain (provider_id != null). */
+  locked: boolean;
+  /** Visual lock indicator (🔒 when locked, "" otherwise). */
+  icon: string;
+}
+
+/** Compute the dropdown's display state for one card. Pure — fed by
+ * sessionsStore.provider_id and providersStore.providers. */
+export function resolveCardDropdownDisplay(
+  provider_id: string | null | undefined,
+  providers: ProviderEntry[],
+): CardDropdownDisplay {
+  const has_binding = !!provider_id;
+  return {
+    label: format_provider_label(provider_id, providers),
+    locked: has_binding,
+    icon: has_binding ? "🔒" : "",
+  };
+}
+
+/** Pure helper used by ws.ts when a `providers_changed` event removes a
+ * provider that some cards were pinned to. Returns the new binding +
+ * toast text the UI should surface. */
+export function pickProviderRemovedFallback(
+  removed_provider_id: string,
+): { provider_id: null; toast: string } {
+  return {
+    provider_id: null,
+    toast: `Provider ${removed_provider_id} 已删除，本会话回到全局链`,
+  };
+}
 
 // P5-S3: tile border colour by severity_score. Bands match the pet
 // state machine thresholds so the panel and the pet agree on "this
@@ -216,6 +290,29 @@ function Tile({
   // commands across multiple projects without leaving the dashboard.
   const [text, set_text] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // multi-provider-management Phase 5 — per-session provider dropdown +
+  // change-model modal. Both source from providersStore (Phase 4 owns the
+  // list state); writes go through buildSet* helpers tested above.
+  const providers = useProvidersStore((s) => s.providers);
+  const dropdown_opts = build_provider_dropdown_options(providers);
+  const card_display = resolveCardDropdownDisplay(session.provider_id, providers);
+  const [show_model_modal, set_show_model_modal] = useState(false);
+
+  const on_provider_change = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const raw = e.target.value;
+    // Sentinel for the "change model" action (kept separate from real
+    // provider ids — guaranteed not to collide because provider ids are
+    // kebab-case, no underscores allowed by Phase 1's validation).
+    if (raw === "__change_model__") {
+      set_show_model_modal(true);
+      return;
+    }
+    const next: string | null = raw === "" ? null : raw;
+    // Optimistic UI update — backend ack via code_session_provider_set
+    // reconciles.
+    useSessionsStore.getState().upsert(session_id, { provider_id: next });
+    codePanelWS.send(buildSetProviderMessage(session_id, next));
+  };
 
   useEffect(() => {
     if (!taRef.current) return;
@@ -378,6 +475,56 @@ function Tile({
         {project_root ?? "(无路径)"}
       </div>
 
+      {/* multi-provider-management Phase 5 — provider/model dropdown */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          fontSize: 10.5,
+        }}
+        title={
+          card_display.locked
+            ? `本会话固定使用 ${card_display.label}`
+            : "本会话跟随全局 chain"
+        }
+      >
+        <span style={{ color: "#94a3b8" }}>
+          {card_display.icon ? `${card_display.icon} ` : ""}provider:
+        </span>
+        <select
+          aria-label={`provider for ${project_name}`}
+          value={session.provider_id ?? ""}
+          onChange={on_provider_change}
+          style={dropdownStyle}
+        >
+          {dropdown_opts.map((opt) => (
+            <option key={opt.value ?? "__global__"} value={opt.value ?? ""}>
+              {opt.label}
+            </option>
+          ))}
+          <option value="__change_model__">✏️ 改 model...</option>
+        </select>
+        {session.preferred_model && (
+          <span
+            style={{
+              fontSize: 10,
+              color: "#cbd5e1",
+              background: "rgba(37, 99, 235, 0.18)",
+              padding: "1px 5px",
+              borderRadius: 3,
+              maxWidth: 120,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={`preferred_model = ${session.preferred_model}`}
+          >
+            {session.preferred_model}
+          </span>
+        )}
+      </div>
+
       {/* Todos block */}
       <div
         style={{
@@ -507,6 +654,14 @@ function Tile({
       <div style={{ fontSize: 10, color: "#64748b" }}>
         {formatTime(last_activity)}
       </div>
+
+      {show_model_modal && (
+        <ChangeModelModal
+          session_id={session_id}
+          current_model={session.preferred_model}
+          onClose={() => set_show_model_modal(false)}
+        />
+      )}
     </div>
   );
 }
@@ -632,6 +787,18 @@ const tileDeleteBtnStyle: React.CSSProperties = {
   lineHeight: 1,
   opacity: 0.55,
   transition: "opacity 100ms",
+};
+
+const dropdownStyle: React.CSSProperties = {
+  background: "rgba(30, 35, 48, 0.85)",
+  color: "#e2e8f0",
+  border: "1px solid rgba(148, 163, 184, 0.22)",
+  borderRadius: 4,
+  padding: "1px 4px",
+  fontSize: 10.5,
+  flex: 1,
+  minWidth: 0,
+  cursor: "pointer",
 };
 
 const emptyHint: React.CSSProperties = {

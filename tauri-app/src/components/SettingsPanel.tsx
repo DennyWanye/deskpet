@@ -25,6 +25,7 @@ import {
 } from "../bindings/secrets";
 import { updateCloudConfig } from "../bindings/config";
 import { EmbedderStatusCard } from "./EmbedderStatusCard";
+import { SettingsProviders } from "./SettingsProviders";
 import { HiyoriMotionTuner } from "./HiyoriMotionTuner";
 import type {
   DailyBudgetStatus,
@@ -507,6 +508,15 @@ export function SettingsPanel({
           <p style={hintStyle}>
             数据来自 BillingLedger（S8），按 Asia/Shanghai 时区按日累计。
           </p>
+        </section>
+
+        {/* ================ LLM Providers (P5-S2 Phase 4) ================ */}
+        <section style={sectionStyle}>
+          <h3 style={h3Style}>LLM Providers</h3>
+          <SettingsProviders
+            getChannel={getChannel}
+            lastMessage={lastMessage}
+          />
         </section>
 
         {/* ================ 模型状态 (P4-S16) ================ */}
