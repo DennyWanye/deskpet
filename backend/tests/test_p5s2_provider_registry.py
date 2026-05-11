@@ -3,7 +3,7 @@
 Covers:
   - Registry CRUD: add / remove / reorder / set_enabled / list / get_chain
   - Validation: kebab-case id, uniqueness, redacted api_key
-  - Migration: legacy [llm.local] → [[llm.providers]], idempotent, broken keychain
+  - Migration: legacy [llm.local] → [[llm.endpoints]], idempotent, broken keychain
   - Persistence: toml round-trip via _persist_to_toml + atomic write
   - Keychain: api_key written to keyring, never returned in plaintext
 
@@ -97,14 +97,14 @@ def legacy_toml(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def providers_toml(tmp_path: Path) -> Path:
-    """A config.toml already on the new [[llm.providers]] schema."""
+    """A config.toml already on the new [[llm.endpoints]] schema."""
     p = tmp_path / "config.toml"
     p.write_text(
         textwrap.dedent(
             """
             schema_version = 1
 
-            [[llm.providers]]
+            [[llm.endpoints]]
             id = "chinzy-deepseek"
             name = "Chinzy DeepSeek"
             base_url = "https://api.chinzy.example/v1"
@@ -153,7 +153,7 @@ async def test_add_provider_persists(empty_toml: Path, fake_keyring):
 
     with empty_toml.open("rb") as fh:
         data = tomli.load(fh)
-    providers = data["llm"]["providers"]
+    providers = data["llm"]["endpoints"]
     assert len(providers) == 1
     assert providers[0]["id"] == "chinzy-deepseek"
     # api_key plaintext NOT written to toml
@@ -311,7 +311,7 @@ async def test_add_provider_kebab_case_validation(empty_toml: Path, fake_keyring
 
 
 def test_migrate_legacy_llm_local_to_providers(legacy_toml: Path, fake_keyring):
-    """1.14 — legacy [llm.local] is converted to [[llm.providers]] with one entry."""
+    """1.14 — legacy [llm.local] is converted to [[llm.endpoints]] with one entry."""
     from llm.provider_registry import _migrate_legacy_provider_config
 
     # Pre-populate keychain with the existing cloud key so the migration can
@@ -324,7 +324,7 @@ def test_migrate_legacy_llm_local_to_providers(legacy_toml: Path, fake_keyring):
 
     with legacy_toml.open("rb") as fh:
         data = tomli.load(fh)
-    providers = data["llm"]["providers"]
+    providers = data["llm"]["endpoints"]
     assert len(providers) == 1
     entry = providers[0]
     assert entry["id"] == "legacy-default"
@@ -349,10 +349,10 @@ def test_migration_idempotent(providers_toml: Path, fake_keyring):
 
     before_data = tomli.loads(before)
     after_data = tomli.loads(after)
-    assert before_data["llm"]["providers"] == after_data["llm"]["providers"]
+    assert before_data["llm"]["endpoints"] == after_data["llm"]["endpoints"]
     # And specifically: still exactly 1 entry, not 2 (no duplicate legacy-default).
-    assert len(after_data["llm"]["providers"]) == 1
-    assert after_data["llm"]["providers"][0]["id"] == "chinzy-deepseek"
+    assert len(after_data["llm"]["endpoints"]) == 1
+    assert after_data["llm"]["endpoints"][0]["id"] == "chinzy-deepseek"
 
 
 def test_migration_handles_missing_keychain_key(legacy_toml: Path, fake_keyring, caplog):
@@ -369,7 +369,7 @@ def test_migration_handles_missing_keychain_key(legacy_toml: Path, fake_keyring,
 
     with legacy_toml.open("rb") as fh:
         data = tomli.load(fh)
-    providers = data["llm"]["providers"]
+    providers = data["llm"]["endpoints"]
     assert len(providers) == 1
     assert providers[0]["api_key_ref"] == "deskpet.cloud_api_key"
 

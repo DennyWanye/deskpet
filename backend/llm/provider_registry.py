@@ -3,14 +3,14 @@
 This is the single source of truth for the user's list of LLM providers.
 Owns:
   - In-memory list of ProviderEntry dataclasses
-  - Atomic persistence to `config.toml` `[[llm.providers]]` array
+  - Atomic persistence to `config.toml` `[[llm.endpoints]]` array
   - API keys stored in OS keychain under service "deskpet", account
     "provider.<provider_id>" (NEVER plaintext in toml)
   - Migration of legacy `[llm.local]` single-provider schema → new list
 
 Schema in config.toml::
 
-    [[llm.providers]]
+    [[llm.endpoints]]
     id = "chinzy-deepseek"
     name = "Chinzy DeepSeek"
     base_url = "https://api.chinzy.example/v1"
@@ -110,7 +110,7 @@ class NoProviderConfiguredError(RuntimeError):
 
 @dataclass
 class ProviderEntry:
-    """In-memory representation of one ``[[llm.providers]]`` row.
+    """In-memory representation of one ``[[llm.endpoints]]`` row.
 
     ``api_key_ref`` is the keychain reference (string identifier shown
     in toml). The real key is fetched from keyring on demand via
@@ -169,7 +169,7 @@ def _escape_toml_string(value: str) -> str:
 
 
 def _format_providers_section(entries: list[ProviderEntry]) -> str:
-    """Render `entries` as a TOML `[[llm.providers]]` block.
+    """Render `entries` as a TOML `[[llm.endpoints]]` block.
 
     Stable ordering by current list order — caller controls priority via
     the ``priority`` field, not text order, but we still emit them in
@@ -177,7 +177,7 @@ def _format_providers_section(entries: list[ProviderEntry]) -> str:
     """
     out: list[str] = []
     for e in entries:
-        out.append("[[llm.providers]]")
+        out.append("[[llm.endpoints]]")
         out.append(f'id = "{_escape_toml_string(e.id)}"')
         out.append(f'name = "{_escape_toml_string(e.name)}"')
         out.append(f'base_url = "{_escape_toml_string(e.base_url)}"')
@@ -190,14 +190,14 @@ def _format_providers_section(entries: list[ProviderEntry]) -> str:
 
 
 def _strip_existing_providers_block(text: str) -> str:
-    """Remove any existing `[[llm.providers]]` array-of-tables blocks from
+    """Remove any existing `[[llm.endpoints]]` array-of-tables blocks from
     the toml *text*, preserving everything else (including comments)."""
     lines = text.splitlines()
     out: list[str] = []
     in_block = False
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("[[llm.providers]]"):
+        if stripped.startswith("[[llm.endpoints]]"):
             in_block = True
             continue
         if in_block:
@@ -206,7 +206,7 @@ def _strip_existing_providers_block(text: str) -> str:
                 in_block = False
                 out.append(line)
                 continue
-            if stripped.startswith("[[") and not stripped.startswith("[[llm.providers]]"):
+            if stripped.startswith("[[") and not stripped.startswith("[[llm.endpoints]]"):
                 in_block = False
                 out.append(line)
                 continue
@@ -234,7 +234,7 @@ class LLMProviderRegistry:
     """Owns the canonical list of LLM providers.
 
     Construct once per backend process. Pass ``config.toml`` path. The
-    constructor loads existing ``[[llm.providers]]`` entries from disk;
+    constructor loads existing ``[[llm.endpoints]]`` entries from disk;
     if absent, the registry starts empty.
 
     Concurrency: mutating methods (``add_provider``, ``remove_provider``,
@@ -260,7 +260,12 @@ class LLMProviderRegistry:
         except (tomli.TOMLDecodeError, OSError) as exc:
             logger.warning("provider_registry: failed to load toml: %s", exc)
             return
-        raw_list = (data.get("llm") or {}).get("providers") or []
+        raw_list = (data.get("llm") or {}).get("endpoints") or []
+        # Defensive: P4-S6 era config.toml uses `[llm.providers]` as a table
+        # (dict of model-tier knobs). If user's toml predates this rename and
+        # has a non-list under `[llm.endpoints]`, ignore it gracefully.
+        if not isinstance(raw_list, list):
+            raw_list = []
         self._entries = []
         for raw in raw_list:
             try:
@@ -281,7 +286,7 @@ class LLMProviderRegistry:
     def _persist_to_toml(self) -> None:
         """Rewrite the providers section in `config.toml` atomically.
 
-        Preserves all non-`[[llm.providers]]` content verbatim (comments,
+        Preserves all non-`[[llm.endpoints]]` content verbatim (comments,
         other sections). The new block is appended at the end of the file
         — toml's array-of-tables semantics don't care about position.
         """
@@ -508,13 +513,13 @@ class LLMProviderRegistry:
 
 def _migrate_legacy_provider_config(config_path: Path | str) -> bool:
     """One-time migration from `[llm.local]` single-provider schema to
-    `[[llm.providers]]` list. Idempotent. Safe to call on every startup.
+    `[[llm.endpoints]]` list. Idempotent. Safe to call on every startup.
 
     Returns True if the file was modified, False if migration was a no-op
     (already migrated / nothing to migrate).
 
     Migration rules (matches design.md):
-      - If `[[llm.providers]]` already present → no-op
+      - If `[[llm.endpoints]]` already present → no-op
       - If `[llm.local]` absent → no-op (fresh install)
       - Else: create one entry with id="legacy-default", api_key_ref
         pointing at the existing keychain slot (``deskpet.cloud_api_key``)
@@ -533,7 +538,11 @@ def _migrate_legacy_provider_config(config_path: Path | str) -> bool:
         return False
 
     llm = data.get("llm") or {}
-    if llm.get("providers"):
+    # P4-S6 era `[llm.providers]` is a table (dict of budget knobs) — NOT
+    # our endpoints list. Check the new `[llm.endpoints]` key instead so
+    # we don't bail out incorrectly on a P4-S6-era config.
+    endpoints = llm.get("endpoints")
+    if isinstance(endpoints, list) and endpoints:
         return False  # already migrated
 
     legacy = llm.get("local")
