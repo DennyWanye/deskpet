@@ -381,6 +381,18 @@ export function AddProviderModal({
           </div>
           {showModels && (
             <div style={{ display: "grid", gap: 4, marginTop: 4 }}>
+            <div
+              style={{
+                display: "grid",
+                gap: 4,
+                // Cap height for long lists (100+ models from probe), with
+                // its own scroll so the modal's footer (取消/保存) stays
+                // visible without endless outer scrolling.
+                maxHeight: 220,
+                overflowY: "auto",
+                paddingRight: 2,
+              }}
+            >
               {draft.models.length === 0 && (
                 <div style={{ fontSize: 11, color: "#9ca3af", padding: "4px 6px" }}>
                   尚未配置 model（手动添加或点 🔍 自动获取）
@@ -428,6 +440,7 @@ export function AddProviderModal({
                   </button>
                 </div>
               ))}
+            </div>
               <div style={{ display: "flex", gap: 4 }}>
                 <input
                   value={newModel}
