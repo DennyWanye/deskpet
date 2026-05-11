@@ -410,12 +410,30 @@ class OpenAICompatibleProvider:
                 ) from exc
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
             # Network-layer failure — typical when chinzy keep-alive
-            # socket gets reset between turns. Surface a stable, human-
-            # readable message so the UI shows something better than
-            # "unknown".
-            human = str(exc) or type(exc).__name__
+            # socket gets reset between turns. P5-S2 A2: classify by
+            # phase so supervisor / UI can show actionable hints.
+            _human_type = type(exc).__name__
+            _human_msg = (str(exc) or _human_type).replace("\n", " ")[:300]
+            _phase = (
+                "pre-handshake" if isinstance(exc, httpx.ConnectError)
+                else "read-timeout" if isinstance(exc, httpx.ReadTimeout)
+                else "transient-other"
+            )
+            _advice = {
+                "pre-handshake": (
+                    f"无法连接到 LLM endpoint {self.base_url}（DNS/TCP/TLS 握手失败）。"
+                    "请检查 base_url 是否拼写正确（如 .invalid 是占位符），"
+                    "或上游服务是否在线。"
+                ),
+                "read-timeout": (
+                    f"等待 {self.base_url} 返回数据超时。模型生成可能过慢或上游排队。"
+                ),
+                "transient-other": (
+                    f"连接 {self.base_url} 时遇到 {_human_type}。"
+                ),
+            }.get(_phase, f"连接 {self.base_url} 失败：{_human_type}")
             raise LLMProviderError(
-                f"网络与 LLM 服务连接中断 ({human})。请稍后重试或检查网络。"
+                f"LLM 调用失败 [{_phase}]: {_advice} 原始错误: {_human_msg}"
             ) from exc
         except httpx.HTTPError as exc:
             # Catch-all for any other transport / parsing httpx error.
@@ -639,17 +657,70 @@ class OpenAICompatibleProvider:
                 ) from exc
             except transient as exc:
                 last_exc = exc
+                # P5-S2 A2: classify transient errors so callers (supervisor,
+                # UI, user) see a real cause instead of a bare "ConnectError".
+                # Phase tags map to actionable user advice:
+                #   pre-handshake   : DNS / TCP / TLS handshake fail → base_url
+                #                     wrong, upstream completely down, or DNS
+                #                     blocked (e.g. .invalid TLD).
+                #   mid-stream-drop : SSE was started, proxy closed the socket
+                #                     mid-flight → upstream proxy idle timeout
+                #                     or load-balancer reset on long responses.
+                #   read-timeout    : socket open but no bytes arrived in time
+                #                     → model generation too slow / upstream
+                #                     queueing.
+                #   transient-other : write/pool timeouts, rare.
+                _phase = (
+                    "pre-handshake" if isinstance(exc, httpx.ConnectError)
+                    else "mid-stream-drop" if isinstance(exc, httpx.RemoteProtocolError)
+                    else "read-timeout" if isinstance(exc, httpx.ReadTimeout)
+                    else "transient-other"
+                )
+                _msg = (str(exc) or type(exc).__name__).replace("\n", " ")[:300]
                 logger.warning(
                     "p4s25_stream_transient_retry",
                     attempt=attempt + 1,
                     of=len(backoffs),
                     error_type=type(exc).__name__,
+                    phase=_phase,
+                    error_msg=_msg,
+                    base_url=self.base_url,
                 )
                 continue
         assert last_exc is not None
-        human = str(last_exc) or type(last_exc).__name__
+        # P5-S2 A2: include actionable diagnosis in the user-facing error.
+        # The base "LLM 调用失败 (ConnectError)" was opaque — users couldn't
+        # tell apart "base_url wrong" from "upstream proxy dropped me".
+        _human_type = type(last_exc).__name__
+        _human_msg = (str(last_exc) or _human_type).replace("\n", " ")[:300]
+        _phase = (
+            "pre-handshake" if isinstance(last_exc, httpx.ConnectError)
+            else "mid-stream-drop" if isinstance(last_exc, httpx.RemoteProtocolError)
+            else "read-timeout" if isinstance(last_exc, httpx.ReadTimeout)
+            else "transient-other"
+        )
+        _advice = {
+            "pre-handshake": (
+                f"无法连接到 LLM endpoint {self.base_url}（DNS/TCP/TLS 握手失败）。"
+                "可能原因：base_url 拼写错（如 .invalid 占位符）、上游服务 down、"
+                "或本机网络/防火墙阻塞。请在 Settings → LLM Providers 检查 base_url 并"
+                "可考虑添加备用 provider。"
+            ),
+            "mid-stream-drop": (
+                f"流式响应被 {self.base_url} 中途切断（连续 {len(backoffs)} 次）。"
+                "通常是中转站负载均衡 idle-timeout 或长响应触发 proxy reset。"
+                "降低 max_tokens、缩短 conversation history、或添加备用 provider 可缓解。"
+            ),
+            "read-timeout": (
+                f"等待 {self.base_url} 返回数据超时（连续 {len(backoffs)} 次）。"
+                "模型生成可能过慢或上游排队。可降级到更快的模型或增加 timeout。"
+            ),
+            "transient-other": (
+                f"连接 {self.base_url} 时遇到 {_human_type}。"
+            ),
+        }.get(_phase, f"连接 {self.base_url} 失败：{_human_type}")
         raise LLMProviderError(
-            f"LLM 调用失败 ({human})。"
+            f"LLM 调用失败 [{_phase}]: {_advice} 原始错误: {_human_msg}"
         ) from last_exc
 
     async def _stream_one_attempt(self, payload: dict):

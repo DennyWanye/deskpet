@@ -1044,10 +1044,67 @@ async def lifespan(app: FastAPI):
                     except Exception as _bex:
                         logger.debug("supervisor_alert_broadcast_failed sid=%s error=%s", _sid_key, _bex)
 
-            # Build agent. Provider = the same OpenAI-compatible provider
-            # that powers chat. Future enhancement: route to a cheaper
-            # model via a [supervisor].llm_provider override.
-            _sup_provider = local_llm  # default to main LLM provider
+            # Build agent. Provider resolution (multi-provider-management):
+            # 1) `[supervisor].provider_id = "<id>"` in config.toml — explicit pin
+            # 2) Else first enabled provider from LLMProviderRegistry.get_chain()
+            # 3) Else legacy `local_llm` (single-provider mode, pre-multi-provider)
+            #
+            # Previously hardcoded `local_llm` which on a multi-provider deploy
+            # without Ollama running produced "supervisor_unavailable: ConnectError"
+            # — confusing because the main chat works fine via chinzy. Now
+            # supervisor follows the user's chain by default.
+            _sup_provider = None
+            try:
+                _reg_for_sup = service_context.get("provider_registry")
+                if _reg_for_sup is not None:
+                    _sup_pinned_id = (_sup_cfg.get("provider_id") or "").strip()
+                    _sup_entry = None
+                    if _sup_pinned_id:
+                        _sup_entry = _reg_for_sup.get_entry(_sup_pinned_id)
+                        if _sup_entry is None or not getattr(_sup_entry, "enabled", True):
+                            logger.warning(
+                                "supervisor_pinned_provider_missing pid=%s — falling back to chain",
+                                _sup_pinned_id,
+                            )
+                            _sup_entry = None
+                    if _sup_entry is None:
+                        _chain = []
+                        try:
+                            _chain = _reg_for_sup.get_chain()
+                        except Exception:
+                            _chain = []
+                        if _chain:
+                            _sup_entry = _reg_for_sup.get_entry(_chain[0]["id"])
+                    if _sup_entry is not None:
+                        _sup_api_key = (
+                            _reg_for_sup.resolve_api_key(_sup_entry.id) or "ollama"
+                        )
+                        # Optional [supervisor].model override (defaults to entry's default_model)
+                        _sup_model_override = (_sup_cfg.get("model") or "").strip()
+                        _sup_model = _sup_model_override or _sup_entry.model
+                        _sup_provider = OpenAICompatibleProvider(
+                            base_url=_sup_entry.base_url,
+                            api_key=_sup_api_key,
+                            model=_sup_model,
+                            temperature=0.1,
+                        )
+                        logger.info(
+                            "supervisor_provider_resolved id=%s base_url=%s model=%s",
+                            _sup_entry.id, _sup_entry.base_url, _sup_model,
+                        )
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning(
+                    "supervisor_provider_resolve_failed err=%s — falling back to local_llm",
+                    str(_exc)[:200],
+                )
+            if _sup_provider is None:
+                # Last-resort fallback: legacy single-provider mode.
+                _sup_provider = local_llm
+                logger.info(
+                    "supervisor_provider_resolved id=legacy base_url=%s — "
+                    "registry empty/unavailable; consider adding a provider via Settings",
+                    getattr(local_llm, "base_url", "?"),
+                )
             _supervisor_agent = _SupAgent(
                 provider=_sup_provider,
                 snapshot_builder=_snap_builder,
