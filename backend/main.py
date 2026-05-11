@@ -2723,6 +2723,14 @@ async def control_channel(ws: WebSocket):
                         # 把它指向 Ollama 还是任何 OpenAI 兼容云端都一样。
                         _provider = local_llm or cloud_llm
                         _shim = _Shim(provider=_provider)
+                        # P4-S22: Code mode bumps max_iterations to 50 so
+                        # long tool-use chains (read → grep → edit → bash
+                        # → repeat) can finish a real task. Companion
+                        # mode stays at 8 — anything past that is
+                        # usually a runaway loop in chitchat context.
+                        _cmm = service_context.get("code_mode")
+                        _in_code_mode = bool(_cmm and _cmm.is_enabled(_sid))
+                        _max_iter = 50 if _in_code_mode else 8
 
                         # ─── P5-S2 Phase 3.15: provider_chain resolution ───
                         # If the LLMProviderRegistry is wired up (Phase 1+2)
@@ -2761,14 +2769,6 @@ async def control_channel(ws: WebSocket):
                                 _sid, str(_resolve_exc)[:200],
                             )
                             _provider_chain = None
-                        # P4-S22: Code mode bumps max_iterations to 50 so
-                        # long tool-use chains (read → grep → edit → bash
-                        # → repeat) can finish a real task. Companion
-                        # mode stays at 8 — anything past that is
-                        # usually a runaway loop in chitchat context.
-                        _cmm = service_context.get("code_mode")
-                        _in_code_mode = bool(_cmm and _cmm.is_enabled(_sid))
-                        _max_iter = 50 if _in_code_mode else 8
                         # Inject project root into per-session tool-arg
                         # context so glob/grep can run without the LLM
                         # restating the path every call. Cleared when
