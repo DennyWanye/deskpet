@@ -268,9 +268,9 @@ function SortableRow({ provider, onToggle, onDelete, onEdit }: SortableRowProps)
       >
         ⠿
       </span>
-      <div>
-        <div style={{ fontWeight: 600 }}>{provider.name}</div>
-        <div style={{ color: "#6b7280", fontSize: 11 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{provider.name}</div>
+        <div style={{ color: "#6b7280", fontSize: 11, overflowWrap: "anywhere", wordBreak: "break-all" }}>
           {provider.model} · {provider.base_url}
         </div>
         <div style={{ color: "#9ca3af", fontSize: 11 }}>
