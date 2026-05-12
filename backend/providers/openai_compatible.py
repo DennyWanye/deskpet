@@ -55,9 +55,16 @@ class OpenAICompatibleProvider:
         #   * write   = 5s  — POST body is small; anything past this is dead.
         #   * pool    = 5s  — connection-pool acquisition.
         # Caller can still pass a scalar/Timeout; we honour that verbatim.
+        # P5-S2 F1 (2026-05-12) — bumped read 60→120 and write 5→10 per
+        # chinzy's integration guide (docs/中转站建议.md). chinzy's PR #27
+        # ships a 15s SSE keep-alive comment that resets read timers on
+        # every hop, so a 120s read budget is generous + safe and covers
+        # individual reasoning tokens that can be 5KB+ on slow chunks.
+        # connect stays at 10s — Windows DNS slow-start legitimately
+        # takes 6-8s, chinzy's suggested 5s would false-fail occasionally.
         if timeout is None:
             self.timeout: float | httpx.Timeout = httpx.Timeout(
-                connect=10.0, read=60.0, write=5.0, pool=5.0,
+                connect=10.0, read=120.0, write=10.0, pool=5.0,
             )
         else:
             self.timeout = timeout
@@ -77,10 +84,40 @@ class OpenAICompatibleProvider:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        # P5-S2 F1 (2026-05-12) — chinzy integration guide root cause for
+        # "succeeds then next request ConnectError" (docs/中转站建议.md
+        # Failure Mode 2):
+        #
+        # httpx's default connection pool retains the TCP socket between
+        # requests for reuse. Middleboxes (NAT, corporate proxy, ISP) and
+        # the server's own keepAliveTimeout=75s silently kill that idle
+        # socket. When we send the NEXT request to the stale FD, the
+        # first write gets ECONNRESET and httpx surfaces it as
+        # ConnectError — looking exactly like "can't connect to chinzy"
+        # even though chinzy is healthy.
+        #
+        # Fix per chinzy guide: disable pool reuse entirely. New TCP +
+        # TLS handshake every request costs ~50ms; for an LLM workload
+        # where each call is 5-30s, the overhead is irrelevant and the
+        # fix eliminates an entire class of intermittent failures.
+        #
+        # transport retries=1 adds one implicit retry on raw socket
+        # errors (httpx layer, BEFORE our 3-retry application backoff).
+        # Cheap belt-and-suspenders for the (rare) case where a fresh
+        # connection still hits a transient SYN drop.
+        limits = httpx.Limits(max_keepalive_connections=0)
+        # Test path: when a MockTransport is injected we don't apply
+        # AsyncHTTPTransport(retries=1) — mock transports don't honour
+        # retries and the tests assert exact request counts.
+        if self._test_transport is not None:
+            transport = self._test_transport
+        else:
+            transport = httpx.AsyncHTTPTransport(retries=1)
         return httpx.AsyncClient(
             timeout=timeout,
             headers=headers,
-            transport=self._test_transport,
+            limits=limits,
+            transport=transport,
         )
 
     async def chat_stream(

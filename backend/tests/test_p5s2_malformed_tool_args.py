@@ -38,6 +38,12 @@ from providers.openai_compatible import OpenAICompatibleProvider
 def test_default_connect_timeout_is_10s():
     """Regression: 2026-05-11 — chinzy never saw the request because our
     5s connect timeout fired before TLS handshake finished. Bumped to 10s.
+
+    P5-S2 F1 (2026-05-12) — read budget bumped 60→120 per chinzy's
+    integration guide (docs/中转站建议.md): their PR #27 ships an SSE
+    keep-alive comment every 15s that resets read timers across all
+    hops, so the larger budget covers slow individual reasoning tokens
+    (5KB+ chunks) without false-failing on healthy long generations.
     """
     p = OpenAICompatibleProvider(
         base_url="https://example.test", api_key="k", model="m"
@@ -47,8 +53,9 @@ def test_default_connect_timeout_is_10s():
     assert p.timeout.connect == 10.0, (
         f"connect timeout regressed to {p.timeout.connect}s; expected 10.0"
     )
-    # Sanity: read budget should remain 60s (thinking-mode bursts).
-    assert p.timeout.read == 60.0
+    # F1: read budget covers thinking-mode bursts (chinzy keep-alive
+    # makes 120s safe even when upstream is silent for 30-60s mid-think).
+    assert p.timeout.read == 120.0
 
 
 # ─────────────── malformed args end-to-end (Fix B) ───────────────
