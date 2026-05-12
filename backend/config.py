@@ -13,7 +13,18 @@ logger = logging.getLogger(__name__)
 
 
 # ─── P6 agent-loop-refactor — process-wide feature flag ─────────
+#
+# DEPRECATED P6 Phase 6 — flag is permanently ON by default; the new
+# AgentLoop/ContextManager/TerminationGate path is the only path. The
+# function is kept for one release as an opt-OUT switch (set
+# ``P6_ENABLE_GATE=0`` to force the (now-removed) legacy path's behaviour
+# — but legacy code is gone, so 0 just disables auto-construction of
+# defaults inside ``AgentLoop``; callers MUST then pass their own gate
+# and ctx_manager explicitly, otherwise behaviour is undefined).
+# Remove this function in P7 once we're sure no in-the-wild deployment
+# is setting the env var.
 _P6_TRUTHY = frozenset({"1", "true", "yes"})
+_P6_FALSY = frozenset({"0", "false", "no"})
 
 
 def is_p6_gate_enabled() -> bool:
@@ -23,15 +34,23 @@ def is_p6_gate_enabled() -> bool:
     flag can be flipped at runtime (no restart needed) — useful in tests
     and for quick rollback if the new loop misbehaves in production.
 
-    Truthy values (case-insensitive, whitespace-stripped): ``"1"``,
-    ``"true"``, ``"yes"``. Anything else, including empty string and
-    unset, returns False.
+    Phase 6 default flip: **unset env var now returns True**. Only an
+    explicit falsy value (``"0"``, ``"false"``, ``"no"``, empty string,
+    case-insensitive, whitespace-stripped) returns False. Truthy values
+    are still accepted for explicitness.
 
     Lives in ``config`` so callers anywhere in the backend can import it
     without pulling agent/loop dependencies through ``main``.
     """
-    raw = os.environ.get("P6_ENABLE_GATE", "")
-    return raw.strip().lower() in _P6_TRUTHY
+    raw = os.environ.get("P6_ENABLE_GATE")
+    if raw is None:
+        # Phase 6: default ON.
+        return True
+    stripped = raw.strip().lower()
+    if stripped in _P6_FALSY or stripped == "":
+        return False
+    # Anything else (including the historical truthy values) → True.
+    return True
 
 
 def resolve_cloud_api_key() -> str | None:

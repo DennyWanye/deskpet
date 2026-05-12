@@ -2893,80 +2893,16 @@ async def control_channel(ws: WebSocket):
                                 _insert_at += 1
                             _msgs.insert(_insert_at, _long_args_hint)
 
-                        # P6 Phase 4 — ContextManager preflight is run
-                        # AFTER ``_provider_chain`` is resolved (see below)
-                        # because it needs the chain's first provider for
-                        # the summarize step. We init the manager here so
-                        # it can also be passed to AgentLoop.
-                        from config import is_p6_gate_enabled as _is_p6_on
-                        if _is_p6_on():
-                            from agent.context_manager import ContextManager as _CtxMgr
-                            _ctx_mgr = _CtxMgr()
-                        else:
-                            _ctx_mgr = None
-
-                        # P5-S2 B2: pre-call history compaction. If the
-                        # conversation has grown large (>20 messages OR
-                        # >60KB), summarize the old middle with a cheap
-                        # LLM call and replace it with a single system
-                        # summary message. Failure → keep original
-                        # (safe: better long context than no context).
-                        #
-                        # P6 Phase 4 — the legacy inline block runs ONLY
-                        # when the P6 flag is OFF. When ON, the helper
-                        # below (after _provider_chain resolution)
-                        # delegates to ContextManager.
-                        if _ctx_mgr is None:
-                            try:
-                                from agent.history_compactor import (
-                                    compact_messages as _compact_msgs,
-                                    should_compact as _should_compact,
-                                )
-                                if _should_compact(_msgs):
-                                    _orig_len = len(_msgs)
-                                    async def _summarize(text_to_summarize: str) -> str:
-                                        # Use the same provider the chat will use,
-                                        # but capped to a tiny max_tokens budget.
-                                        _sum_provider = (
-                                            _provider_chain[0]
-                                            if "_provider_chain" in dir()
-                                            and _provider_chain
-                                            else local_llm
-                                        )
-                                        _sum_messages = [
-                                            {"role": "system", "content":
-                                                "Compress the following conversation into a concise "
-                                                "Chinese summary capturing: completed steps, key "
-                                                "decisions, tool results' outcomes, current state. "
-                                                "≤ 600 chars. Output plain text only."},
-                                            {"role": "user", "content": text_to_summarize[:50_000]},
-                                        ]
-                                        _r = await _sum_provider.chat_with_tools(
-                                            _sum_messages,
-                                            tools=None,
-                                            max_tokens=800,
-                                            temperature=0.1,
-                                        )
-                                        return _r.get("content", "")
-                                    # Note: _provider_chain is defined below in
-                                    # this block; compaction runs once early
-                                    # using local_llm fallback for now. A
-                                    # cleaner ordering is a P3 refactor.
-                                    try:
-                                        _msgs = await _compact_msgs(
-                                            _msgs, summarize_fn=_summarize,
-                                        )
-                                        logger.info(
-                                            "p5s2_history_compacted sid=%s orig=%d new=%d",
-                                            _sid, _orig_len, len(_msgs),
-                                        )
-                                    except Exception as _c_exc:  # noqa: BLE001
-                                        logger.warning(
-                                            "p5s2_history_compaction_failed sid=%s err=%s",
-                                            _sid, str(_c_exc)[:200],
-                                        )
-                            except Exception as _imp_exc:  # noqa: BLE001
-                                logger.debug("history_compactor_import_failed err=%s", _imp_exc)
+                        # P6 Phase 6 — ContextManager is always constructed
+                        # here. The pre-call history compaction below runs
+                        # AFTER ``_provider_chain`` resolves (it needs the
+                        # chain's first provider as the summarize source).
+                        # The legacy ``if _ctx_mgr is None:`` inline B2
+                        # block (~60 lines re-implementing what
+                        # chat_prep.prepare_chat_messages_for_chain does
+                        # cleanly) was removed in Phase 6.
+                        from agent.context_manager import ContextManager as _CtxMgr
+                        _ctx_mgr = _CtxMgr()
 
                         # ─── P5-S2 Phase 3.15: provider_chain resolution ───
                         # If the LLMProviderRegistry is wired up (Phase 1+2)
@@ -3006,35 +2942,32 @@ async def control_channel(ws: WebSocket):
                             )
                             _provider_chain = None
 
-                        # P6 Phase 4 — ContextManager-based preflight
-                        # compaction. Runs only when the feature flag is
-                        # on; uses ``_provider_chain[0]`` (resolved
-                        # above) for the summarize step. Best-effort:
-                        # any exception falls back to the original
-                        # messages (better long context than a hard
-                        # error mid-task).
-                        if _ctx_mgr is not None:
-                            try:
-                                from agent.chat_prep import (
-                                    prepare_chat_messages_for_chain as _prep_chat_msgs,
+                        # P6 Phase 6 — ContextManager-based preflight
+                        # compaction. Uses ``_provider_chain[0]`` (resolved
+                        # above) for the summarize step. Best-effort: any
+                        # exception falls back to the original messages
+                        # (better long context than a hard error mid-task).
+                        try:
+                            from agent.chat_prep import (
+                                prepare_chat_messages_for_chain as _prep_chat_msgs,
+                            )
+                            _orig_len = len(_msgs)
+                            _msgs = await _prep_chat_msgs(
+                                _msgs,
+                                provider_chain=_provider_chain,
+                                ctx_mgr=_ctx_mgr,
+                                fallback_summarizer=local_llm,
+                            )
+                            if len(_msgs) != _orig_len:
+                                logger.info(
+                                    "p6_history_compacted sid=%s orig=%d new=%d",
+                                    _sid, _orig_len, len(_msgs),
                                 )
-                                _orig_len = len(_msgs)
-                                _msgs = await _prep_chat_msgs(
-                                    _msgs,
-                                    provider_chain=_provider_chain,
-                                    ctx_mgr=_ctx_mgr,
-                                    fallback_summarizer=local_llm,
-                                )
-                                if len(_msgs) != _orig_len:
-                                    logger.info(
-                                        "p6_history_compacted sid=%s orig=%d new=%d",
-                                        _sid, _orig_len, len(_msgs),
-                                    )
-                            except Exception as _p6_exc:  # noqa: BLE001
-                                logger.warning(
-                                    "p6_chat_prep_failed sid=%s err=%s",
-                                    _sid, str(_p6_exc)[:200],
-                                )
+                        except Exception as _p6_exc:  # noqa: BLE001
+                            logger.warning(
+                                "p6_chat_prep_failed sid=%s err=%s",
+                                _sid, str(_p6_exc)[:200],
+                            )
 
                         # Inject project root into per-session tool-arg
                         # context so glob/grep can run without the LLM

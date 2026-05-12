@@ -73,15 +73,15 @@ _REPEAT_NUDGE_MSG = (
 # generation" patterns where each iteration writes another section,
 # fix, refactor, etc.
 #
-# Plus: a separate hard cap on TOOL CALLS per session (counted across
-# iterations, regardless of iteration index). When >= _TOOL_BUDGET,
-# next iteration injects a "you've used your tool budget" forced stop.
+# P6 Phase 6: the legacy soft tool-budget injection (``_TOOL_BUDGET_HARD_MSG``
+# + the >= _TOOL_BUDGET_HARD branch) was removed — the TerminationGate
+# now enforces tool_budget_hard with a HARD break that emits
+# ErrorEvent(error_tool_budget). Only the iteration-based selfcheck
+# tiers remain as soft nudges.
 
 _SELFCHECK_EVERY = 10  # base interval — tier 1 fires here
 _SELFCHECK_TIER2_AT = 20  # iter >= this → escalate
 _SELFCHECK_TIER3_AT = 30  # iter >= this → forced stop
-_TOOL_BUDGET_SOFT = 25  # gentle warning when used
-_TOOL_BUDGET_HARD = 40  # forced stop when used
 
 _SELFCHECK_TIER1 = (
     "[self-check 第 1 级 / 第 {iter}/{max_iter} 轮 — 已用 {tools_used} 次工具调用]\n"
@@ -113,13 +113,6 @@ _SELFCHECK_TIER3 = (
     "  3. 用 todo_write 之前已经做过的，不要重复写\n"
     "如果你违反这条规则继续 tool_call，下一轮 supervisor 会强制中断你。"
 )
-
-_TOOL_BUDGET_HARD_MSG = (
-    "[TOOL BUDGET EXHAUSTED — 已用 {tools_used} 次工具调用]\n"
-    "你已经超过工具调用硬上限 ({hard_cap} 次)。立即停止任何新的 tool_call。\n"
-    "下一轮回复必须是 stop_reason=end_turn，用文字总结当前所有成果给用户。"
-)
-
 
 def _build_selfcheck_message(iteration: int, max_iter: int, tools_used: int) -> str:
     """Choose the right self-check tier based on iteration count.
@@ -436,67 +429,32 @@ class AgentLoop:
             if signature_repeat_threshold is not None
             else _REPEAT_THRESHOLD
         )
-        # P5-S2 B1: shared global tool-result-ref store. Long tool_results
-        # are replaced inline with a "[truncated, ref_id=X]" marker and
-        # the full body is kept in the module singleton — the same one
-        # the ``fetch_tool_result`` tool reads from when the LLM wants
-        # to retrieve the original. Cross-AgentLoop sharing is safe
-        # because ref_ids are 8-char random tokens; LRU caps memory.
-        from agent.tool_result_truncator import get_global_ref_store
-        self._tool_result_refs = get_global_ref_store()
+        # P6 Phase 6 — TerminationGate is always wired in. Callers may
+        # inject an explicit gate; otherwise a default gate is created
+        # with max_turns = self.max_iterations. The legacy ``_gate is
+        # None`` branch is gone — every code path goes through the gate.
+        #
+        # The soft selfcheck tier messages (_SELFCHECK_*) are kept in
+        # place — they are complementary to the gate, not replaced by it.
+        # The gate provides HARD termination semantics on top of those
+        # nudges. The legacy _TOOL_BUDGET_HARD_MSG soft cap was removed
+        # in Phase 6 (gate handles tool budget hard cap directly).
+        self._gate: TerminationGate = (
+            termination_gate
+            if termination_gate is not None
+            else TerminationGate(GateConfig(max_turns=self.max_iterations))
+        )
 
-        # P6 Phase 3 — TerminationGate plumbing (feature-flagged).
-        #
-        # Three cases:
-        #   1. Caller injects an explicit gate → use it.
-        #   2. P6_ENABLE_GATE truthy → build a default gate with
-        #      max_turns = self.max_iterations.
-        #   3. Otherwise → self._gate = None (legacy path, unchanged
-        #      behaviour for the existing 1196-test baseline).
-        #
-        # The legacy soft selfcheck / soft tool-budget messages
-        # (_TOOL_BUDGET_HARD / _SELFCHECK_*) are kept in place — they are
-        # complementary to the gate, not replaced by it. When the flag
-        # is on, the gate provides HARD termination semantics on top of
-        # those nudges.
-        if termination_gate is not None:
-            self._gate: Optional[TerminationGate] = termination_gate
-        else:
-            try:
-                from config import is_p6_gate_enabled as _flag_check
-                _flag_on = _flag_check()
-            except Exception:  # noqa: BLE001 — defensive: never break import
-                _flag_on = False
-            if _flag_on:
-                self._gate = TerminationGate(
-                    GateConfig(max_turns=self.max_iterations)
-                )
-            else:
-                self._gate = None
-
-        # P6 Phase 4 — ContextManager plumbing (feature-flagged).
-        #
-        # Mirrors the _gate logic above:
-        #   1. Caller injects ctx → use it.
-        #   2. P6_ENABLE_GATE truthy → build a default ContextManager.
-        #   3. Otherwise → self._ctx = None (legacy inline B1 path).
-        #
-        # When set, the tool-result write site delegates truncation to
+        # P6 Phase 6 — ContextManager is always wired in. Same shape as
+        # _gate above: caller may inject one, otherwise a default is
+        # created. The tool-result write site delegates truncation to
         # ctx.record_tool_result (which honours skip_truncation_for_tools
-        # — the G1 fix). When None, the legacy inline
-        # maybe_truncate_tool_result call runs unchanged.
-        if context_manager is not None:
-            self._ctx: Optional[ContextManager] = context_manager
-        else:
-            try:
-                from config import is_p6_gate_enabled as _flag_check_ctx
-                _ctx_flag_on = _flag_check_ctx()
-            except Exception:  # noqa: BLE001
-                _ctx_flag_on = False
-            if _ctx_flag_on:
-                self._ctx = ContextManager()
-            else:
-                self._ctx = None
+        # — the G1 fix). The legacy ``_ctx is None`` branch is gone.
+        self._ctx: ContextManager = (
+            context_manager
+            if context_manager is not None
+            else ContextManager()
+        )
 
     async def run(
         self,
@@ -562,9 +520,10 @@ class AgentLoop:
         # fresh nudge budget — we don't want stale "already nudged 2x"
         # state leaking between turns.
         completion_nudges_used = 0
-        # P5-S2 Phase 7: track total tool calls for hard-cap enforcement.
-        # Each ToolCallEvent yield bumps this. When >= _TOOL_BUDGET_HARD
-        # the loop injects a forced-stop system message.
+        # P6 Phase 6 — local mirror of gate.state.tools_used kept so the
+        # selfcheck tier messages can format "已用 N 次工具调用". The gate
+        # is the source of truth for hard-cap enforcement; this var is
+        # purely informational.
         tools_used_count = 0
 
         # P5-S2 B3: warn-once latch so we don't spam the WARN log every
@@ -572,51 +531,43 @@ class AgentLoop:
         _budget_warn_emitted = False
 
         for iteration in range(1, self.max_iterations + 1):
-            # P6 Phase 3 — TerminationGate.allows_call() (feature-flagged).
+            # P6 Phase 6 — TerminationGate.allows_call() is always run.
             # Checks hard limits (turns, wall-clock, cost) BEFORE we burn
             # another LLM call. The gate is the single source of truth
-            # for "should this loop keep going?" when enabled.
-            if self._gate is not None:
-                _ok, _reason = self._gate.allows_call()
-                if not _ok:
-                    yield ErrorEvent(
-                        type="error",
-                        task_id=tid,
-                        iteration=iteration,
-                        reason=(_reason.value if _reason is not None else "unknown"),
-                        detail="Termination gate blocked LLM call",
-                    )
-                    return
+            # for "should this loop keep going?".
+            _ok, _reason = self._gate.allows_call()
+            if not _ok:
+                yield ErrorEvent(
+                    type="error",
+                    task_id=tid,
+                    iteration=iteration,
+                    reason=(_reason.value if _reason is not None else "unknown"),
+                    detail="Termination gate blocked LLM call",
+                )
+                return
 
             # P5-S2 B3: token budget guard. Runs BEFORE the LLM call so
             # we can surface an actionable error (BLOCK) or pre-emptive
             # warning (WARN) instead of waiting for the model to choke
             # on context_length_exceeded.
             #
-            # P6 Phase 4 — when self._ctx is set (feature flag on or
-            # explicit ContextManager injection), delegate to ctx.check_budget
-            # so chat handler + AgentLoop share one budget evaluator. The
-            # legacy inline path below preserves byte-identical behaviour
-            # when ctx is None.
+            # P6 Phase 6 — always delegate to self._ctx.check_budget so
+            # chat handler + AgentLoop share one budget evaluator.
             try:
                 from agent.token_budget import (
-                    check_budget as _check_budget,
                     BudgetCheck as _BudgetCheck,
                 )
                 # Use the FIRST provider's model as the context-window
-                # reference (chain mode). In legacy single-provider mode
-                # fall back to default_model.
+                # reference (chain mode). In single-provider mode fall
+                # back to default_model.
                 _budget_model = use_model
                 if chain_mode and provider_chain:
                     _first = provider_chain[0]
                     _budget_model = getattr(_first, "model", None) or use_model
-                if self._ctx is not None:
-                    _resolved_model = _budget_model or "unknown"
-                    _budget = self._ctx.check_budget(
-                        working_messages, model=_resolved_model,
-                    )
-                else:
-                    _budget = _check_budget(working_messages, model=_budget_model)
+                _resolved_model = _budget_model or "unknown"
+                _budget = self._ctx.check_budget(
+                    working_messages, model=_resolved_model,
+                )
                 if _budget.verdict is _BudgetCheck.BLOCK:
                     logger.error(
                         "p5s2_token_budget_block sid=%s tid=%s iter=%d "
@@ -625,13 +576,12 @@ class AgentLoop:
                         _budget.estimated_tokens, _budget.context_window,
                         _budget.ratio,
                     )
-                    # P6 Phase 4 — record the same reason on the gate so
+                    # P6 Phase 6 — record the same reason on the gate so
                     # summary() reflects the real cause (otherwise the
                     # gate would stay "running").
-                    if self._gate is not None:
-                        self._gate.record_error(
-                            TerminationReason.CONTEXT_BUDGET_BLOCK
-                        )
+                    self._gate.record_error(
+                        TerminationReason.CONTEXT_BUDGET_BLOCK
+                    )
                     yield ErrorEvent(
                         type="error",
                         task_id=tid,
@@ -664,33 +614,18 @@ class AgentLoop:
                 )
                 return
 
-            # P5-S2 Phase 7: escalating in-loop self-check + tool budget.
-            # Two independent triggers, each can inject a system message:
-            #   (a) iteration-based self-check (every _SELFCHECK_EVERY rounds)
-            #       → tier escalates based on iteration count
-            #   (b) tool budget hard cap (when total tool calls used so far
-            #       crosses _TOOL_BUDGET_HARD)
-            # Both inject as system messages BEFORE the next LLM call.
-            # The HARD tool-budget message takes priority — it's the
-            # strongest stop signal.
+            # P6 Phase 6: escalating in-loop self-check (soft nudge).
+            # The legacy _TOOL_BUDGET_HARD_MSG soft cap is GONE — the
+            # TerminationGate now enforces tool_budget_hard with a HARD
+            # break and emits ErrorEvent(error_tool_budget). The selfcheck
+            # tier injection below is complementary (gentle reflection
+            # nudge to coax stop_reason=end_turn earlier).
 
-            # Count tools used so far in this loop run (tracked above per
-            # iteration). `tools_used` is bumped at each ToolCallEvent.
+            # Count tools used so far in this loop run (tracked at each
+            # tool dispatch). `tools_used` mirrors gate.state.tools_used.
             tools_used = locals().get("tools_used_count", 0)
 
-            if tools_used >= _TOOL_BUDGET_HARD:
-                working_messages.append({
-                    "role": "system",
-                    "content": _TOOL_BUDGET_HARD_MSG.format(
-                        tools_used=tools_used,
-                        hard_cap=_TOOL_BUDGET_HARD,
-                    ),
-                })
-                logger.warning(
-                    "p5s2_tool_budget_exhausted sid=%s tid=%s iter=%d tools_used=%d",
-                    session_id, tid, iteration, tools_used,
-                )
-            elif iteration > 0 and iteration % _SELFCHECK_EVERY == 0:
+            if iteration > 0 and iteration % _SELFCHECK_EVERY == 0:
                 budget_left = self.max_iterations - iteration
                 msg = _build_selfcheck_message(iteration, self.max_iterations, tools_used)
                 working_messages.append({"role": "system", "content": msg})
@@ -766,13 +701,12 @@ class AgentLoop:
                         # All providers in the chain raised.
                         tried = len(provider_chain)  # type: ignore[arg-type]
                         last_text = str(last_exc) if last_exc else "unknown"
-                        # P6 Phase 3 — record terminal error reason on the
+                        # P6 Phase 6 — record terminal error reason on the
                         # gate so callers reading summary() see the real
                         # cause (otherwise the gate would stay "running").
-                        if self._gate is not None:
-                            self._gate.record_error(
-                                TerminationReason.ALL_PROVIDERS_FAILED
-                            )
+                        self._gate.record_error(
+                            TerminationReason.ALL_PROVIDERS_FAILED
+                        )
                         yield ErrorEvent(
                             type="error",
                             task_id=tid,
@@ -892,19 +826,18 @@ class AgentLoop:
             totals["cache_read"] += response.usage.cache_read_tokens
             totals["cache_write"] += response.usage.cache_write_tokens
 
-            # P6 Phase 3 — record the turn (advances turns_used and
+            # P6 Phase 6 — record the turn (advances turns_used and
             # optionally adds to cost_usd if the response carries a
             # cost_usd extra; ChatUsage has no such field today so we
             # pass 0.0). The gate's allows_call check at top of next
             # iteration uses turns_used to decide whether to keep going.
-            if self._gate is not None:
-                _cost_delta = 0.0
-                _usage = getattr(response, "usage", None)
-                if _usage is not None:
-                    _maybe_cost = getattr(_usage, "cost_usd", None)
-                    if isinstance(_maybe_cost, (int, float)):
-                        _cost_delta = float(_maybe_cost)
-                self._gate.record_turn(cost_delta_usd=_cost_delta)
+            _cost_delta = 0.0
+            _usage = getattr(response, "usage", None)
+            if _usage is not None:
+                _maybe_cost = getattr(_usage, "cost_usd", None)
+                if isinstance(_maybe_cost, (int, float)):
+                    _cost_delta = float(_maybe_cost)
+            self._gate.record_turn(cost_delta_usd=_cost_delta)
 
             yield AssistantMessageEvent(
                 type="assistant_message",
@@ -981,11 +914,10 @@ class AgentLoop:
                         # next LLM call sees the nudge.
                         continue
 
-                # P6 Phase 3 — gate records the natural terminal state
+                # P6 Phase 6 — gate records the natural terminal state
                 # before we emit the FinalEvent so consumers reading
                 # gate.summary() after a run see SUCCESS / matching reason.
-                if self._gate is not None:
-                    self._gate.record_final_answer()
+                self._gate.record_final_answer()
 
                 yield FinalEvent(
                     type="final",
@@ -1091,7 +1023,7 @@ class AgentLoop:
             tool_coros = []
             call_order: list[ToolCall] = []
             for tc in response.tool_calls:
-                # P6 Phase 3 — gate gates each tool dispatch on hard
+                # P6 Phase 6 — gate gates each tool dispatch on hard
                 # budget + per-tool consecutive cap (hallucination
                 # detection). Returning early on the FIRST blocked tool
                 # is the bug-fix: old soft-message path kept iterating
@@ -1099,50 +1031,51 @@ class AgentLoop:
                 # (the "not convergent" bug). Tools that were already
                 # appended to tool_coros above keep running concurrently;
                 # we just stop scheduling new ones and exit.
-                if self._gate is not None:
-                    _tok, _treason = self._gate.allows_tool(tc.name)
-                    if not _tok:
-                        # Flush any tools already scheduled so we still
-                        # honour the per-iteration "yield tool_result
-                        # for each concurrent call" invariant.
-                        if tool_coros:
-                            _flushed = await asyncio.gather(
-                                *tool_coros, return_exceptions=True
-                            )
-                            for _ftc, _fres in zip(call_order, _flushed):
-                                if isinstance(_fres, BaseException):
-                                    import json as _json_flush
-                                    _fres_str = _json_flush.dumps(
-                                        {
-                                            "error": f"{type(_fres).__name__}: {_fres}",
-                                            "retriable": False,
-                                        },
-                                        ensure_ascii=False,
-                                    )
-                                else:
-                                    _fres_str = _fres
-                                yield ToolResultEvent(
-                                    type="tool_result",
-                                    task_id=tid,
-                                    iteration=iteration,
-                                    tool_call_id=_ftc.id,
-                                    tool_name=_ftc.name,
-                                    result=_fres_str,
-                                )
-                        yield ErrorEvent(
-                            type="error",
-                            task_id=tid,
-                            iteration=iteration,
-                            reason=(
-                                _treason.value
-                                if _treason is not None else "unknown"
-                            ),
-                            detail=f"Termination gate blocked tool {tc.name}",
+                _tok, _treason = self._gate.allows_tool(tc.name)
+                if not _tok:
+                    # Flush any tools already scheduled so we still
+                    # honour the per-iteration "yield tool_result
+                    # for each concurrent call" invariant.
+                    if tool_coros:
+                        _flushed = await asyncio.gather(
+                            *tool_coros, return_exceptions=True
                         )
-                        return
-                    self._gate.record_tool_call(tc.name)
-                # P5-S2 Phase 7: bump tool budget counter — checked at top
-                # of next iteration to enforce hard cap.
+                        for _ftc, _fres in zip(call_order, _flushed):
+                            if isinstance(_fres, BaseException):
+                                import json as _json_flush
+                                _fres_str = _json_flush.dumps(
+                                    {
+                                        "error": f"{type(_fres).__name__}: {_fres}",
+                                        "retriable": False,
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            else:
+                                _fres_str = _fres
+                            yield ToolResultEvent(
+                                type="tool_result",
+                                task_id=tid,
+                                iteration=iteration,
+                                tool_call_id=_ftc.id,
+                                tool_name=_ftc.name,
+                                result=_fres_str,
+                            )
+                    yield ErrorEvent(
+                        type="error",
+                        task_id=tid,
+                        iteration=iteration,
+                        reason=(
+                            _treason.value
+                            if _treason is not None else "unknown"
+                        ),
+                        detail=f"Termination gate blocked tool {tc.name}",
+                    )
+                    return
+                self._gate.record_tool_call(tc.name)
+                # P6 Phase 6 — tools_used_count was the legacy soft-cap
+                # counter; the gate now tracks tools_used in its state.
+                # Kept as a local var for the (still-active) soft selfcheck
+                # messages below.
                 tools_used_count += 1
                 yield ToolCallEvent(
                     type="tool_call",
@@ -1184,30 +1117,19 @@ class AgentLoop:
                     tool_name=tc.name,
                     result=result_str,
                 )
-                # P5-S2 B1: truncate long tool_result bodies before they
-                # land in working_messages — same content is re-sent on
-                # every iteration, so a single 60 KB read_file × 30
-                # iterations = 1.8 MB context bloat. The truncated form
-                # keeps head + tail visible + a ref_id the LLM can
-                # fetch later. Original result_str stays in the
-                # ToolResultEvent above so the UI sees the full body.
-                #
-                # P6 Phase 4 — when self._ctx is set, delegate to
-                # ctx.record_tool_result so the skip_truncation_for_tools
-                # set (G1 fix) is honoured. When None, fall back to the
-                # inline maybe_truncate_tool_result call (legacy path,
-                # byte-identical behaviour).
-                if self._ctx is not None:
-                    _content_for_history, _trunc_ref = self._ctx.record_tool_result(
-                        tool_name=tc.name, result=result_str,
-                    )
-                else:
-                    from agent.tool_result_truncator import (
-                        maybe_truncate_tool_result as _maybe_truncate,
-                    )
-                    _content_for_history, _trunc_ref = _maybe_truncate(
-                        result_str, store=self._tool_result_refs
-                    )
+                # P6 Phase 6 — delegate truncation to
+                # self._ctx.record_tool_result. The skip_truncation_for_tools
+                # set (G1 fix) is honoured here, so a fetch_tool_result
+                # round-trip returns the full body. Long tool_result bodies
+                # are replaced inline with a "[truncated, ref_id=X]" marker
+                # and the full body is kept in the global ref store —
+                # same content is re-sent on every iteration, so a single
+                # 60 KB read_file × 30 iterations = 1.8 MB context bloat.
+                # Original result_str stays in the ToolResultEvent above
+                # so the UI sees the full body.
+                _content_for_history, _trunc_ref = self._ctx.record_tool_result(
+                    tool_name=tc.name, result=result_str,
+                )
                 if _trunc_ref is not None:
                     logger.info(
                         "p5s2_tool_result_truncated sid=%s tool=%s "

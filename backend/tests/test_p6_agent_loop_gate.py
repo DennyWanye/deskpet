@@ -1,16 +1,17 @@
-"""P6 Phase 3 — AgentLoop integration with TerminationGate behind P6_ENABLE_GATE flag.
+"""P6 Phase 6 — AgentLoop integration with TerminationGate (always on).
 
 See openspec/changes/p6-agent-loop-refactor/design.md §"AgentLoop 重构后接口".
 
 Tests cover:
-  * 3.1 constructor wiring (legacy mode vs gate mode)
+  * 3.1 constructor wiring (gate kwarg + auto-built default)
   * 3.2 gate.allows_call gating LLM calls + record_turn after each call
   * 3.3 gate.allows_tool gating tool dispatch (HARD break on budget — the
     "not convergent" fix vs the old soft-message approach)
   * 3.4 record_final_answer on end_turn, record_error on all_providers_failed
 
-Important: the legacy code path (P6_ENABLE_GATE unset) must remain
-unchanged — verified by the existing 1196-baseline suite staying green.
+Phase 6: legacy ``_gate is None`` path is gone — every code path goes
+through the gate. The auto-built default behaviour replaces the
+flag-gated old path.
 """
 from __future__ import annotations
 
@@ -144,19 +145,18 @@ class TestAgentLoopConstructorGate:
         )
         assert loop._gate is gate
 
-    def test_agentloop_creates_default_gate_when_flag_off(self, monkeypatch):
-        """Flag unset → no explicit gate → _gate is None (legacy path)."""
-        monkeypatch.delenv("P6_ENABLE_GATE", raising=False)
+    def test_agentloop_creates_default_gate_when_none_provided(self):
+        """P6 Phase 6 — no explicit gate kwarg → AgentLoop always builds
+        a default gate. The legacy ``_gate is None`` state is gone."""
         loop = AgentLoop(
             llm_registry=_ScriptedLLM([]),
             tool_registry=_ScriptedTools([]),
         )
-        assert loop._gate is None
+        assert loop._gate is not None
+        assert isinstance(loop._gate, TerminationGate)
 
-    def test_agentloop_uses_gate_when_flag_on(self, monkeypatch):
-        """Flag set → no explicit gate → AgentLoop builds a default gate
-        with max_turns = self.max_iterations."""
-        monkeypatch.setenv("P6_ENABLE_GATE", "1")
+    def test_agentloop_default_gate_has_correct_config(self):
+        """Auto-built gate uses max_turns = self.max_iterations."""
         loop = AgentLoop(
             llm_registry=_ScriptedLLM([]),
             tool_registry=_ScriptedTools([]),
@@ -404,26 +404,5 @@ class TestAgentLoopGateRecordTerminal:
         assert gate.state.terminated_reason == TerminationReason.ALL_PROVIDERS_FAILED
 
 
-# ─────────────── 3.5 legacy compatibility ───────────────
-
-
-class TestAgentLoopGateLegacyCompat:
-    @pytest.mark.asyncio
-    async def test_legacy_path_unchanged_when_gate_none(self, monkeypatch):
-        """When P6_ENABLE_GATE is OFF and no gate is injected, AgentLoop
-        must behave identically to the old code path: a simple end_turn
-        run yields exactly one AssistantMessageEvent + one FinalEvent.
-        """
-        monkeypatch.delenv("P6_ENABLE_GATE", raising=False)
-        llm = _ScriptedLLM([_make_end_turn()])
-        loop = AgentLoop(
-            llm_registry=llm,
-            tool_registry=_ScriptedTools([]),
-        )
-        events = []
-        async for ev in loop.run(messages=[{"role": "user", "content": "hi"}]):
-            events.append(ev)
-        # No gate, so no gate.state to check; just verify the events.
-        assert loop._gate is None
-        final_events = [ev for ev in events if isinstance(ev, FinalEvent)]
-        assert len(final_events) == 1
+# P6 Phase 6: legacy `_gate=None` path removed; test deleted accordingly.
+# (Was: test_legacy_path_unchanged_when_gate_none.)

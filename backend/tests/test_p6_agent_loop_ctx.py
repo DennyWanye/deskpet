@@ -1,10 +1,10 @@
-"""P6 Phase 4 — AgentLoop integration with ContextManager behind P6_ENABLE_GATE flag.
+"""P6 Phase 6 — AgentLoop integration with ContextManager (always on).
 
 See openspec/changes/p6-agent-loop-refactor/design.md §"模块 2: ContextManager"
 and §"AgentLoop 重构后接口".
 
 Tests cover:
-  * 4.1 constructor wiring (ctx_manager kwarg + flag-driven default)
+  * 4.1 constructor wiring (ctx_manager kwarg + auto-built default)
   * 4.2 record_tool_result delegates truncation to the ContextManager
   * 4.3 G1 regression — fetch_tool_result content is NOT truncated even
     when its body exceeds the legacy 4000-char threshold (proves
@@ -103,25 +103,16 @@ class TestAgentLoopConstructorCtx:
         )
         assert loop._ctx is ctx
 
-    def test_agentloop_creates_default_ctx_when_flag_on(self, monkeypatch):
-        """Flag set + no explicit ctx → AgentLoop builds a default
-        ContextManager."""
-        monkeypatch.setenv("P6_ENABLE_GATE", "1")
+    def test_agentloop_creates_default_ctx_when_none_provided(self):
+        """P6 Phase 6 — no explicit ctx kwarg → AgentLoop always builds a
+        default ContextManager. The legacy ``_ctx is None`` state is gone.
+        """
         loop = AgentLoop(
             llm_registry=_ScriptedLLM([]),
             tool_registry=_ScriptedTools([]),
         )
         assert loop._ctx is not None
         assert isinstance(loop._ctx, ContextManager)
-
-    def test_agentloop_ctx_none_when_flag_off(self, monkeypatch):
-        """Flag unset → no explicit ctx → _ctx is None (legacy path)."""
-        monkeypatch.delenv("P6_ENABLE_GATE", raising=False)
-        loop = AgentLoop(
-            llm_registry=_ScriptedLLM([]),
-            tool_registry=_ScriptedTools([]),
-        )
-        assert loop._ctx is None
 
 
 # ─────────────── 4.2 record_tool_result delegation ───────────────
