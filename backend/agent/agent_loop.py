@@ -32,6 +32,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol, 
 
 from agent import errors as agent_errors
 from agent.task_id import new_task_id
+from agent.context_manager import ContextManager
 from agent.termination import GateConfig, TerminationGate, TerminationReason
 from llm.budget import DailyBudget
 from llm.errors import LLMBudgetExceededError, LLMProviderError
@@ -392,6 +393,7 @@ class AgentLoop:
         activity_store: Optional[Any] = None,
         signature_repeat_threshold: Optional[int] = None,
         termination_gate: Optional[TerminationGate] = None,
+        context_manager: Optional[ContextManager] = None,
     ) -> None:
         self.llm = llm_registry
         self.tools = tool_registry
@@ -471,6 +473,30 @@ class AgentLoop:
                 )
             else:
                 self._gate = None
+
+        # P6 Phase 4 — ContextManager plumbing (feature-flagged).
+        #
+        # Mirrors the _gate logic above:
+        #   1. Caller injects ctx → use it.
+        #   2. P6_ENABLE_GATE truthy → build a default ContextManager.
+        #   3. Otherwise → self._ctx = None (legacy inline B1 path).
+        #
+        # When set, the tool-result write site delegates truncation to
+        # ctx.record_tool_result (which honours skip_truncation_for_tools
+        # — the G1 fix). When None, the legacy inline
+        # maybe_truncate_tool_result call runs unchanged.
+        if context_manager is not None:
+            self._ctx: Optional[ContextManager] = context_manager
+        else:
+            try:
+                from config import is_p6_gate_enabled as _flag_check_ctx
+                _ctx_flag_on = _flag_check_ctx()
+            except Exception:  # noqa: BLE001
+                _ctx_flag_on = False
+            if _ctx_flag_on:
+                self._ctx = ContextManager()
+            else:
+                self._ctx = None
 
     async def run(
         self,
@@ -566,6 +592,12 @@ class AgentLoop:
             # we can surface an actionable error (BLOCK) or pre-emptive
             # warning (WARN) instead of waiting for the model to choke
             # on context_length_exceeded.
+            #
+            # P6 Phase 4 — when self._ctx is set (feature flag on or
+            # explicit ContextManager injection), delegate to ctx.check_budget
+            # so chat handler + AgentLoop share one budget evaluator. The
+            # legacy inline path below preserves byte-identical behaviour
+            # when ctx is None.
             try:
                 from agent.token_budget import (
                     check_budget as _check_budget,
@@ -578,7 +610,13 @@ class AgentLoop:
                 if chain_mode and provider_chain:
                     _first = provider_chain[0]
                     _budget_model = getattr(_first, "model", None) or use_model
-                _budget = _check_budget(working_messages, model=_budget_model)
+                if self._ctx is not None:
+                    _resolved_model = _budget_model or "unknown"
+                    _budget = self._ctx.check_budget(
+                        working_messages, model=_resolved_model,
+                    )
+                else:
+                    _budget = _check_budget(working_messages, model=_budget_model)
                 if _budget.verdict is _BudgetCheck.BLOCK:
                     logger.error(
                         "p5s2_token_budget_block sid=%s tid=%s iter=%d "
@@ -587,6 +625,13 @@ class AgentLoop:
                         _budget.estimated_tokens, _budget.context_window,
                         _budget.ratio,
                     )
+                    # P6 Phase 4 — record the same reason on the gate so
+                    # summary() reflects the real cause (otherwise the
+                    # gate would stay "running").
+                    if self._gate is not None:
+                        self._gate.record_error(
+                            TerminationReason.CONTEXT_BUDGET_BLOCK
+                        )
                     yield ErrorEvent(
                         type="error",
                         task_id=tid,
@@ -1146,12 +1191,23 @@ class AgentLoop:
                 # keeps head + tail visible + a ref_id the LLM can
                 # fetch later. Original result_str stays in the
                 # ToolResultEvent above so the UI sees the full body.
-                from agent.tool_result_truncator import (
-                    maybe_truncate_tool_result as _maybe_truncate,
-                )
-                _content_for_history, _trunc_ref = _maybe_truncate(
-                    result_str, store=self._tool_result_refs
-                )
+                #
+                # P6 Phase 4 — when self._ctx is set, delegate to
+                # ctx.record_tool_result so the skip_truncation_for_tools
+                # set (G1 fix) is honoured. When None, fall back to the
+                # inline maybe_truncate_tool_result call (legacy path,
+                # byte-identical behaviour).
+                if self._ctx is not None:
+                    _content_for_history, _trunc_ref = self._ctx.record_tool_result(
+                        tool_name=tc.name, result=result_str,
+                    )
+                else:
+                    from agent.tool_result_truncator import (
+                        maybe_truncate_tool_result as _maybe_truncate,
+                    )
+                    _content_for_history, _trunc_ref = _maybe_truncate(
+                        result_str, store=self._tool_result_refs
+                    )
                 if _trunc_ref is not None:
                     logger.info(
                         "p5s2_tool_result_truncated sid=%s tool=%s "
