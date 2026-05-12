@@ -12,6 +12,28 @@ import paths as _paths
 logger = logging.getLogger(__name__)
 
 
+# ─── P6 agent-loop-refactor — process-wide feature flag ─────────
+_P6_TRUTHY = frozenset({"1", "true", "yes"})
+
+
+def is_p6_gate_enabled() -> bool:
+    """P6 agent-loop-refactor — process-wide feature flag.
+
+    Reads ``P6_ENABLE_GATE`` from the environment on every call so the
+    flag can be flipped at runtime (no restart needed) — useful in tests
+    and for quick rollback if the new loop misbehaves in production.
+
+    Truthy values (case-insensitive, whitespace-stripped): ``"1"``,
+    ``"true"``, ``"yes"``. Anything else, including empty string and
+    unset, returns False.
+
+    Lives in ``config`` so callers anywhere in the backend can import it
+    without pulling agent/loop dependencies through ``main``.
+    """
+    raw = os.environ.get("P6_ENABLE_GATE", "")
+    return raw.strip().lower() in _P6_TRUTHY
+
+
 def resolve_cloud_api_key() -> str | None:
     """P2-1-S3: source of truth for the cloud LLM API key.
 
