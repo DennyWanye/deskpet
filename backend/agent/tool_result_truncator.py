@@ -64,6 +64,27 @@ DEFAULT_TAIL = 500
 DEFAULT_MAX_ENTRIES = 256
 
 
+# Module-level singleton — used by BOTH:
+#   1. AgentLoop, which truncates long tool_result bodies before they
+#      land in working_messages.
+#   2. The ``fetch_tool_result`` tool, which the LLM calls to retrieve
+#      the full body (or a slice) by ref_id.
+#
+# A module singleton (vs. per-AgentLoop instance) lets the fetch tool
+# resolve refs without plumbing the store through tool dispatch. The
+# store is keyed by random ref_id so cross-session collision is
+# astronomically unlikely; LRU eviction (256 entries) bounds memory.
+_GLOBAL_REF_STORE: "ToolResultRefStore" | None = None
+
+
+def get_global_ref_store() -> "ToolResultRefStore":
+    """Lazy-init and return the module singleton."""
+    global _GLOBAL_REF_STORE
+    if _GLOBAL_REF_STORE is None:
+        _GLOBAL_REF_STORE = ToolResultRefStore()
+    return _GLOBAL_REF_STORE
+
+
 class ToolResultRefStore:
     """LRU-backed store of full tool_result bodies keyed by ref_id.
 

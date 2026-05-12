@@ -221,7 +221,7 @@ class SupervisorAgent:
         nudge_queue_push: Optional[NudgeQueuePush] = None,
         broadcast: Optional[AlertBroadcast] = None,
         audit: Optional[HintAuditFn] = None,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 120.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._provider = provider

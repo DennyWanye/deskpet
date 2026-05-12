@@ -62,6 +62,33 @@ def write_file(args: dict[str, Any], task_id: str = "") -> str:
             got=type(content).__name__,
         )
 
+    # P5-S2 G3 (2026-05-12): hard cap content length at the tool layer.
+    # Models (deepseek-v4-pro etc.) corrupt JSON escapes in long tool_call
+    # args ~30-40% of the time when streaming — we've observed parse_ok=
+    # False on 6882/7150/7552/7850-char write_file args in production.
+    # Even when the JSON does parse cleanly, the streaming reliability
+    # drops sharply past ~4KB. Reject early with explicit append-mode
+    # guidance so the LLM splits the call instead of wasting a turn.
+    # The error envelope is classified `permanent_tool_error` by the
+    # agent loop, which short-circuits the iteration — no wasted LLM
+    # round-trip generating another doomed 7KB args.
+    _CONTENT_HARD_CAP = 4096
+    if len(content) > _CONTENT_HARD_CAP:
+        return _err(
+            "content too long",
+            f"content 长度 {len(content)} > {_CONTENT_HARD_CAP} 字符上限。"
+            "超过 4KB 的单次 write_file 在流式输出中 JSON 转义失败率很高，"
+            "我已拒绝以避免浪费一轮 LLM 调用。请改用以下模式：\n"
+            "  1. 第一次：write_file(path=..., content=<前 ≤4KB 部分>, mode='write')\n"
+            "  2. 后续：write_file(path=..., content=<下一段>, mode='append')\n"
+            "  3. 重复 append 直到完成。\n"
+            "三个 3KB 的调用比一个 9KB 的调用快、稳、便宜。",
+            content_length=len(content),
+            limit=_CONTENT_HARD_CAP,
+            suggested_chunks=max(1, (len(content) + _CONTENT_HARD_CAP - 1) // _CONTENT_HARD_CAP),
+            alternatives=["split into multiple write_file calls with mode='append'"],
+        )
+
     p = Path(path)
     if p.exists() and not overwrite:
         return _err(

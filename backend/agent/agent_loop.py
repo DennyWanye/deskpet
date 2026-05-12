@@ -432,13 +432,14 @@ class AgentLoop:
             if signature_repeat_threshold is not None
             else _REPEAT_THRESHOLD
         )
-        # P5-S2 B1: per-AgentLoop tool-result-ref store. Long tool_results
+        # P5-S2 B1: shared global tool-result-ref store. Long tool_results
         # are replaced inline with a "[truncated, ref_id=X]" marker and
-        # the full body is kept here. Future ``fetch_tool_result`` tool
-        # uses this to retrieve slices on demand. Per-loop scope keeps
-        # the store from leaking across sessions.
-        from agent.tool_result_truncator import ToolResultRefStore as _TRRStore
-        self._tool_result_refs = _TRRStore()
+        # the full body is kept in the module singleton — the same one
+        # the ``fetch_tool_result`` tool reads from when the LLM wants
+        # to retrieve the original. Cross-AgentLoop sharing is safe
+        # because ref_ids are 8-char random tokens; LRU caps memory.
+        from agent.tool_result_truncator import get_global_ref_store
+        self._tool_result_refs = get_global_ref_store()
 
     async def run(
         self,

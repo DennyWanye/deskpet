@@ -767,7 +767,8 @@ try:
                 agent_handler=_agent_handler,
                 agent_schema=_agent_schema,
             )
-            logger.info("p4_s22_code_tools_registered", count=5)
+            # P5-S2 G1: count bumped 5→6 — added fetch_tool_result
+            logger.info("p4_s22_code_tools_registered", count=6)
         except Exception as _ct_exc:  # noqa: BLE001
             logger.warning(
                 "p4_s22_code_tools_register_failed",
@@ -1111,7 +1112,12 @@ async def lifespan(app: FastAPI):
                 nudge_queue_push=_push_hint,
                 broadcast=_broadcast_supervisor_alert,
                 audit=_audit_action,
-                timeout_seconds=float(_sup_cfg.get("llm_timeout_seconds", 30.0)),
+                # P5-S2 G2 (2026-05-12): 30s→120s. supervisor was timing out
+                # on deepseek-v4-pro thinking-mode calls — the model takes
+                # 30-60s just thinking before emitting the 300-token JSON
+                # spec. 120s covers reasoning + transit + chinzy 15s SSE
+                # keep-alive. config knob name unchanged for backward compat.
+                timeout_seconds=float(_sup_cfg.get("llm_timeout_seconds", 120.0)),
             )
             service_context.register("supervisor", _supervisor_agent)
 

@@ -23,6 +23,10 @@ from typing import Any
 from .glob_tool import glob_tool
 from .grep_tool import grep_tool
 from .web_search_tool import web_search
+from .fetch_tool_result_tool import (
+    fetch_tool_result_handler,
+    FETCH_TOOL_RESULT_SCHEMA,
+)
 
 
 def _schema(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -117,6 +121,19 @@ def register_code_tools(
         ),
         handler=web_search,
         permission_category="network",
+    )
+
+    # P5-S2 G1: fetch_tool_result — retrieve full body of a truncated
+    # tool_result via the ref_id embedded in the "[truncated …]" marker.
+    # Companion to B1 (tool_result_truncator); without this the marker
+    # advertises a capability that doesn't exist and the LLM gets
+    # HallucinationError when it tries to call it.
+    registry.register(
+        name="fetch_tool_result",
+        toolset="code",
+        schema=FETCH_TOOL_RESULT_SCHEMA,
+        handler=fetch_tool_result_handler,
+        permission_category="read_file",
     )
 
     if todo_write_handler is not None and todo_write_schema is not None:

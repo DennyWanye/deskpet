@@ -57,10 +57,18 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
         toolset="os",
         schema=_schema(
             "write_file",
-            "Create a new file. Refuses to overwrite unless overwrite=true. Creates parent dirs.",
+            "Create a new file. Refuses to overwrite unless overwrite=true. Creates parent dirs. "
+            "IMPORTANT: content is HARD-CAPPED at 4096 characters per call (G3 reliability fix). "
+            "For longer files, split into multiple calls: first call with content=<part 1>, "
+            "then subsequent calls with mode='append' for each chunk. Calls over 4KB are "
+            "rejected before execution to avoid streaming JSON-escape failures.",
             {
                 "path": {"type": "string", "description": "Absolute file path"},
-                "content": {"type": "string"},
+                "content": {
+                    "type": "string",
+                    "description": "File content. MAX 4096 chars per call — split longer files into append-mode chunks.",
+                    "maxLength": 4096,
+                },
                 "overwrite": {"type": "boolean", "default": False},
             },
             ["path", "content"],
