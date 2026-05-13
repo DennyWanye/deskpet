@@ -125,7 +125,7 @@ class OpenAICompatibleProvider:
         messages: list[dict[str, str]],
         *,
         temperature: float | None = None,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
     ) -> AsyncIterator[str]:
         temp = temperature if temperature is not None else self.temperature
         # P2-1-S8: reset per-call so stale data from the previous stream
@@ -201,7 +201,7 @@ class OpenAICompatibleProvider:
         messages: list[dict],
         *,
         tools: list[dict] | None = None,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         temperature: float | None = None,
         response_format: dict | None = None,
     ) -> dict:
@@ -256,7 +256,7 @@ class OpenAICompatibleProvider:
         messages: list[dict],
         *,
         tools: list[dict] | None = None,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         temperature: float | None = None,
         response_format: dict | None = None,
     ) -> dict:
@@ -565,7 +565,7 @@ class OpenAICompatibleProvider:
         messages: list[dict],
         *,
         tools: list[dict] | None = None,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         temperature: float | None = None,
         response_format: dict | None = None,
     ):
@@ -1173,20 +1173,89 @@ class OpenAICompatibleProvider:
                     parsed = _json.loads(args_buf)
                     args = parsed if isinstance(parsed, dict) else {}
                 except _json.JSONDecodeError as _exc:
+                    # P6 bugfix 2026-05-14 (live-test): thinking-mode LLMs
+                    # writing React/JS code commonly escape single quotes
+                    # as ``\'`` — invalid JSON (single quotes don't need
+                    # escaping). The whole 6KB write_file tool_call then
+                    # fails parse and the agent gets stuck retrying the
+                    # same broken JSON until circuit-breaker opens. Try
+                    # cheap repairs before giving up: any successful
+                    # repair short-circuits to a valid args dict.
                     args = {}
                     args_parse_error = str(_exc)
-                    # Dump the FULL args_buf (capped at 5KB to keep log
-                    # readable) when parse fails. This is the only way to
-                    # diagnose model-side JSON-escape bugs vs proxy-side
-                    # truncation. Pure observation; no behaviour change.
-                    logger.warning(
-                        "p5s2_tool_call_args_malformed",
-                        idx=idx,
-                        name=buf.get("name", "") or "",
-                        args_len=len(args_buf),
-                        args_full=args_buf[:5000],
-                        parse_error=args_parse_error,
-                    )
+                    repaired: dict | None = None
+                    repair_label: str | None = None
+                    # Common LLM escape mistakes (safe to apply because
+                    # valid JSON never contains these sequences). Try
+                    # repairs in escalating aggressiveness; first success
+                    # short-circuits.
+                    #
+                    # Repair 1 (cheap, common): ``\'`` → ``'`` —
+                    #   thinking-mode LLMs writing React/JS code routinely
+                    #   pseudo-escape apostrophes.
+                    repair_candidates: list[tuple[str, str]] = []
+                    if "\\'" in args_buf:
+                        repair_candidates.append((
+                            "stripped_backslash_apostrophe",
+                            args_buf.replace("\\'", "'"),
+                        ))
+                    # Repair 2 (broad, regex): drop any invalid ``\X``
+                    #   escape (X not in legal JSON escape set
+                    #   ``"\/ bfnrtu``). This catches \', \;, \ , \., etc.
+                    #   Crucially, leaves legal escapes (\\, \", \n, \t,
+                    #   \uXXXX, …) intact because the regex's negated
+                    #   class excludes the legal followers.
+                    import re as _re
+                    _invalid_esc = _re.compile(r'\\([^"\\/bfnrtu])')
+                    if _invalid_esc.search(args_buf):
+                        repair_candidates.append((
+                            "stripped_invalid_escapes",
+                            _invalid_esc.sub(r"\1", args_buf),
+                        ))
+                    # Repair 3 (last resort): permissive parse with
+                    #   strict=False — accepts unescaped control chars
+                    #   (tabs, newlines) inside strings. Doesn't fix
+                    #   bad escapes but does handle raw \n in content.
+                    repair_candidates.append((
+                        "strict_false",
+                        args_buf,  # decoder will use strict=False
+                    ))
+                    for _label, _cand in repair_candidates:
+                        try:
+                            if _label == "strict_false":
+                                _r = _json.JSONDecoder(strict=False).decode(_cand)
+                            else:
+                                _r = _json.loads(_cand)
+                            if isinstance(_r, dict):
+                                repaired = _r
+                                repair_label = _label
+                                break
+                        except _json.JSONDecodeError:
+                            continue
+                    if repaired is not None:
+                        args = repaired
+                        args_parse_error = None
+                        logger.info(
+                            "p5s2_tool_call_args_repaired",
+                            idx=idx,
+                            name=buf.get("name", "") or "",
+                            args_len=len(args_buf),
+                            repair=repair_label,
+                            orig_parse_error=str(_exc),
+                        )
+                    else:
+                        # Dump the FULL args_buf (capped at 5KB to keep log
+                        # readable) when repair also fails. This is the only
+                        # way to diagnose new model-side JSON-escape bugs
+                        # vs proxy-side truncation.
+                        logger.warning(
+                            "p5s2_tool_call_args_malformed",
+                            idx=idx,
+                            name=buf.get("name", "") or "",
+                            args_len=len(args_buf),
+                            args_full=args_buf[:5000],
+                            parse_error=args_parse_error,
+                        )
             tc_dict = {
                 "id": buf["id"] or f"call_{idx}",
                 "name": buf["name"],

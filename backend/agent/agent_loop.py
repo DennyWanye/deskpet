@@ -657,7 +657,17 @@ class AgentLoop:
                             raw = await prov.chat_with_tools(
                                 working_messages,
                                 tools=tool_schemas or None,
-                                max_tokens=int(llm_kwargs.get("max_tokens", 2048)),
+                                # P6 bugfix 2026-05-14 (live-test):
+                                # bumped default 2048 → 8192. 2048 was
+                                # too tight for code-mode write_file:
+                                # 6KB React file ≈ 2000+ tokens →
+                                # output truncated mid-string →
+                                # "Unterminated string" JSON parse fail
+                                # → permanent_tool_error → circuit
+                                # breaker → user stuck. 8192 leaves
+                                # comfortable headroom (~24KB output)
+                                # without 显著 cost spike on chinzy.
+                                max_tokens=int(llm_kwargs.get("max_tokens", 8192)),
                                 temperature=llm_kwargs.get("temperature"),
                                 response_format=llm_kwargs.get("response_format"),
                             )
@@ -1224,21 +1234,57 @@ class AgentLoop:
                 "tool=%s args_len=%d parse_error=%s",
                 tc.name, len(args_raw), tc.args_parse_error[:200],
             )
+            # P6 bugfix 2026-05-14 (live-test): when args are LONG
+            # (>3KB) and the parse error is "Unterminated string", the
+            # actual cause is almost always **output truncation by the
+            # LLM proxy's max_tokens**, NOT escape mishaps. The model
+            # didn't finish generating the JSON. Telling it to "fix
+            # escapes" is misleading — it'll regenerate the same too-
+            # long output and fail again. Instead tell it to shorten:
+            # write the file in smaller chunks (use edit_file's
+            # incremental mode, or write a stub then iterate).
+            is_truncation = (
+                len(args_raw) > 3000
+                and "Unterminated string" in (tc.args_parse_error or "")
+            )
+            if is_truncation:
+                hint_text = (
+                    f"你刚发的 tool_call.arguments 太长 ({len(args_raw)} 字符) 被 LLM "
+                    "输出 token 上限截断了，JSON 不完整无法解析。**不要重试同样的 "
+                    "tool_call** —— 同样会再被截断。请改用以下任一策略：\n"
+                    "1) write_file 一次只写不超过 3000 字符（约 80 行代码），"
+                    "如果文件大就分多次：先 write_file 写主结构+ TODO 注释，再 "
+                    "用 edit_file/write_file 多次追加补完。\n"
+                    "2) 把大文件拆成多个小文件（按职责分组件 / hook / util），"
+                    "每个文件 < 80 行。\n"
+                    "3) 如果只是修改局部，用 edit_file 而非 write_file 整覆盖。"
+                )
+            else:
+                hint_text = (
+                    f"你刚发的 tool_call.arguments 不是合法 JSON: "
+                    f"{tc.args_parse_error}. 你写了 {len(args_raw)} 字符的 args, "
+                    "但解析失败。最常见原因：长字符串里 \\n / \\\" / \\\\ "
+                    "没正确转义。请重新生成同一个 tool_call，"
+                    "确保 JSON 严格合法（特别是 multi-line content 字段）。"
+                )
             return _json.dumps(
                 {
                     "ok": False,
-                    "error": "tool_call_args_malformed_json",
-                    "hint": (
-                        f"你刚发的 tool_call.arguments 不是合法 JSON: "
-                        f"{tc.args_parse_error}. 你写了 {len(args_raw)} 字符的 args, "
-                        "但解析失败。最常见原因：长字符串里 \\n / \\\" / \\\\ "
-                        "没正确转义。请重新生成同一个 tool_call，"
-                        "确保 JSON 严格合法（特别是 multi-line content 字段）。"
+                    "error": (
+                        "tool_call_args_truncated_by_max_tokens"
+                        if is_truncation
+                        else "tool_call_args_malformed_json"
                     ),
+                    "hint": hint_text,
                     "tool": tc.name,
                     "args_raw_preview": preview,
                     "parse_error": tc.args_parse_error,
                     "args_len": len(args_raw),
+                    "likely_cause": (
+                        "max_tokens_truncation"
+                        if is_truncation
+                        else "escape_error"
+                    ),
                 },
                 ensure_ascii=False,
             )
