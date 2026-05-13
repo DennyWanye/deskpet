@@ -264,10 +264,19 @@ function dispatch(msg: any) {
       // todo_write_tool's broadcaster sends payload.session_id =
       // code_session_id (the per-project sid). The store keys by
       // base_session_id. Reverse-map: find any session whose
-      // code_session_id matches; if none, fall back to active_sid.
+      // code_session_id matches.
+      //
+      // P6 bugfix 2026-05-13: pre-fix, a missing reverse-map fell
+      // back to `sid` (active_sid), which silently mis-attached
+      // todos from a non-project session (e.g. CLI ws clients,
+      // p6_live_test, system probes) onto whichever project tile
+      // happened to be focused. The user saw "小说网站" tile showing
+      // todos like "list G:/projects/deskpet/backend/agent/" — those
+      // came from p6_live_test, not 小说网站. Drop instead of cross-
+      // contaminate.
       const items = msg.payload?.items ?? [];
       const code_sid = msg.payload?.session_id;
-      let target_base_sid = sid;
+      let target_base_sid: string | null = null;
       if (code_sid) {
         for (const [base_sid, st] of Object.entries(store.sessions)) {
           if (st.code_session_id === code_sid) {
@@ -276,7 +285,19 @@ function dispatch(msg: any) {
           }
         }
       }
-      store.upsert_todos(target_base_sid, items);
+      if (target_base_sid) {
+        store.upsert_todos(target_base_sid, items);
+      } else {
+        // No matching code session — silently drop. This is the
+        // correct behavior for non-project todos (e.g. companion-mode
+        // chat or external test scripts). Logging at debug level so
+        // genuine wiring bugs (lost code_session_id) are still
+        // discoverable.
+        console.debug(
+          "[code-panel] code_todo_update dropped: no matching code_session_id",
+          code_sid,
+        );
+      }
       break;
     }
     case "code_mode_state": {

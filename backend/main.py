@@ -2713,7 +2713,14 @@ async def control_channel(ws: WebSocket):
                     _vw = service_context.get("vector_worker")
                     _sdb = service_context.get("session_db")
                     _user_msg_id: int | None = None
-                    if _sdb is not None:
+                    # P6 bugfix 2026-05-13 (UI visible bug): 不要把 supervisor /
+                    # auto-resume 用的 sentinel 文本 (`<<auto_resume>>`,
+                    # `<<supervisor_followup>>`) 当用户消息写进 SessionDB —— 否则
+                    # code panel 会把它们渲染成 "You: <<auto_resume>>" 让用户困惑。
+                    # 这些 sentinel 只是触发 token，真正的 hint 走另外的 system msg
+                    # 注入路径，pop_hint() 会把上下文喂给 LLM。
+                    _is_sentinel = (_text or "").startswith("<<") and (_text or "").endswith(">>")
+                    if _sdb is not None and not _is_sentinel:
                         try:
                             _user_msg_id = await _sdb.append_message(
                                 session_id=_sid, role="user", content=_text,

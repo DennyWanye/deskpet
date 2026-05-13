@@ -359,13 +359,39 @@ function Tile({
   const todos_done = todos.filter((t) => t.status === "completed").length;
   // Last 4 messages, chronological. Hide tool_call/tool_result clutter
   // — keep just user / assistant / error / streaming previews.
+  //
+  // P6 bugfix 2026-05-13: also hide synthetic sentinel triggers
+  // (`<<auto_resume>>`, `<<supervisor_followup>>`) that pre-fix
+  // backend wrote into SessionDB as `role=user`. The backend write
+  // path is now patched, but historical rows still surface them and
+  // the UI must never render them as "You:" — they're internal
+  // dispatch tokens, not user speech.
+  const is_sentinel = (text: unknown): boolean =>
+    typeof text === "string" &&
+    /^<<[a-z_]+>>$/i.test(text.trim());
+  // P6 bugfix 2026-05-13: thinking-mode models (deepseek-v4-pro, GLM-4.5,
+  // chinzy proxy etc.) emit `<think>...</think>` chain-of-thought inline
+  // in the assistant `content` field. Backend supervisor/plan already
+  // strip these for JSON parsing, but the chat stream doesn't — so users
+  // see "AI: <think>Let me check the ChapterRead page…</think>" raw.
+  // Strip on the render side as a defensive layer; backend may also
+  // start stripping pre-stream later.
+  const strip_think = (text: unknown): string => {
+    if (typeof text !== "string") return "";
+    // Remove completed <think>...</think> blocks (greedy across newlines).
+    let out = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
+    // Handle in-progress streaming: a leading <think> with no close yet.
+    out = out.replace(/<think>[\s\S]*$/i, "");
+    return out.trim();
+  };
   const visible = messages
     .filter(
       (m) =>
-        m.role === "user" ||
-        m.role === "assistant" ||
-        m.role === "assistant_delta" ||
-        m.role === "error",
+        (m.role === "user" ||
+          m.role === "assistant" ||
+          m.role === "assistant_delta" ||
+          m.role === "error") &&
+        !(m.role === "user" && is_sentinel(m.text)),
     )
     .slice(-3);
 
@@ -594,8 +620,15 @@ function Tile({
               <strong style={{ fontSize: 10, color: "#94a3b8", marginRight: 4 }}>
                 {m.role === "user" ? "You" : m.role === "error" ? "Err" : "AI"}:
               </strong>
-              {(m.text ?? "").slice(0, 200)}
-              {(m.text ?? "").length > 200 ? "…" : ""}
+              {(() => {
+                const display = m.role === "user" ? (m.text ?? "") : strip_think(m.text);
+                return (
+                  <>
+                    {display.slice(0, 200)}
+                    {display.length > 200 ? "…" : ""}
+                  </>
+                );
+              })()}
             </div>
           ))
         )}
