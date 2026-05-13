@@ -27,7 +27,9 @@ def test_default_config_values() -> None:
     assert cfg.max_turns == 50
     assert cfg.tool_budget_hard == 40
     assert cfg.wall_clock_seconds == 600.0
-    assert cfg.per_tool_max_consecutive == 5
+    # Bumped 5 → 8 after live-test bugfix 2026-05-13 (args-aware counter
+    # makes 5 too tight; 8 leaves comfortable headroom).
+    assert cfg.per_tool_max_consecutive == 8
     assert cfg.max_budget_usd is None
 
 
@@ -170,6 +172,61 @@ def test_per_tool_blocks_at_threshold() -> None:
     # Now consec == 5, next allows_tool blocks.
     assert gate.state.per_tool_consecutive["write_file"] == 5
     ok, reason = gate.allows_tool("write_file")
+    assert ok is False
+    assert reason is TerminationReason.HALLUCINATION_DETECTED
+
+
+# ---------------------------------------------------------------------------
+# 1.3b — Args-aware per-tool counter (P6 bugfix 2026-05-13)
+# ---------------------------------------------------------------------------
+
+
+def test_per_tool_consecutive_args_aware_different_args_resets() -> None:
+    """P6 bugfix 2026-05-13 (live-test regression): same tool with DIFFERENT
+    args does NOT count as consecutive — it's legitimate exploration.
+
+    Pre-fix bug: 5 reads of 5 different files triggered HALLUCINATION_
+    DETECTED because the counter ignored args. Now the counter resets to 1
+    when args differ.
+    """
+    gate = TerminationGate(GateConfig(per_tool_max_consecutive=3))
+    for i in range(5):
+        ok, _ = gate.allows_tool("read_file")
+        assert ok, f"different-path read {i+1} should be allowed"
+        gate.record_tool_call("read_file", args={"path": f"/tmp/file{i}.txt"})
+    # Counter must NEVER cross 1 — each call has unique args
+    assert gate.state.per_tool_consecutive["read_file"] == 1
+    # And still allowed for next round
+    ok, _ = gate.allows_tool("read_file")
+    assert ok is True
+
+
+def test_per_tool_consecutive_args_aware_same_args_still_blocks() -> None:
+    """Real death loop (same tool + same args repeated) still triggers
+    HALLUCINATION_DETECTED — this is the actual symptom the cap protects.
+    """
+    gate = TerminationGate(GateConfig(per_tool_max_consecutive=3))
+    same_args = {"path": "/tmp/stuck.txt"}
+    for _ in range(3):
+        ok, _ = gate.allows_tool("read_file")
+        assert ok
+        gate.record_tool_call("read_file", args=same_args)
+    assert gate.state.per_tool_consecutive["read_file"] == 3
+    ok, reason = gate.allows_tool("read_file")
+    assert ok is False
+    assert reason is TerminationReason.HALLUCINATION_DETECTED
+
+
+def test_per_tool_consecutive_none_args_treated_consistently() -> None:
+    """Legacy callers that pass no args (or args=None) still get a stable
+    signature; the existing "5 record_tool_call(name) → block" tests
+    (above) rely on this behaviour.
+    """
+    gate = TerminationGate(GateConfig(per_tool_max_consecutive=3))
+    for _ in range(3):
+        gate.record_tool_call("ping")  # no args
+    assert gate.state.per_tool_consecutive["ping"] == 3
+    ok, reason = gate.allows_tool("ping")
     assert ok is False
     assert reason is TerminationReason.HALLUCINATION_DETECTED
 

@@ -1071,7 +1071,11 @@ class AgentLoop:
                         detail=f"Termination gate blocked tool {tc.name}",
                     )
                     return
-                self._gate.record_tool_call(tc.name)
+                # P6 bugfix 2026-05-13: pass args so the per-tool consecutive
+                # counter is args-aware (5 reads of FIVE DIFFERENT files no
+                # longer trigger HALLUCINATION_DETECTED — only repeating the
+                # same path triggers).
+                self._gate.record_tool_call(tc.name, args=tc.arguments)
                 # P6 Phase 6 — tools_used_count was the legacy soft-cap
                 # counter; the gate now tracks tools_used in its state.
                 # Kept as a local var for the (still-active) soft selfcheck

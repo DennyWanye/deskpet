@@ -320,20 +320,31 @@ class TestAgentLoopGateAllowsTool:
 
     @pytest.mark.asyncio
     async def test_run_per_tool_consecutive_break(self):
-        """LLM calls 'write_file' 5 times in a row; per_tool_max_consecutive=5
-        (default). On the 6th attempt, allows_tool returns
-        (False, HALLUCINATION_DETECTED) — loop yields ErrorEvent(hallucination)
-        and returns."""
+        """LLM calls 'write_file' 5 times in a row WITH IDENTICAL ARGS;
+        per_tool_max_consecutive=5. On the 6th attempt, allows_tool
+        returns (False, HALLUCINATION_DETECTED) — loop yields
+        ErrorEvent(hallucination) and returns.
+
+        P6 bugfix 2026-05-13: counter is args-aware, so this test uses the
+        SAME args each iteration to actually trigger the death-loop cap.
+        Different args (legitimate exploration) are tested in
+        test_p6_termination_gate.py::test_per_tool_consecutive_args_aware_*.
+        """
         gate = TerminationGate(GateConfig(
             tool_budget_hard=100,
             max_turns=50,
             per_tool_max_consecutive=5,
         ))
 
+        # Same args every iteration — args-aware counter treats this as
+        # consecutive same-call, which is what the hallucination cap
+        # protects against.
+        STUCK_ARGS = {"path": "/tmp/stuck.txt", "content": "x"}
+
         def factory(n: int) -> ChatResponse:
             return ChatResponse(
                 content="",
-                tool_calls=[ToolCall(id=f"c{n}", name="write_file", arguments={"i": n})],
+                tool_calls=[ToolCall(id=f"c{n}", name="write_file", arguments=STUCK_ARGS)],
                 stop_reason="tool_use",
                 usage=ChatUsage(),
                 model="stub",

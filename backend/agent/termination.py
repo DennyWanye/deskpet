@@ -16,6 +16,8 @@ Design references:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -58,7 +60,12 @@ class GateConfig:
     tool_budget_hard: int = 40
     wall_clock_seconds: float = 600.0  # NEW: 10min hard break
     max_budget_usd: float | None = None
-    per_tool_max_consecutive: int = 5  # NEW: same tool 5x in a row → break
+    # P6 bugfix 2026-05-13 (live-test): bumped 5 → 8. Five was too tight —
+    # legitimate "list_directory + glob + read 5 different files" sequences
+    # frequently hit it. The counter is now ALSO args-aware (see
+    # record_tool_call), so 5 reads of FIVE DIFFERENT files no longer count
+    # as consecutive — only 8 reads of the SAME path triggers the cap.
+    per_tool_max_consecutive: int = 8
 
 
 @dataclass
@@ -69,8 +76,13 @@ class GateState:
     turns_used: int = 0
     tools_used: int = 0
     cost_usd: float = 0.0
-    # Per-tool consecutive counter (LangGraph lesson)
+    # Per-tool consecutive counter (LangGraph lesson). The COUNT is keyed
+    # by tool name; _per_tool_last_sig holds the args-signature of the most
+    # recent call so we can distinguish "read_file × 5 same path" (real
+    # death loop) from "read_file × 5 different paths" (legitimate
+    # exploration).
     per_tool_consecutive: dict[str, int] = field(default_factory=dict)
+    _per_tool_last_sig: dict[str, str] = field(default_factory=dict, repr=False)
     # Why did the last iteration continue? (Hermes-inspired)
     last_transition: str = "init"
     # Set True on first terminate(); idempotent thereafter
@@ -140,15 +152,52 @@ class TerminationGate:
         self.state.turns_used += 1
         self.state.cost_usd += cost_delta_usd
 
-    def record_tool_call(self, tool_name: str) -> None:
+    def record_tool_call(self, tool_name: str, *, args: Any = None) -> None:
+        """Record a tool dispatch.
+
+        ``args`` is optional but recommended — when supplied, the per-tool
+        consecutive counter only increments if the args match the previous
+        call to the same tool. Different args reset the counter to 1.
+
+        Rationale: pre-fix (P6 v1) the counter was name-only, which caused
+        false "hallucination" detections on legitimate sequential reads of
+        different files (e.g. ``read_file A.py``, ``read_file B.py``, ...).
+        Args-aware matching distinguishes a death loop (same args repeated)
+        from systematic exploration (different args each call).
+        """
         self.state.tools_used += 1
-        self.state.per_tool_consecutive[tool_name] = (
-            self.state.per_tool_consecutive.get(tool_name, 0) + 1
-        )
+        sig = self._args_signature(args)
+        last_sig = self.state._per_tool_last_sig.get(tool_name)
+        if last_sig is not None and last_sig == sig:
+            # Same tool + same args → count up
+            self.state.per_tool_consecutive[tool_name] = (
+                self.state.per_tool_consecutive.get(tool_name, 0) + 1
+            )
+        else:
+            # New call (different args, or first call to this tool) → reset to 1.
+            self.state.per_tool_consecutive[tool_name] = 1
+            self.state._per_tool_last_sig[tool_name] = sig
         # Any other tool call resets that other tool's consecutive counter.
         for other in list(self.state.per_tool_consecutive.keys()):
             if other != tool_name:
                 self.state.per_tool_consecutive[other] = 0
+                self.state._per_tool_last_sig.pop(other, None)
+
+    @staticmethod
+    def _args_signature(args: Any) -> str:
+        """Stable 16-char hash of args for consecutive-call detection.
+
+        ``None`` and unhashable args fall back to a string repr — both still
+        produce stable signatures that won't accidentally collide with real
+        json-serializable args.
+        """
+        if args is None:
+            return "<none>"
+        try:
+            payload = json.dumps(args, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            payload = repr(args)
+        return hashlib.md5(payload.encode("utf-8", errors="replace")).hexdigest()[:16]
 
     def record_final_answer(self) -> None:
         """Called when LLM emits stop_reason=end_turn."""
