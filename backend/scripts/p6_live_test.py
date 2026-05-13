@@ -104,11 +104,12 @@ async def main() -> int:
             elif mtype == "provider_chain_fallback":
                 print(f"  [fallback] {payload.get('from_')} → {payload.get('to')}: {payload.get('reason')}")
             elif mtype == "chat_v2_final":
-                print(f"  [final] stop_reason={payload.get('stop_reason')} content_len={len(payload.get('content') or '')}")
-                if payload.get("stop_reason") == "end_turn":
-                    saw_terminate = True
-                    terminate_reason = "end_turn"
-                    break
+                # 后端 payload.text (与 ws.ts:201 一致); chat_v2_final 即 end_turn
+                final_text = payload.get("text") or payload.get("content") or ""
+                print(f"  [final] text_len={len(final_text)}")
+                saw_terminate = True
+                terminate_reason = "end_turn"
+                break
             elif mtype == "chat_v2_error":
                 reason = payload.get("reason")
                 detail = (payload.get("detail") or "")[:200]

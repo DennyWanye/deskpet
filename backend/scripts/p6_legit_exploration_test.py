@@ -28,6 +28,13 @@ except ImportError:
     print("Need websockets: pip install websockets")
     sys.exit(2)
 
+# Windows: stdout buffering hides progress when piped/background-run.
+# Force line-buffered so tail-style log inspection sees output as it happens.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 
 SECRET = os.environ.get("DESKPET_SECRET", "")
 if not SECRET:
@@ -94,12 +101,13 @@ async def main() -> int:
             elif mtype == "tool_result":
                 pass
             elif mtype == "chat_v2_final":
-                stop = payload.get("stop_reason")
-                print(f"  [final] stop_reason={stop} content_len={len(payload.get('content') or '')}")
-                if stop == "end_turn":
-                    saw_terminate = True
-                    terminate_reason = "end_turn"
-                    break
+                # 后端 payload 字段是 text (与 tauri-app/src/code-panel/ws.ts:201 一致)，
+                # 不是 content；不带 stop_reason，因为 final 本身意味着 end_turn。
+                final_text = payload.get("text") or payload.get("content") or ""
+                print(f"  [final] text_len={len(final_text)}")
+                saw_terminate = True
+                terminate_reason = "end_turn"
+                break
             elif mtype == "chat_v2_error":
                 reason = payload.get("reason")
                 detail = (payload.get("detail") or "")[:200]
