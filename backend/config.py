@@ -213,7 +213,13 @@ _KNOWN_EXTRAS_BY_DATACLASS: dict[str, frozenset[str]] = {
     # P4 三层记忆的子段都通过 AppConfig.raw["memory"] 直读。
     "MemoryConfig": frozenset({"l1", "l2", "l3", "rrf"}),
     # LLMRoutingConfig — P4-S6 引入的多 provider 段也走 raw 读。
-    "LLMRoutingConfig": frozenset({"providers", "fallback_chain"}),
+    # P4-S20-LLM-Unified: 顶层 [llm] 直配 endpoint 字段，dataclass 没跟进
+    # 但这些键由 config.raw["llm"][...] 兜底使用，不该每次启动都 warn。
+    "LLMRoutingConfig": frozenset({
+        "providers", "fallback_chain",
+        "model", "base_url", "api_key", "temperature", "max_tokens",
+        "endpoints",
+    }),
 }
 
 

@@ -159,13 +159,13 @@ async def main() -> int:
     # Hard cap should fire well before wall-clock
     if terminate_reason in ("error_tool_budget", "error_wall_clock_exceeded",
                             "hallucination", "error_max_turns"):
-        print(f"✅ HARD GATE FIRED: {terminate_reason}")
+        print(f"[PASS] HARD GATE FIRED: {terminate_reason}")
         return 0
     elif terminate_reason == "end_turn":
-        print("✅ MODEL FINISHED NATURALLY (good behavior — gate not needed)")
+        print("[PASS] MODEL FINISHED NATURALLY (good behavior - gate not needed)")
         return 0
     else:
-        print(f"⚠️  Terminated with {terminate_reason} — not the expected hard-gate event")
+        print(f"[WARN] Terminated with {terminate_reason} - not the expected hard-gate event")
         return 1
 
 

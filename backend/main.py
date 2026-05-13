@@ -908,9 +908,13 @@ async def lifespan(app: FastAPI):
             logger.warning("workspace_mkdir_failed", error=str(_ws_exc))
 
         from deskpet.mcp.bootstrap import create_and_start_from_config as _mcp_bootstrap
+        # P6 bugfix 2026-05-13: MCP manager 用的是 deskpet.tools.registry.ToolRegistry
+        # 的 keyword API (register(name=..., toolset=..., schema=..., handler=...))，
+        # 不是老的 tools.registry.ToolRegistry (register(tool) 单参)。传错 registry
+        # 会导致每个 MCP 工具都 TypeError("unexpected keyword 'name'") 注册失败。
         _mcp_manager = await _mcp_bootstrap(
             app_config=config.raw,
-            tool_registry=service_context.get("tool_router"),
+            tool_registry=deskpet_tool_registry_v2,
         )
         service_context.register("mcp_manager", _mcp_manager)
         logger.info("p4_mcp_manager_ready", states=_mcp_manager.server_state())

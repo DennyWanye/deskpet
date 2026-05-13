@@ -138,16 +138,16 @@ async def main() -> int:
 
     # Assertions for the args-aware fix
     if seen_hallucination:
-        print("❌ FAIL — `hallucination` reason fired on legitimate exploration!")
+        print("[FAIL] `hallucination` reason fired on legitimate exploration!")
         print("   The args-aware fix did NOT work.")
         return 1
     if terminate_reason == "end_turn":
-        print("✅ PASS — agent finished naturally, no false hallucination.")
+        print("[PASS] agent finished naturally, no false hallucination.")
         return 0
     if terminate_reason in ("error_tool_budget", "error_max_turns"):
-        print(f"⚠️  Agent hit a different hard cap ({terminate_reason}) but NOT hallucination — fix verified.")
+        print(f"[WARN] Agent hit a different hard cap ({terminate_reason}) but NOT hallucination - fix verified.")
         return 0
-    print(f"⚠️  Terminated with unexpected reason {terminate_reason}")
+    print(f"[WARN] Terminated with unexpected reason {terminate_reason}")
     return 1
 
 
