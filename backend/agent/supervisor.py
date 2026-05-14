@@ -488,7 +488,16 @@ class SupervisorAgent:
                     )
 
         # 3. Broadcast supervisor_alert
-        if self._broadcast is not None:
+        # P6 bugfix 2026-05-14 (用户反馈): auto-mode + 真实 long-running 任务时
+        # supervisor trigger (b) running>900s 每 12 分钟触发一次，每次都弹
+        # "[auto-mode] 已自动继续：..." 气泡。用户已委托决策，根本没必要看。
+        # 静默化：auto-mode bypass 后只 audit (前面已经做了)，不再 broadcast
+        # 给 UI。失败 / 严重错误（severity=red）仍然 broadcast 保留可见性。
+        _silent_for_auto_mode = (
+            _auto_bypassed
+            and action.severity != "red"
+        )
+        if self._broadcast is not None and not _silent_for_auto_mode:
             payload = {
                 "session_id": sid,
                 "alert_id": action.alert_id,
@@ -502,6 +511,12 @@ class SupervisorAgent:
                 await self._broadcast("supervisor_alert", payload)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("supervisor_broadcast_failed sid=%s error=%s", sid, exc)
+        elif _silent_for_auto_mode:
+            logger.info(
+                "supervisor_alert_silenced_auto_mode sid=%s alert=%s severity=%s "
+                "(auto-mode handled it; not broadcasting UI bubble)",
+                sid, action.alert_id, action.severity,
+            )
 
 
 # Convenience factory used by main.py wiring (S2.2).
