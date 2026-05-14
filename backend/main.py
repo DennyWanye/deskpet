@@ -3588,20 +3588,51 @@ async def control_channel(ws: WebSocket):
                     # the existing done_callback will handle the queue.
                     _cur = _chat_inflight.get(_target_sid)
                     if _cur is None or _cur.done():
-                        try:
-                            _new_task = asyncio.create_task(
-                                _run_chat(ws, "<<supervisor_followup>>", _target_sid)
-                            )
-                            _chat_inflight[_target_sid] = _new_task
-                            logger.info(
-                                "supervisor_user_choice_followup_scheduled sid=%s",
+                        # P6 bugfix 2026-05-14 (live-test): _run_chat 是
+                        # chat_v2 分支的 nested async def (line ~2707)，与
+                        # 本分支并列。Python 函数作用域规则：outer 函数里
+                        # 任何分支定义过的局部变量都视为整个函数的 local，
+                        # 但**未走该分支时未赋值** → UnboundLocalError。
+                        # 之前用户点"允许并继续"按钮时如果该 ws 连接还没
+                        # 跑过 chat_v2，就会崩这里。fallback：locals() 检
+                        # 测 → 缺失就给用户友好提示 + 用 _chat_inflight 已
+                        # 注册的 redispatcher（如果存在）兜底。
+                        _run_chat_fn = locals().get("_run_chat")
+                        if _run_chat_fn is None:
+                            logger.warning(
+                                "supervisor_user_choice_followup_skipped sid=%s "
+                                "reason=dispatcher_not_initialized",
                                 _target_sid,
                             )
-                        except Exception as _ex_fu:
-                            logger.warning(
-                                "supervisor_user_choice_followup_failed sid=%s error=%s",
-                                _target_sid, _ex_fu,
-                            )
+                            try:
+                                await ws.send_json({
+                                    "type": "chat_v2_error",
+                                    "payload": {
+                                        "session_id": _target_sid,
+                                        "reason": "dispatcher_not_ready",
+                                        "detail": (
+                                            "supervisor 后续路径还没准备好。"
+                                            "请在输入框直接重发一条消息即可继续任务。"
+                                        ),
+                                    },
+                                })
+                            except Exception:
+                                pass
+                        else:
+                            try:
+                                _new_task = asyncio.create_task(
+                                    _run_chat_fn(ws, "<<supervisor_followup>>", _target_sid)
+                                )
+                                _chat_inflight[_target_sid] = _new_task
+                                logger.info(
+                                    "supervisor_user_choice_followup_scheduled sid=%s",
+                                    _target_sid,
+                                )
+                            except Exception as _ex_fu:
+                                logger.warning(
+                                    "supervisor_user_choice_followup_failed sid=%s error=%s",
+                                    _target_sid, _ex_fu,
+                                )
 
             elif msg_type == "supervisor_toggle":
                 # P5-S2: enable / disable the supervisor at runtime.
