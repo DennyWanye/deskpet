@@ -1184,6 +1184,14 @@ async def lifespan(app: FastAPI):
             # incomplete. Returned to the watchdog so the (c) trigger
             # rule (idle with todos) can fire even when there's no
             # active chat task.
+            # P6 bugfix 2026-05-14 (用户反馈): 长时间未操作时不要骚扰用户。
+            # 即使 todos 未完成、agent 状态 idle，也判断用户是否还在用 deskpet
+            # （以最近 user 消息时间为准）。30 分钟无 user 活动 → 视为用户
+            # 离开，不再主动弹 "Agent seems stuck" 提醒。
+            _user_idle_grace_s = float(
+                _sup_cfg.get("user_idle_grace_seconds", 1800)
+            )
+
             async def _watchdog_incomplete_todos_probe(_base_sid: str) -> list[dict]:
                 try:
                     cm_local = service_context.get("code_mode")
@@ -1195,6 +1203,43 @@ async def lifespan(app: FastAPI):
                     sdb_local = service_context.get("session_db")
                     if sdb_local is None:
                         return []
+                    # P6 bugfix 2026-05-14: check user activity first.
+                    # 如果用户 > N 分钟没发消息 → 视为离开，不报警。
+                    # 即使 agent 自己拆了 todos，用户没主动让它做 →
+                    # 我们也不该自动催 agent 干。
+                    try:
+                        import time as _t
+                        last_user_ts = await sdb_local.last_message_ts(
+                            session_id=_base_sid, role="user"
+                        ) if hasattr(sdb_local, "last_message_ts") else None
+                        if last_user_ts is None:
+                            # Fallback: scan messages directly
+                            _recent = await sdb_local.get_messages(_base_sid, limit=50)
+                            _user_ts = [
+                                float(r.get("created_at") or 0)
+                                for r in _recent
+                                if (r.get("role") or "") == "user"
+                            ]
+                            last_user_ts = max(_user_ts) if _user_ts else 0.0
+                        if last_user_ts <= 0:
+                            # No user message ever for this sid → never auto-poke
+                            logger.debug(
+                                "p6_watchdog_skip_no_user_history sid=%s", _base_sid,
+                            )
+                            return []
+                        user_idle_age = _t.time() - last_user_ts
+                        if user_idle_age > _user_idle_grace_s:
+                            logger.info(
+                                "p6_watchdog_skip_user_away sid=%s user_idle_age=%.0fs grace=%.0fs",
+                                _base_sid, user_idle_age, _user_idle_grace_s,
+                            )
+                            return []
+                    except Exception as _ue:  # noqa: BLE001
+                        # 探测失败保守起见仍按"用户活跃"处理（行为退化到 pre-fix）
+                        logger.debug(
+                            "p6_watchdog_user_activity_probe_failed sid=%s err=%s",
+                            _base_sid, str(_ue)[:200],
+                        )
                     rows = await sdb_local.get_code_todos(code_sid)
                     return [
                         r for r in rows
