@@ -56,8 +56,17 @@ class GateConfig:
     Can be overridden by [supervisor] / [agent] config sections.
     """
 
-    max_turns: int = 50
-    tool_budget_hard: int = 40
+    # P6 bugfix 2026-05-14 (live-test): bumped 50→200 turns + 40→200 tools.
+    # 40 was a "stop runaway agent" design assumption, but real auto-mode
+    # code tasks (build a full website) genuinely need 100+ tool calls
+    # (list_directory + 30 read_file + 30 write_file + grep + glob + edit
+    # rounds). With max_tokens=8192 each write_file emits ≤5KB cleanly,
+    # so the cap should reflect "what an unattended task legitimately
+    # needs over 10 min wall-clock", not "what we'd ban as a death
+    # loop". 200 leaves headroom; wall_clock_seconds=600 + per_tool_max_
+    # consecutive=8 remain the real safety nets against true loops.
+    max_turns: int = 200
+    tool_budget_hard: int = 200
     wall_clock_seconds: float = 600.0  # NEW: 10min hard break
     max_budget_usd: float | None = None
     # P6 bugfix 2026-05-13 (live-test): bumped 5 → 8. Five was too tight —

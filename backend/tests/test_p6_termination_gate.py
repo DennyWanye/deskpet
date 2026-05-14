@@ -24,8 +24,11 @@ from agent.termination import (
 def test_default_config_values() -> None:
     """1.1 GateConfig defaults match design.md."""
     cfg = GateConfig()
-    assert cfg.max_turns == 50
-    assert cfg.tool_budget_hard == 40
+    # P6 bugfix 2026-05-14 (live-test): 50→200 / 40→200 to support
+    # auto-mode long-running code tasks (build a full website needs
+    # 100+ tool calls).
+    assert cfg.max_turns == 200
+    assert cfg.tool_budget_hard == 200
     assert cfg.wall_clock_seconds == 600.0
     # Bumped 5 → 8 after live-test bugfix 2026-05-13 (args-aware counter
     # makes 5 too tight; 8 leaves comfortable headroom).

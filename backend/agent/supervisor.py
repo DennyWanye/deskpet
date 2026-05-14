@@ -389,6 +389,7 @@ class SupervisorAgent:
         # "decide for me, don't block on prompts." Convert ask_user into
         # a self-driven nudge + immediate follow-up so the agent keeps
         # working long-running tasks without manual clicks.
+        _auto_bypassed = False
         if action.action == "ask_user" and self._auto_mode_check is not None:
             try:
                 _is_auto = bool(self._auto_mode_check())
@@ -402,6 +403,7 @@ class SupervisorAgent:
                 )
                 # Convert to nudge so hint flows into queue normally.
                 action.action = "nudge"
+                _auto_bypassed = True
                 # If no hint was set (LLM only emitted user_message),
                 # synthesize one from the diagnosis so the next turn has
                 # context to recover.
@@ -411,6 +413,14 @@ class SupervisorAgent:
                         or action.diagnosis
                         or "继续按你判断的下一步推进任务。"
                     )
+                # Clear suggested_buttons + rewrite user_message so the
+                # UI shows "已自动继续" notice instead of clickable buttons
+                # the user shouldn't need to touch.
+                _orig_msg = action.user_message
+                action.suggested_buttons = []
+                action.user_message = (
+                    f"[auto-mode] 已自动继续：{_orig_msg or action.diagnosis or '推进下一步'}"
+                )[:120]
 
         # 1. Audit BEFORE side effects so even a failed broadcast leaves a row
         if self._audit is not None:
