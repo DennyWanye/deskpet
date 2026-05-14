@@ -1110,12 +1110,65 @@ async def lifespan(app: FastAPI):
                     "registry empty/unavailable; consider adding a provider via Settings",
                     getattr(local_llm, "base_url", "?"),
                 )
+            # P6 bugfix 2026-05-14 (live-test): auto-mode bypass for
+            # supervisor. When permission_gate.auto_mode is ON, the user
+            # has delegated "decide for me" semantics — supervisor must
+            # NOT block on UI buttons (ask_user). Below callbacks let
+            # SupervisorAgent self-drive: check auto state + spawn a
+            # follow-up chat task with "<<supervisor_followup>>" trigger.
+            def _supervisor_auto_mode_check() -> bool:
+                try:
+                    return bool(
+                        permission_gate_v2 is not None
+                        and getattr(permission_gate_v2, "auto_mode", False)
+                    )
+                except Exception:
+                    return False
+
+            async def _supervisor_auto_followup(sid: str, trigger_text: str) -> None:
+                # Spawn a chat task with the synthetic trigger text. We
+                # look up the most recent control WS for this sid and
+                # use the registered re-dispatcher closure (set by chat
+                # handler each user turn under `_auto_resume_redispatchers`).
+                # If no dispatcher is registered yet, we silently no-op
+                # — the queued hint will be consumed when the user (or
+                # auto_resume) next pokes the agent.
+                _redisp = _auto_resume_redispatchers.get(sid)
+                if _redisp is None:
+                    logger.info(
+                        "supervisor_auto_followup_noop sid=%s reason=no_dispatcher",
+                        sid,
+                    )
+                    return
+                _target_ws = _control_connections.get(sid)
+                if _target_ws is None:
+                    # Fall back to ANY control WS — supervisor alerts are
+                    # already broadcast to all of them.
+                    for _k, _w in _control_connections.items():
+                        _target_ws = _w
+                        break
+                if _target_ws is None:
+                    logger.info(
+                        "supervisor_auto_followup_noop sid=%s reason=no_ws",
+                        sid,
+                    )
+                    return
+                try:
+                    await _redisp(_target_ws, sid)
+                except Exception as _ex:
+                    logger.warning(
+                        "supervisor_auto_followup_dispatch_failed sid=%s err=%s",
+                        sid, _ex,
+                    )
+
             _supervisor_agent = _SupAgent(
                 provider=_sup_provider,
                 snapshot_builder=_snap_builder,
                 nudge_queue_push=_push_hint,
                 broadcast=_broadcast_supervisor_alert,
                 audit=_audit_action,
+                auto_mode_check=_supervisor_auto_mode_check,
+                auto_followup=_supervisor_auto_followup,
                 # P5-S2 G2 (2026-05-12): 30s→120s. supervisor was timing out
                 # on deepseek-v4-pro thinking-mode calls — the model takes
                 # 30-60s just thinking before emitting the 300-token JSON

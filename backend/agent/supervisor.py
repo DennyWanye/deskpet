@@ -221,6 +221,8 @@ class SupervisorAgent:
         nudge_queue_push: Optional[NudgeQueuePush] = None,
         broadcast: Optional[AlertBroadcast] = None,
         audit: Optional[HintAuditFn] = None,
+        auto_mode_check: Optional[Callable[[], bool]] = None,
+        auto_followup: Optional[Callable[[str, str], Awaitable[None]]] = None,
         timeout_seconds: float = 120.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -229,6 +231,17 @@ class SupervisorAgent:
         self._push_hint = nudge_queue_push
         self._broadcast = broadcast
         self._audit = audit
+        # P6 bugfix 2026-05-14 (live-test): when auto-mode is on, the user
+        # explicitly delegated decision-making to the supervisor — do NOT
+        # block on UI buttons. Convert ask_user → nudge (auto-continue)
+        # so long-running code tasks proceed without manual clicks.
+        # ``auto_mode_check()`` returns True if permission_gate's
+        # auto_mode is currently enabled.
+        # ``auto_followup(sid, trigger_text)`` directly spawns a chat
+        # follow-up task (e.g. "<<supervisor_followup>>") without
+        # routing through the UI button-click path.
+        self._auto_mode_check = auto_mode_check
+        self._auto_followup = auto_followup
         self._timeout = float(timeout_seconds)
         self._clock = clock
 
@@ -371,6 +384,34 @@ class SupervisorAgent:
         if action.action == "wait":
             return
 
+        # P6 bugfix 2026-05-14 (live-test): auto-mode bypass.
+        # When permission_gate.auto_mode is ON the user explicitly chose
+        # "decide for me, don't block on prompts." Convert ask_user into
+        # a self-driven nudge + immediate follow-up so the agent keeps
+        # working long-running tasks without manual clicks.
+        if action.action == "ask_user" and self._auto_mode_check is not None:
+            try:
+                _is_auto = bool(self._auto_mode_check())
+            except Exception:
+                _is_auto = False
+            if _is_auto:
+                logger.info(
+                    "supervisor_ask_user_auto_continued sid=%s alert=%s "
+                    "(auto_mode on; bypassing UI buttons)",
+                    sid, action.alert_id,
+                )
+                # Convert to nudge so hint flows into queue normally.
+                action.action = "nudge"
+                # If no hint was set (LLM only emitted user_message),
+                # synthesize one from the diagnosis so the next turn has
+                # context to recover.
+                if not action.hint_for_main_agent:
+                    action.hint_for_main_agent = (
+                        action.user_message
+                        or action.diagnosis
+                        or "继续按你判断的下一步推进任务。"
+                    )
+
         # 1. Audit BEFORE side effects so even a failed broadcast leaves a row
         if self._audit is not None:
             try:
@@ -386,6 +427,34 @@ class SupervisorAgent:
                 await self._push_hint(sid, action)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("supervisor_push_hint_failed sid=%s error=%s", sid, exc)
+
+        # 2b. P6 bugfix 2026-05-14 (live-test): if we converted ask_user
+        # → nudge above (auto mode), proactively spawn a follow-up chat
+        # task. Without this the hint sits in the queue waiting for the
+        # next user message — defeating auto mode. ``auto_followup``
+        # creates the same task ``supervisor_user_choice + _is_continue``
+        # would have, just driven by code instead of a UI click.
+        if (
+            action.action == "nudge"
+            and self._auto_followup is not None
+            and self._auto_mode_check is not None
+        ):
+            try:
+                _is_auto2 = bool(self._auto_mode_check())
+            except Exception:
+                _is_auto2 = False
+            if _is_auto2:
+                try:
+                    await self._auto_followup(sid, "<<supervisor_followup>>")
+                    logger.info(
+                        "supervisor_auto_followup_scheduled sid=%s alert=%s",
+                        sid, action.alert_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "supervisor_auto_followup_failed sid=%s error=%s",
+                        sid, exc,
+                    )
 
         # 3. Broadcast supervisor_alert
         if self._broadcast is not None:
