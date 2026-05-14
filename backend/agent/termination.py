@@ -56,24 +56,24 @@ class GateConfig:
     Can be overridden by [supervisor] / [agent] config sections.
     """
 
-    # P6 bugfix 2026-05-14 (live-test): bumped 50→200 turns + 40→200 tools.
-    # 40 was a "stop runaway agent" design assumption, but real auto-mode
-    # code tasks (build a full website) genuinely need 100+ tool calls
-    # (list_directory + 30 read_file + 30 write_file + grep + glob + edit
-    # rounds). With max_tokens=8192 each write_file emits ≤5KB cleanly,
-    # so the cap should reflect "what an unattended task legitimately
-    # needs over 10 min wall-clock", not "what we'd ban as a death
-    # loop". 200 leaves headroom; wall_clock_seconds=600 + per_tool_max_
-    # consecutive=8 remain the real safety nets against true loops.
-    max_turns: int = 200
-    tool_budget_hard: int = 200
-    # P6 bugfix 2026-05-14 (用户反馈): bumped 600s → 1800s (30min).
-    # 10 分钟对真实代码任务（"补全整个网站前后端"）太短，agent 自然在
-    # 8-12 分钟内做完 6-8 个 read_file + 4-6 个 write_file + thinking
-    # 就被强制中断，弹"error_wall_clock_exceeded"。30 分钟在 max_turns=200
-    # + tool_budget=200 + per_tool_max_consecutive=8 三层兜底之上提供更
-    # 合理的"agent loop 单次生命期上限"，真死循环靠其他 cap 早就拦住了。
-    wall_clock_seconds: float = 1800.0
+    # P6 bugfix 2026-05-14 (用户反馈最终版): "auto-mode 下长任务只要没死循环
+    # 就该一直跑下去"。time/count cap 改成"实质 disabled"（极大值），真死循环
+    # 检测交给 per_tool_max_consecutive（args-aware）单独兜底。
+    #
+    # 历史调参链：
+    #   max_turns: 50 → 200 (R1) → 10000 (R8 用户反馈)
+    #   tool_budget_hard: 40 → 200 (R1) → 10000 (R8 用户反馈)
+    #   wall_clock_seconds: 600 → 1800 (R7) → None (R8 用户反馈 disabled)
+    #
+    # 现在的真死循环防御靠：
+    #   1. per_tool_max_consecutive=8 (args-aware)：同工具+同参数 8 次必死循环
+    #   2. ContextManager B3 token budget：上下文过大也是天然中止信号
+    #   3. supervisor watchdog：观察 status='running' 但无事件可见的真卡死
+    # 这三层比"按时间/次数硬切"更精准，不会误杀正常长任务。
+    max_turns: int = 10000
+    tool_budget_hard: int = 10000
+    # None 表示禁用 wall-clock 硬上限（按用户期望"一直跑下去"）
+    wall_clock_seconds: float | None = None
     max_budget_usd: float | None = None
     # P6 bugfix 2026-05-13 (live-test): bumped 5 → 8. Five was too tight —
     # legitimate "list_directory + glob + read 5 different files" sequences
@@ -138,9 +138,13 @@ class TerminationGate:
             return (False, self.state.terminated_reason)
         if self.state.turns_used >= self.config.max_turns:
             return (False, TerminationReason.HARD_MAX_TURNS)
-        elapsed = self._clock() - self.state.started_at
-        if elapsed > self.config.wall_clock_seconds:
-            return (False, TerminationReason.HARD_WALL_CLOCK)
+        # P6 bugfix 2026-05-14: wall_clock_seconds=None → disabled。
+        # 用户期望 "auto-mode 下长任务只要没卡死循环就一直跑下去"，
+        # 真死循环检测交给 per_tool_max_consecutive。
+        if self.config.wall_clock_seconds is not None:
+            elapsed = self._clock() - self.state.started_at
+            if elapsed > self.config.wall_clock_seconds:
+                return (False, TerminationReason.HARD_WALL_CLOCK)
         if (
             self.config.max_budget_usd is not None
             and self.state.cost_usd >= self.config.max_budget_usd

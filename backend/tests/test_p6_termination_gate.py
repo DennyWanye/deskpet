@@ -24,15 +24,13 @@ from agent.termination import (
 def test_default_config_values() -> None:
     """1.1 GateConfig defaults match design.md."""
     cfg = GateConfig()
-    # P6 bugfix 2026-05-14 (live-test): 50→200 / 40→200 to support
-    # auto-mode long-running code tasks (build a full website needs
-    # 100+ tool calls).
-    assert cfg.max_turns == 200
-    assert cfg.tool_budget_hard == 200
-    # P6 bugfix 2026-05-14 (live-test): 600s → 1800s. 10min was too tight
-    # for real auto-mode code tasks; other caps (max_turns=200, tool_budget
-    # =200, per_tool_max_consecutive=8) provide the runaway guarantees.
-    assert cfg.wall_clock_seconds == 1800.0
+    # P6 bugfix 2026-05-14 (final user feedback): "auto-mode 下长任务只要
+    # 没卡死就该一直跑下去"。time/count cap 改成"实质 disabled"——只靠
+    # args-aware per_tool_max_consecutive 检测真死循环。
+    # 历史: 50→200→10000 turns; 40→200→10000 tools; 600→1800→None wall.
+    assert cfg.max_turns == 10000
+    assert cfg.tool_budget_hard == 10000
+    assert cfg.wall_clock_seconds is None
     # Bumped 5 → 8 after live-test bugfix 2026-05-13 (args-aware counter
     # makes 5 too tight; 8 leaves comfortable headroom).
     assert cfg.per_tool_max_consecutive == 8
