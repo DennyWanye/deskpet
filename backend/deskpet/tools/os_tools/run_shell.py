@@ -207,6 +207,38 @@ def run_shell(args: dict[str, Any], task_id: str = "") -> str:
             "如需调整超时加 timeout（秒）。",
         )
 
+    # P6 bugfix 2026-05-14 (live-test R7): agent self-destruction guard.
+    # LLM 在帮用户启动开发服务器时遇到端口占用，自作主张写了
+    # "kill processes on port 5173" — 但 5173 是 deskpet 自己 vite dev
+    # server 的端口！agent 把承载它的整个 deskpet stack 杀了。
+    # 拒绝任何看起来要 kill / netstat-then-kill / fuser deskpet 自己
+    # 关键端口的命令。这些端口默认是 dev/prod deskpet 占用的。
+    _DESKPET_RESERVED_PORTS = ("5173", "8100", "4001", "4006")
+    _cmd_lower = command.lower()
+    _looks_destructive = any(
+        kw in _cmd_lower
+        for kw in ("kill", "taskkill", "stop-process", "pkill", "fuser")
+    )
+    if _looks_destructive:
+        _hit_port = None
+        for _p in _DESKPET_RESERVED_PORTS:
+            # match `:5173` `port 5173` `5173 ` etc. but not `15173`
+            import re as _re
+            if _re.search(rf"(?<!\d){_p}(?!\d)", command):
+                _hit_port = _p
+                break
+        if _hit_port:
+            return _err(
+                "self_destruction_blocked",
+                f"拒绝执行：你的命令试图 kill 端口 {_hit_port} 上的进程，但该端口是 "
+                "deskpet 自身的 dev/prod 服务（5173=vite, 8100=backend, "
+                "4001/4006=audio/control ws）。kill 它会让 deskpet 整个崩溃。"
+                "请改用其他端口（例如 5174、3001、8000）启动你的开发服务器；"
+                "如果你确实需要清空被占用的端口，请告诉用户让 ta 手动处理。",
+                blocked_port=_hit_port,
+                command_preview=command[:200],
+            )
+
     start = time.monotonic()
     shell, leading = _pick_shell()
 
