@@ -390,7 +390,20 @@ class SupervisorAgent:
         # a self-driven nudge + immediate follow-up so the agent keeps
         # working long-running tasks without manual clicks.
         _auto_bypassed = False
-        if action.action == "ask_user" and self._auto_mode_check is not None:
+        # P6 bugfix 2026-05-14b (live-test 2): if supervisor itself
+        # couldn't reach LLM (provider down / 403 / timeout), DO NOT
+        # auto-followup — main agent uses the same provider chain and
+        # will fail the same way, creating an infinite retry loop. Let
+        # the session stop and show a clear error. Detect via diagnosis
+        # prefix the supervisor sets when its own LLM call fails.
+        _supervisor_itself_down = (
+            action.diagnosis or ""
+        ).startswith(("supervisor_unavailable", "supervisor_timeout"))
+        if (
+            action.action == "ask_user"
+            and self._auto_mode_check is not None
+            and not _supervisor_itself_down
+        ):
             try:
                 _is_auto = bool(self._auto_mode_check())
             except Exception:
@@ -421,6 +434,14 @@ class SupervisorAgent:
                 action.user_message = (
                     f"[auto-mode] 已自动继续：{_orig_msg or action.diagnosis or '推进下一步'}"
                 )[:120]
+        elif _supervisor_itself_down and action.action == "ask_user":
+            # Provider-level outage — log clearly so the user can see
+            # the chain has died and act (check API key / balance).
+            logger.warning(
+                "supervisor_provider_outage_no_auto_followup sid=%s diagnosis=%s "
+                "(would have looped infinitely retrying same dead provider)",
+                sid, action.diagnosis,
+            )
 
         # 1. Audit BEFORE side effects so even a failed broadcast leaves a row
         if self._audit is not None:
