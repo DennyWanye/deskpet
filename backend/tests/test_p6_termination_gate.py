@@ -29,7 +29,10 @@ def test_default_config_values() -> None:
     # 100+ tool calls).
     assert cfg.max_turns == 200
     assert cfg.tool_budget_hard == 200
-    assert cfg.wall_clock_seconds == 600.0
+    # P6 bugfix 2026-05-14 (live-test): 600s → 1800s. 10min was too tight
+    # for real auto-mode code tasks; other caps (max_turns=200, tool_budget
+    # =200, per_tool_max_consecutive=8) provide the runaway guarantees.
+    assert cfg.wall_clock_seconds == 1800.0
     # Bumped 5 → 8 after live-test bugfix 2026-05-13 (args-aware counter
     # makes 5 too tight; 8 leaves comfortable headroom).
     assert cfg.per_tool_max_consecutive == 8

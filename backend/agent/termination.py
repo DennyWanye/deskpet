@@ -67,7 +67,13 @@ class GateConfig:
     # consecutive=8 remain the real safety nets against true loops.
     max_turns: int = 200
     tool_budget_hard: int = 200
-    wall_clock_seconds: float = 600.0  # NEW: 10min hard break
+    # P6 bugfix 2026-05-14 (用户反馈): bumped 600s → 1800s (30min).
+    # 10 分钟对真实代码任务（"补全整个网站前后端"）太短，agent 自然在
+    # 8-12 分钟内做完 6-8 个 read_file + 4-6 个 write_file + thinking
+    # 就被强制中断，弹"error_wall_clock_exceeded"。30 分钟在 max_turns=200
+    # + tool_budget=200 + per_tool_max_consecutive=8 三层兜底之上提供更
+    # 合理的"agent loop 单次生命期上限"，真死循环靠其他 cap 早就拦住了。
+    wall_clock_seconds: float = 1800.0
     max_budget_usd: float | None = None
     # P6 bugfix 2026-05-13 (live-test): bumped 5 → 8. Five was too tight —
     # legitimate "list_directory + glob + read 5 different files" sequences
