@@ -149,7 +149,11 @@ def build_agent_tool(
                     final_text = ev.content or ""
                     break
                 elif isinstance(ev, _ErrEv):
-                    return f"[subagent error] {ev.error}"
+                    # P6 bugfix 2026-05-15 (UI-click C1 live test): ErrorEvent
+                    # has `reason` + `detail` fields, not `error`. Pre-fix this
+                    # raised AttributeError every subagent error path, masking
+                    # the real LLM/tool error with a Python crash.
+                    return f"[subagent error] {ev.reason}: {ev.detail}".rstrip(": ")
             return final_text or "[subagent finished without final text]"
 
         try:
