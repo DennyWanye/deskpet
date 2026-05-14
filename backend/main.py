@@ -3436,6 +3436,26 @@ async def control_channel(ws: WebSocket):
                             _provider.last_usage = None
 
                     except Exception as exc:  # noqa: BLE001
+                        # P6 bugfix 2026-05-14 (live-test): ASGI ws-close
+                        # races during long streams produce the noisy
+                        # "Unexpected ASGI message 'websocket.send', after
+                        # sending 'websocket.close'" RuntimeError. This is
+                        # benign — the client just disconnected mid-stream
+                        # (panel close, network blip, ws client timeout).
+                        # Demote to debug + skip the chat_v2_error send (it
+                        # would just trigger the same error again).
+                        _msg = str(exc)
+                        _is_ws_closed = (
+                            isinstance(exc, RuntimeError)
+                            and "websocket" in _msg.lower()
+                            and ("close" in _msg.lower() or "completed" in _msg.lower())
+                        )
+                        if _is_ws_closed:
+                            logger.debug(
+                                "chat_v2_ws_closed_midstream sid=%s — client disconnected",
+                                _sid,
+                            )
+                            return  # don't try to send chat_v2_error on closed ws
                         logger.warning(
                             "chat_v2_failed",
                             error=str(exc),

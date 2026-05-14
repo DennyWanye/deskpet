@@ -37,10 +37,17 @@ def write_file(args: dict[str, Any], task_id: str = "") -> str:
     overwrite = bool(args.get("overwrite", False))
 
     if not isinstance(path, str) or not path:
+        # P6 bugfix 2026-05-14 (live-test R4): LLM 连续 3 次 write_file
+        # 漏掉 path 字段（只发 content），触发 circuit breaker 熔断。
+        # 加强 hint：明确指出当前漏字段 + 列出收到的 keys 帮 LLM debug。
+        _received_keys = sorted(args.keys()) if isinstance(args, dict) else []
         return _err(
             "path required",
-            "write_file 的 path 字段必填，且必须是非空字符串。"
-            "例如 {\"path\": \"./hello.txt\", \"content\": \"hi\"}。",
+            "write_file 必须同时提供 path 和 content 两个字段。你这次只发了 "
+            f"{_received_keys}，缺少 path。请重新生成完整的 tool_call，确保 "
+            "arguments JSON 同时包含 path（目标文件路径）和 content（文件内容）。"
+            "如果你想追加而不是覆盖现有文件，请改用 edit_file 工具。",
+            received_keys=_received_keys,
         )
     # P5-S2 Phase 0 fix: require content key explicitly. Defaulting to
     # "" silently writes empty files which is rarely intended; force
