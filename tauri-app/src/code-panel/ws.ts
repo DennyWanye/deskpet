@@ -393,14 +393,86 @@ function dispatch(msg: any) {
       // F5 rehydration response. Backend returned the message list
       // for a given session_id; replace whatever's in the store so
       // we don't end up with duplicates after reconnect.
+      //
+      // P6 bugfix 2026-05-14 (history persistence): backend rows may now
+      // include role='assistant' with tool_calls JSON (means agent called
+      // a tool — UI renders as tool_call bubble) or role='tool' with
+      // tool_call_id (the tool's reply — render as tool_result bubble).
+      // Pre-fix the frontend只 expected user/assistant, so even after the
+      // backend persists everything UI would still drop them.
       const target = msg.payload?.session_id || sid;
       const items: any[] = msg.payload?.messages ?? [];
-      const restored = items.map((m) => ({
-        id: m.id || `r-${Math.random().toString(36).slice(2, 10)}`,
-        role: (m.role || "assistant") as any,
-        text: m.text,
-        ts: m.ts || Date.now(),
-      }));
+      const restored: any[] = [];
+      // P6 bugfix 2026-05-14: build tool_call_id → tool_name map first pass
+      // so the subsequent tool reply row can show the right tool name
+      // (instead of "(unknown)"). Backend SessionDB schema doesn't store
+      // tool_name on the tool row; only the prior assistant row knows it
+      // via tool_calls[].function.name.
+      const tcid_to_name = new Map<string, string>();
+      for (const m of items) {
+        const tcs = Array.isArray(m.tool_calls) ? m.tool_calls : null;
+        if (!tcs) continue;
+        for (const tc of tcs) {
+          const id = tc?.id;
+          const name = tc?.function?.name || tc?.name;
+          if (id && name) tcid_to_name.set(id, name);
+        }
+      }
+      for (const m of items) {
+        const base_id = m.id || `r-${Math.random().toString(36).slice(2, 10)}`;
+        const ts = m.ts || Date.now();
+        const role = m.role || "assistant";
+        const tool_calls = Array.isArray(m.tool_calls) ? m.tool_calls : null;
+
+        if (role === "tool") {
+          // Tool reply row → tool_result bubble. Reverse-map tool name
+          // via the previously-built tcid → name dictionary.
+          const tcid: string | undefined = m.tool_call_id;
+          restored.push({
+            id: base_id,
+            role: "tool_result",
+            tool_name: (tcid && tcid_to_name.get(tcid)) || undefined,
+            tool_ok: true,
+            tool_result: m.text || "",
+            ts,
+          });
+          continue;
+        }
+        if (role === "assistant" && tool_calls && tool_calls.length > 0) {
+          // assistant turn that issued one or more tool_calls. Expand each
+          // tc into a tool_call bubble; if the row ALSO has text content
+          // (rare — content + tool_calls in same turn), prepend that too.
+          if (m.text && m.text.length > 0) {
+            restored.push({
+              id: `${base_id}-pre`,
+              role: "assistant",
+              text: m.text,
+              ts,
+            });
+          }
+          tool_calls.forEach((tc: any, idx: number) => {
+            let args: any = tc?.function?.arguments;
+            if (typeof args === "string") {
+              try { args = JSON.parse(args); } catch { /* keep raw */ }
+            }
+            restored.push({
+              id: `${base_id}-tc${idx}`,
+              role: "tool_call",
+              tool_name: tc?.function?.name || tc?.name || "unknown",
+              tool_args: typeof args === "object" && args !== null ? args : undefined,
+              ts,
+            });
+          });
+          continue;
+        }
+        // Plain user / assistant (text) / etc.
+        restored.push({
+          id: base_id,
+          role,
+          text: m.text,
+          ts,
+        });
+      }
       store.set_messages(target, restored);
       break;
     }

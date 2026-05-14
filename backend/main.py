@@ -2252,18 +2252,39 @@ async def control_channel(ws: WebSocket):
                 if sdb is not None:
                     try:
                         rows = await sdb.get_messages(target_sid, limit=limit)
-                        # Slim payload — frontend only needs role + content + ts.
-                        msgs = [
-                            {
+                        # P6 bugfix 2026-05-14: 历史还原 — 之前过滤了
+                        # role not in (user,assistant) 和 empty content,
+                        # 导致 tool_call (role='assistant' content=''
+                        # tool_calls=[...]) 和 tool_result (role='tool')
+                        # 全部被丢，UI 重启后只剩 user 气泡。现在全部
+                        # 返回，前端 ws.ts 决定怎么渲染。
+                        msgs = []
+                        for r in rows:
+                            _row_role = r.get("role") or ""
+                            if _row_role not in ("user", "assistant", "tool"):
+                                continue  # 仍跳过 system 等
+                            _entry: dict[str, Any] = {
                                 "id": str(r.get("id") or ""),
-                                "role": r.get("role") or "",
+                                "role": _row_role,
                                 "text": r.get("content") or "",
                                 "ts": float(r.get("created_at") or 0) * 1000,
                             }
-                            for r in rows
-                            if (r.get("role") in ("user", "assistant"))
-                            and (r.get("content") or "").strip()
-                        ]
+                            # tool_calls JSON (assistant 行调工具时)
+                            _tcs_raw = r.get("tool_calls")
+                            if _tcs_raw:
+                                try:
+                                    import json as _load_json
+                                    _entry["tool_calls"] = (
+                                        _load_json.loads(_tcs_raw)
+                                        if isinstance(_tcs_raw, str) else _tcs_raw
+                                    )
+                                except Exception:
+                                    pass
+                            # tool_call_id (tool 行的回指)
+                            _tcid = r.get("tool_call_id")
+                            if _tcid:
+                                _entry["tool_call_id"] = _tcid
+                            msgs.append(_entry)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
                             "session_messages_load_failed",
@@ -3267,6 +3288,35 @@ async def control_channel(ws: WebSocket):
                                         "session_id": _sid,
                                     },
                                 })
+                                # P6 bugfix 2026-05-14 (history persistence):
+                                # tool_call 也要入 SessionDB，否则重启或 F5 后
+                                # UI 只能看到 user 气泡，看不到 agent 调用过
+                                # 什么工具。schema 早就支持 (role='assistant'
+                                # + tool_calls JSON 列)，main.py 之前没用。
+                                if _sdb is not None:
+                                    try:
+                                        import json as _persist_json
+                                        await _sdb.append_message(
+                                            session_id=_sid,
+                                            role="assistant",
+                                            content="",
+                                            tool_calls=[{
+                                                "id": ev.tool_call.id,
+                                                "type": "function",
+                                                "function": {
+                                                    "name": ev.tool_call.name,
+                                                    "arguments": _persist_json.dumps(
+                                                        ev.tool_call.arguments,
+                                                        ensure_ascii=False,
+                                                    ),
+                                                },
+                                            }],
+                                        )
+                                    except Exception as exc:  # noqa: BLE001
+                                        logger.warning(
+                                            "chat_persist_tool_call_failed",
+                                            error=str(exc),
+                                        )
                             elif isinstance(ev, _TREv):
                                 try:
                                     _parsed = json.loads(ev.result)
@@ -3292,6 +3342,27 @@ async def control_channel(ws: WebSocket):
                                         "session_id": _sid,
                                     },
                                 })
+                                # P6 bugfix 2026-05-14 (history persistence):
+                                # tool_result 也要入 SessionDB (role='tool'
+                                # + tool_call_id 回指 assistant 的调用)。
+                                if _sdb is not None:
+                                    try:
+                                        import json as _persist_json
+                                        _result_content = (
+                                            ev.result if isinstance(ev.result, str)
+                                            else _persist_json.dumps(ev.result, ensure_ascii=False)
+                                        )
+                                        await _sdb.append_message(
+                                            session_id=_sid,
+                                            role="tool",
+                                            content=_result_content,
+                                            tool_call_id=getattr(ev, "tool_call_id", "") or "",
+                                        )
+                                    except Exception as exc:  # noqa: BLE001
+                                        logger.warning(
+                                            "chat_persist_tool_result_failed",
+                                            error=str(exc),
+                                        )
                             elif isinstance(ev, _FinEv):
                                 final_text = ev.content
                                 final_reasoning = ev.reasoning_content
@@ -3304,15 +3375,25 @@ async def control_channel(ws: WebSocket):
                                 # assistant entirely. asyncio.shield
                                 # would do too but inlining is simpler
                                 # and the persist cost is sub-ms anyway.
-                                if final_text and _sdb is not None:
+                                # P6 bugfix 2026-05-14: 即使 final_text 空也
+                                # 持久化（保留 turn 边界）。空文本仍写一条
+                                # role='assistant' 行表示"agent 在此 end_turn
+                                # 了"，让 history 上下文连贯——之前 if
+                                # final_text 的 guard 导致 tool_use loop 后
+                                # 的 end_turn 完全没记录。
+                                if _sdb is not None:
                                     try:
                                         _asst_id_inline = await _sdb.append_message(
                                             session_id=_sid,
                                             role="assistant",
-                                            content=final_text,
+                                            content=final_text or "",
                                             reasoning_content=(final_reasoning or None),
                                         )
-                                        if _vw is not None and _asst_id_inline is not None:
+                                        if (
+                                            _vw is not None
+                                            and _asst_id_inline is not None
+                                            and final_text
+                                        ):
                                             await _vw.enqueue(_asst_id_inline, final_text)
                                     except Exception as exc:  # noqa: BLE001
                                         logger.warning(
