@@ -15,6 +15,16 @@
 
 ## 测试设计
 
+### 🔒 硬性约束：必须用 UI 点击模拟人工（2026-05-15 加入）
+- **禁止**用 ws 客户端（`websockets.connect()`）直接打后端发任务
+- **必须**用 `mcp__computer-use__left_click` + `mcp__computer-use__type` 模拟人工：
+  1. 点桌宠扳手图标打开 Code Mode 仪表盘
+  2. 点项目卡片输入框
+  3. type 任务文本
+  4. 点"发送"按钮（或 Return 键）
+- **理由**：ws 直打路径覆盖不到 UI 层 bug（panel rendering / button click / 输入框 typing / IPC pipe），而真实用户走的是 UI 层
+- 历史教训：2026-05-14 的 stability-test 用 ws 跑过 6/6 PASS 但用户仍报 UI 层 bug — 因为 ws 测试根本没碰 UI 层
+
 ### 并发 2 个 code session
 - 共享资源竞争最容易暴露 bug（PermissionGate / SessionDB write lock / WS broadcast）
 - 单 session 测不到的并发问题
@@ -46,6 +56,21 @@
 | **🔴 真错误** | Traceback / Exception: / circuit_breaker_open / permanent_tool_error / all_providers_failed / UnboundLocalError / TypeError / KeyError / AttributeError / chat_persist_*_failed | 停 → 诊断 → 修 → 重启 → 计数清零 |
 | **🟡 行为问题** | supervisor 频繁触发 / 反复同工具 / write_file 反复失败 / hallucination 多次 | 评估，可能需要 prompt / cap 调整 |
 | **🟢 可忽略** | ws_closed_midstream / WebSocketDisconnect / IPC custom protocol failed / 单次 tool_use 失败被 auto_resume 接住 / args_malformed 后被 args_repaired | 不打断，记录到 cycle metrics |
+
+## 修复优先级（2026-05-15 加入）
+
+修复顺序：**code 执行层优先 → supervisor 层后修**
+
+1. **Code 执行层** (agent_loop / TerminationGate / tool dispatch / SessionDB persistence / MCP tools / write_file 等)
+   - 直接影响 agent 真正"能不能干活"
+   - 例：tool_call args 解析失败、write_file 超时、SessionDB 没持久化、Termination cap 误杀
+2. **Supervisor 层** (supervisor.py / watchdog / auto_resume / UI 提醒气泡)
+   - 影响"卡了之后能不能恢复 / 用户是否被骚扰"
+   - 但前提是 code 执行层稳定
+   - 例：supervisor 频繁误触发、auto-continue 死循环、UI 气泡噪音
+
+理由：supervisor 是 code 执行层的"消防员"，先确保不起火再优化消防响应。先修了 supervisor
+但 code 执行层还在着火，那 supervisor 只是不停地报警。
 
 ## 标准任务模板
 
