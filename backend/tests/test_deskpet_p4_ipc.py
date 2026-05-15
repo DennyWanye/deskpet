@@ -519,4 +519,7 @@ def test_message_type_membership() -> None:
     assert "memory_l1_list" in p4_ipc.P4_IPC_MESSAGE_TYPES
     assert "memory_l1_delete" in p4_ipc.P4_IPC_MESSAGE_TYPES
     assert "embedder_status" in p4_ipc.P4_IPC_MESSAGE_TYPES
-    assert len(p4_ipc.P4_IPC_MESSAGE_TYPES) == 6
+    # Phase 1.1.6（context-1m-rearch）：模型上下文配置卡片新增 2 个类型。
+    assert "model_context_get" in p4_ipc.P4_IPC_MESSAGE_TYPES
+    assert "model_context_set" in p4_ipc.P4_IPC_MESSAGE_TYPES
+    assert len(p4_ipc.P4_IPC_MESSAGE_TYPES) == 8

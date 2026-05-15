@@ -283,6 +283,68 @@ export interface EmbedderStatusResponse {
   };
 }
 
+// --- Phase 1.1.6 模型上下文配置卡片（context-1m-rearch）-------------------
+//
+// SettingsPanel「模型上下文」卡片 ←→ backend p4_ipc.py。
+//   model_context_get  → model_context_get_response（当前 resolve 结果 +
+//                         builtin 全表，渲染来源链 + 下拉）
+//   model_context_set  → model_context_set_ack（写回 global/project TOML）
+// 字段 snake_case 与后端 payload 逐字对齐，无翻译层。
+
+export interface ModelContextResolved {
+  context_window: number;
+  effective_pct: number;
+  compact_at_pct: number;
+  recall_sweet_tokens: number;
+  /** 解析链尾：哪一层最终决定了值。 */
+  source: "builtin" | "global" | "project" | string;
+}
+
+export interface ModelContextBuiltinEntry {
+  context_window: number;
+  effective_pct: number;
+  compact_at_pct: number;
+  recall_sweet_tokens: number;
+}
+
+export interface ModelContextGetRequest {
+  type: "model_context_get";
+  payload: { model?: string; project_root?: string };
+}
+
+export interface ModelContextGetResponse {
+  type: "model_context_get_response";
+  payload: {
+    model: string;
+    resolved: ModelContextResolved | Record<string, never>;
+    builtin: Record<string, ModelContextBuiltinEntry>;
+    /** 仅异常态："resolve_error: ..."。 */
+    reason?: string;
+  };
+}
+
+export interface ModelContextSetRequest {
+  type: "model_context_set";
+  payload: {
+    scope: "global" | "project";
+    model: string;
+    fields: Partial<ModelContextBuiltinEntry>;
+    /** scope="project" 时必填。 */
+    project_root?: string;
+  };
+}
+
+export interface ModelContextSetAck {
+  type: "model_context_set_ack";
+  payload: {
+    ok: boolean;
+    scope?: string;
+    model?: string;
+    /** ok=false 时的原因。 */
+    reason?: string;
+  };
+}
+
 // P4-S20: skill platform — re-exported from skillPlatform.ts to keep
 // the wire-contract definition close to the rest of the platform types.
 import type {
@@ -342,6 +404,8 @@ export type IncomingMessage =
   | MemoryL1ListResponse
   | MemoryL1DeleteAck
   | EmbedderStatusResponse
+  | ModelContextGetResponse
+  | ModelContextSetAck
   | PermissionRequest
   | ToolUseEvent
   | CodeModeStateMessage

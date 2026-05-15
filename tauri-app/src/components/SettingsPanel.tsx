@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { EmbedderStatusCard } from "./EmbedderStatusCard";
+import { ModelContextCard } from "./ModelContextCard";
 import { SettingsProviders } from "./SettingsProviders";
 import { HiyoriMotionTuner } from "./HiyoriMotionTuner";
 import type {
@@ -234,6 +235,8 @@ export function SettingsPanel({
         <section style={sectionStyle}>
           <h3 style={h3Style}>模型状态</h3>
           <EmbedderStatusCard getChannel={getChannel} />
+          {/* Phase 1.1.6（context-1m-rearch）：per-model 上下文窗口卡片 */}
+          <ModelContextCard getChannel={getChannel} />
         </section>
 
         {/* ================ 自动模式 (P4-S21 #13) ================ */}
