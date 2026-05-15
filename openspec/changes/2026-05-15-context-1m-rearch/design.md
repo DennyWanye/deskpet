@@ -44,6 +44,14 @@ class ContextConfig:
 
 向后兼容：`[context.manager].v2_enabled=false` 时退回旧的绝对值 ContextConfig（Strangler-Fig 回退闸）。
 
+> **2026-05-15 实测澄清**：Strangler-Fig 回退目标 = **本 slice（Phase 1 per-model 化）之前的最后已知-good 基线** = db20b25 的 stop-gap 绝对值
+> （`tool_result_threshold=16_000`、`compact_char_threshold=300_000`、
+> `compact_message_threshold=80`、head/tail=6_000/2_000），**不是**更早的
+> 原始 P6 出厂值（4_000/60_000/20）。回退的语义是"撤销 per-model 化、
+> 保留撤销前能跑的那套"，不是"回到史前"。`_LEGACY_*` 常量即按此定义，
+> Agent A 的实现与此一致；本文之前措辞（"真·P6 出厂值"）不精确，以此为准。
+> 真要回到 4_000/20 是另一个独立决定（不在 rollback 语义内）。
+
 ## D3 — File-read dedup（Phase 1.2，最便宜的解药）
 
 **决策**：在 `ContextManager.record_tool_result()` 维护 `dict[normalized_path, last_iter]`。当同一 path 再次被 `read_file`/`mcp_filesystem_read_text_file` 读取，把**历史中旧的那条 tool_result** 原地替换成：
