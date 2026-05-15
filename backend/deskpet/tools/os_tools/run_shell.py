@@ -207,6 +207,23 @@ def run_shell(args: dict[str, Any], task_id: str = "") -> str:
             "如需调整超时加 timeout（秒）。",
         )
 
+    # OpenSpec §D3 — companion session write-scope。chat handler 给陪伴
+    # session 经 session_context 注入 ``_write_scope_root``；命令里的
+    # mkdir/touch/cp/重定向 等写盘类操作越界 workspace → 拒绝整条命令
+    # （读类命令 ls/cat/grep 不受影响 — 不是沙箱）。code session /
+    # write_scope_enforced=false 不注入该键 → scope_root=None → 不拦。
+    _scope_root = args.get("_write_scope_root")
+    if _scope_root:
+        from agent.write_scope import shell_write_scope_check as _shell_ws_check
+
+        _violation = _shell_ws_check(command, scope_root=_scope_root)
+        if _violation is not None:
+            return _err(
+                _violation,
+                _violation,
+                command_preview=command[:200],
+            )
+
     # P6 bugfix 2026-05-14 (live-test R7): agent self-destruction guard.
     # LLM 在帮用户启动开发服务器时遇到端口占用，自作主张写了
     # "kill processes on port 5173" — 但 5173 是 deskpet 自己 vite dev

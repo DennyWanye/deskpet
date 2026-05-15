@@ -41,6 +41,15 @@ def edit_file(args: dict[str, Any], task_id: str = "") -> str:
     new = args.get("new_string", "")
     replace_all = bool(args.get("replace_all", False))
 
+    # OpenSpec §D3 — companion session write-scope（见 write_file 注释）。
+    _scope_root = args.get("_write_scope_root")
+    if isinstance(path, str) and path and _scope_root:
+        from agent.write_scope import write_scope_check as _ws_check
+
+        _violation = _ws_check(path, scope_root=_scope_root)
+        if _violation is not None:
+            return _err(_violation, _violation, path=path)
+
     if not isinstance(path, str) or not path:
         return _err(
             "path required",

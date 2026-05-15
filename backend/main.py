@@ -590,10 +590,19 @@ try:
 
     # P4-S17: MemoryManager and agent memory share SessionDB as the
     # canonical L2/conversation store.
+    # OpenSpec 2026-05-16-companion-context-isolation §D1/D4: inject the
+    # companion cross-session decay so the retriever down-weights an
+    # unrelated code-session project memory when serving a companion
+    # request. Absent / =1.0 → legacy behaviour (Strangler-Fig).
+    _comp_cfg = (config.raw.get("companion") if hasattr(config, "raw") else None) or {}
+    _xsess_decay = _comp_cfg.get("memory_cross_session_decay")
     _memory_manager = _MemoryManager(
         file_memory=_file_memory,
         session_db=_session_db,
         retriever=_retriever,
+        cross_session_decay=(
+            float(_xsess_decay) if _xsess_decay is not None else None
+        ),
     )
     service_context.register("memory_manager", _memory_manager)
 
@@ -2872,6 +2881,87 @@ async def control_channel(ws: WebSocket):
                                 "chat_persist_user_failed", error=str(exc),
                             )
 
+                    # OpenSpec 2026-05-16 §D2 — capability gate（防漂移）。
+                    # 在进 ContextAssembler / agent loop 前拦下"明显需要
+                    # deskpet 没有的能力"的请求（图像/视频/语音/作曲/3D
+                    # 生成），直接 graceful refuse + 替代建议，杜绝"无法
+                    # 完成 → 漂移到记忆里的旧项目"（2026-05-16 实测 bug：
+                    # default session 说"生成海报图片" → agent 建了 17 个
+                    # VPN CLI 文件）。这不是沙箱/弹窗，是诚实直接答复。
+                    # sentinel（<<auto_resume>> 等）不过门；available_tools
+                    # 实时从 ToolRegistry 取，新增图像工具自动放行。
+                    if not _is_sentinel:
+                        try:
+                            _cap_cfg = (config.raw.get("companion") or {})
+                            _cap_enabled = bool(
+                                _cap_cfg.get("capability_gate_enabled", True)
+                            )
+                            from agent.capability_gate import (
+                                classify_request as _cap_classify,
+                            )
+                            _avail_tools = (
+                                deskpet_tool_registry_v2.list_tools()
+                                if deskpet_tool_registry_v2 is not None
+                                else []
+                            )
+                            # 歧义兜底用的 haiku-class LLM：复用统一
+                            # provider 包一层 tool_use_shim（与 agent
+                            # loop 同 endpoint）。构造失败 → None →
+                            # 跳过兜底默认放行（不冤枉正常请求）。
+                            _gate_llm = None
+                            try:
+                                from agent.tool_use_shim import (
+                                    OpenAICompatibleAgentLLM as _GateShim,
+                                )
+                                _gate_provider = local_llm or cloud_llm
+                                if _gate_provider is not None:
+                                    _gate_llm = _GateShim(provider=_gate_provider)
+                            except Exception:  # noqa: BLE001
+                                _gate_llm = None
+                            _verdict = await _cap_classify(
+                                _text or "",
+                                available_tools=_avail_tools,
+                                enabled=_cap_enabled,
+                                llm_registry=_gate_llm,
+                            )
+                            from agent.capability_gate import Verdict as _Verdict
+                            if _verdict.verdict is _Verdict.REFUSE:
+                                _refuse_text = _verdict.render_text()
+                                logger.info(
+                                    "capability_gate_refused sid=%s text=%s",
+                                    _sid, (_text or "")[:120],
+                                )
+                                # 直接当一轮 assistant 回复落库 + 推前端，
+                                # 不进 agent loop。
+                                if _sdb is not None:
+                                    try:
+                                        _ref_id = await _sdb.append_message(
+                                            session_id=_sid,
+                                            role="assistant",
+                                            content=_refuse_text,
+                                        )
+                                        if _vw is not None and _ref_id is not None:
+                                            await _vw.enqueue(_ref_id, _refuse_text)
+                                    except Exception as _ex:  # noqa: BLE001
+                                        logger.warning(
+                                            "capability_gate_persist_failed error=%s",
+                                            _ex,
+                                        )
+                                await _ws.send_json({
+                                    "type": "chat_v2_final",
+                                    "payload": {
+                                        "text": _refuse_text,
+                                        "iterations": 0,
+                                        "session_id": _sid,
+                                    },
+                                })
+                                return
+                        except Exception as _cap_exc:  # noqa: BLE001
+                            # 能力门永远不能阻断正常对话——异常即放行。
+                            logger.debug(
+                                "capability_gate_skipped error=%s", _cap_exc
+                            )
+
                     # ContextAssembler — 把长期记忆 / 技能 / MCP 工具描述
                     # 装入 message stack（继承自原 chat 路径，丢失就降级
                     # 到只发用户原话，永远不让 chat 因 assembler 异常炸）。
@@ -3153,6 +3243,46 @@ async def control_channel(ws: WebSocket):
                                 deskpet_tool_registry_v2.set_session_context(
                                     _sid,
                                     {"_project_root": str(_proot)},
+                                )
+                        else:
+                            # OpenSpec 2026-05-16 §D3 — companion session
+                            # write-scope。陪伴 session 的写盘类工具 path
+                            # 限定在 resolve(workspace_root) 内（默认
+                            # <user_data_dir>/workspace）；越界 → 工具
+                            # 返回引导文案让用户进 code 模式。这不是
+                            # 沙箱（不拦读/命令/弹窗），是 session 类型
+                            # 语义。``set_session_context`` 注入的
+                            # ``_write_scope_root`` 会被 execute_tool 合并
+                            # 进每次 tool 调用 params，写盘工具据此校验。
+                            # write_scope_enforced=false → 不注入 + 清掉
+                            # 残留 → 工具读不到该键 → 退回旧自由写盘。
+                            try:
+                                _comp_cfg = (config.raw.get("companion") or {})
+                                _ws_enforced = bool(
+                                    _comp_cfg.get("write_scope_enforced", True)
+                                )
+                                if _ws_enforced:
+                                    from agent.write_scope import (
+                                        resolve_workspace_root as _resolve_ws,
+                                    )
+                                    _ws_root = _resolve_ws(
+                                        configured=str(
+                                            _comp_cfg.get("workspace_root", "")
+                                        )
+                                    )
+                                    deskpet_tool_registry_v2.set_session_context(
+                                        _sid,
+                                        {"_write_scope_root": str(_ws_root)},
+                                    )
+                                else:
+                                    # 显式回退：清掉可能残留的 scope
+                                    deskpet_tool_registry_v2.set_session_context(
+                                        _sid, None
+                                    )
+                            except Exception as _ws_exc:  # noqa: BLE001
+                                logger.debug(
+                                    "companion_write_scope_skipped sid=%s err=%s",
+                                    _sid, _ws_exc,
                                 )
 
                         # P4-S25 A2: Plan/Replan — for non-trivial code-mode

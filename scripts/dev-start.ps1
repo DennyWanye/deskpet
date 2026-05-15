@@ -37,27 +37,29 @@ if (-not (Test-Path $venvPy)) {
     exit 1
 }
 
-Write-Host "==> Starting backend in a new console window..." -ForegroundColor Cyan
+# 2026-05-16 (companion-context-isolation Phase 4 dev-harness fix):
+# 之前 dev-start.ps1 自己开一个 backend 控制台 + `npm run tauri dev` 里
+# Tauri 的 backend_launch.rs 又开一个 → "两 backend 抢 8100" 竞态；且
+# Tauri 进程没继承 DESKPET_BACKEND_DIR，backend_launch.rs Priority 1
+# 被跳过，落到 stale 的 target/debug/backend/deskpet-backend.exe（旧
+# PyInstaller 包），表现为 "找不到 Python backend / exited without
+# SHARED_SECRET"，反复挡住所有 UI E2E。
+#
+# 修复：不再自己 spawn backend。把 4 个 env 设进**当前进程**，`npm run
+# tauri dev` 子进程继承之 → backend_launch.rs Priority 1
+# (DESKPET_BACKEND_DIR) 命中 → 用 .venv python 起**单一** backend。
+# 单一拥有者，竞态消失，stale exe 不再被选中。
+Write-Host "==> Configuring single-owner backend env (Tauri spawns it via .venv)" -ForegroundColor Cyan
 Write-Host "    interpreter: $venvPy" -ForegroundColor DarkGray
-$env_args = @{
-    DESKPET_USER_DATA_DIR = $userdata
-    DESKPET_DEV_MODE      = "1"
-    # Make Tauri's backend_launch.rs use the same .venv if it ever spawns
-    # a parallel sidecar (defends against the "two backends, one wins
-    # 8100" race we hit on 2026-05-15).
-    DESKPET_PYTHON        = $venvPy
-}
-$envCmd = ($env_args.GetEnumerator() | ForEach-Object { "`$env:$($_.Key)='$($_.Value)'" }) -join "; "
-Start-Process -FilePath "powershell" `
-    -ArgumentList "-NoExit", "-Command", "$envCmd; cd '$backend'; & '$venvPy' main.py" `
-    -WorkingDirectory $backend
+$env:DESKPET_USER_DATA_DIR = $userdata
+$env:DESKPET_DEV_MODE      = "1"
+$env:DESKPET_PYTHON        = $venvPy
+# Priority 1 in backend_launch.rs — the "I'm a dev, run from source"
+# signal that must beat the bundled exe. THIS is the line whose absence
+# caused the stale-exe bug.
+$env:DESKPET_BACKEND_DIR   = $backend
 
-# Backend takes ~5-8s to bind 8100; give it a head start so the
-# Tauri webview's WebSocket finds it open on first connect.
-Write-Host "    waiting 8s for backend to bind 127.0.0.1:8100..."
-Start-Sleep -Seconds 8
-
-Write-Host "`n==> Starting Tauri dev (frontend will hot-reload, edit src/ to see changes)" -ForegroundColor Cyan
+Write-Host "`n==> Starting Tauri dev (single backend via .venv; frontend hot-reloads)" -ForegroundColor Cyan
 Push-Location $tauri
 try {
     npm run tauri dev

@@ -36,6 +36,18 @@ def write_file(args: dict[str, Any], task_id: str = "") -> str:
     path = args.get("path", "")
     overwrite = bool(args.get("overwrite", False))
 
+    # OpenSpec §D3 — companion session write-scope。chat handler 给陪伴
+    # session 经 ToolRegistry.set_session_context 注入 ``_write_scope_root``；
+    # 越界写直接拒绝（不是沙箱，是 session 类型语义）。code session /
+    # write_scope_enforced=false 时不会注入该键 → scope_root=None → 不拦。
+    _scope_root = args.get("_write_scope_root")
+    if isinstance(path, str) and path and _scope_root:
+        from agent.write_scope import write_scope_check as _ws_check
+
+        _violation = _ws_check(path, scope_root=_scope_root)
+        if _violation is not None:
+            return _err(_violation, _violation, path=path)
+
     if not isinstance(path, str) or not path:
         # P6 bugfix 2026-05-14 (live-test R4): LLM 连续 3 次 write_file
         # 漏掉 path 字段（只发 content），触发 circuit breaker 熔断。

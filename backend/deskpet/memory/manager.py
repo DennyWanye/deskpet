@@ -70,10 +70,17 @@ class MemoryManager:
         file_memory: FileMemory,
         session_db: Any,
         retriever: Optional["Retriever"] = None,
+        cross_session_decay: float | None = None,
     ) -> None:
         self._file_memory = file_memory
         self._session_db = session_db
         self._retriever = retriever
+        # OpenSpec 2026-05-16-companion-context-isolation §D1: companion
+        # session 召回 code-session 项目类记忆的降权系数。None → retriever
+        # 用其安全默认 (_DEFAULT_CROSS_SESSION_DECAY=0.15)。config.toml
+        # [companion].memory_cross_session_decay=1.0 → 退回旧行为
+        # (Strangler-Fig)。由 main.py 读 config 注入此值。
+        self._cross_session_decay = cross_session_decay
 
     # ------------------------------------------------------------------
     # Bootstrap
@@ -260,8 +267,25 @@ class MemoryManager:
             # because they predate the final signature. Try the real
             # keyword-arg shape first, then fall back for the fake.
             if hasattr(retriever, "recall"):
+                # OpenSpec 2026-05-16-companion-context-isolation §D1:
+                # 透传当前 session id/kind + decay，让 retriever 对
+                # companion session 召回的 cross-session 项目类记忆降权。
+                # session_id 由 memory.py 组件放进 policy（ctx.session_id）。
+                # kind 规则（design D1）：``code-`` 前缀 = code，否则 companion。
+                _sid = policy.get("session_id")
+                _kind = (
+                    "code"
+                    if isinstance(_sid, str) and _sid.startswith("code-")
+                    else "companion"
+                )
                 try:
-                    hits = await retriever.recall(query, top_k=top_k)
+                    hits = await retriever.recall(
+                        query,
+                        top_k=top_k,
+                        cur_session_id=_sid,
+                        cur_session_kind=_kind,
+                        cross_session_decay=self._cross_session_decay,
+                    )
                 except TypeError:
                     # Fake retriever in unit tests accepts (query, policy).
                     hits = await retriever.recall(query, {**policy, "top_k": top_k})

@@ -152,6 +152,24 @@ tool_signature_repeat_threshold = 3
 # signal than "running but quiet".
 idle_with_todos_threshold_seconds = 60
 
+# OpenSpec 2026-05-16-companion-context-isolation: 修复实测严重 bug
+# （用户在 default 陪伴 session 说"生成海报图片"，agent 却翻出 8 天前
+# code session 的 VPN 项目记忆，建了 17 个 vpn-cli 文件）。三个开关均
+# Strangler-Fig 可回退；code session 全程不受影响。
+[companion]
+# D1: companion session 召回 *其它 code session* 的"项目/任务类"记忆时
+# 的降权系数。0.15 = 强降权（默认，防劫持，人物/偏好类仍保留 0.8）；
+# 1.0 = 不降权（完全退回旧召回行为）。
+memory_cross_session_decay = 0.15
+# D2: 无对应工具能完成的请求（生成图片/视频/语音/3D 等）→ graceful
+# refuse + 建议，不进 agent loop 漂移。false = 旧行为（啥都进 loop）。
+# 这不是沙箱/弹窗，是诚实直接答复；新增图像工具后自动放行。
+capability_gate_enabled = true
+# D3: companion(default) session 写盘类工具限定在 workspace 根，不允许
+# 写任意仓库路径（code session 绑定 project_root 不受影响）。false =
+# 旧行为（自由写盘）。session 类型语义，非权限墙。
+write_scope_enforced = true
+
 [memory]
 # P3-S7: leave db_path empty to use the OS-standard user data directory
 # (%AppData%\deskpet\data\memory.db on Windows). Set an absolute path

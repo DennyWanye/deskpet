@@ -69,6 +69,50 @@ log = logging.getLogger(__name__)
 _RRF_K = 60
 
 # ----------------------------------------------------------------------
+# Session-affinity 常量（OpenSpec 2026-05-16-companion-context-isolation §D1）
+# ----------------------------------------------------------------------
+# 跨 session 项目类记忆在 companion session 的默认降权系数。config.toml
+# [companion].memory_cross_session_decay 缺失时用这个安全默认（Phase 4
+# 才正式落 config 段；本 Phase 只读，不写 config.toml）。
+_DEFAULT_CROSS_SESSION_DECAY = 0.15
+# code session 产生的"人物/偏好/闲聊"类记忆，在 companion 当前会话只轻降，
+# 保留"桌宠记得你"能力（spec: Cross-session person/preference memory still
+# recalled）。
+_PERSON_CLASS_COMPANION_AFFINITY = 0.8
+# code 当前会话召回到另一个 code session 的记忆 → 中等降权（不同项目互不
+# 强污染，但仍可借鉴）。
+_CODE_FROM_OTHER_CODE_AFFINITY = 0.5
+# code session_id 约定前缀（companion/default 不带此前缀）。design.md §D1。
+_CODE_SESSION_PREFIX = "code-"
+# 项目/任务类判定：消息含路径/代码特征的轻量正则线索（规则优先，不引 LLM）。
+_CODE_FEATURE_HINTS = (
+    "/",          # posix 路径分隔
+    "\\",         # windows 路径分隔
+    ".py",
+    ".c",
+    ".cpp",
+    ".rs",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".go",
+    ".java",
+    ".json",
+    ".toml",
+    ".sql",
+    ".sh",
+    "def ",
+    "class ",
+    "import ",
+    "function ",
+    "mkdir",
+    "git ",
+    "npm ",
+    "pip ",
+    "```",        # code fence
+)
+
+# ----------------------------------------------------------------------
 # Salience boost / decay 常量
 # ----------------------------------------------------------------------
 # recall 命中时给 salience 的默认增量（spec "Recall boosts salience" 要求 0.05）
@@ -163,8 +207,16 @@ class Retriever:
     # Public entrypoint
     # ------------------------------------------------------------------
 
-    async def recall(self, query: str, top_k: int | None = None) -> list[Hit]:
-        """四路 fan-out → RRF 融合 → salience boost → 返回 top_k。
+    async def recall(
+        self,
+        query: str,
+        top_k: int | None = None,
+        *,
+        cur_session_id: str | None = None,
+        cur_session_kind: str | None = None,
+        cross_session_decay: float | None = None,
+    ) -> list[Hit]:
+        """四路 fan-out → RRF 融合 → session-affinity 降权 → salience boost → top_k。
 
         Parameters
         ----------
@@ -175,17 +227,28 @@ class Retriever:
             最终返回条数上限；None 时取 ``policy.top_k``。每路 fan-out
             内部都拉 ``policy.top_k`` 条候选（给 RRF 足够合并空间），
             最后裁到 top_k。
+        cur_session_id:
+            当前请求所在 session_id。**不传 → 完全退回旧行为**
+            （affinity=1.0，现有调用方零影响 —— Strangler-Fig + 1.5 不回归）。
+        cur_session_kind:
+            当前 session 种类 ``"companion"`` | ``"code"``；None 时由
+            ``cur_session_id`` 推断（design.md §D1）。
+        cross_session_decay:
+            跨 session 项目类记忆在 companion 当前会话的降权系数。来自
+            ``config.toml [companion].memory_cross_session_decay``，由调用方
+            读出后传入；None 时用安全默认 ``0.15``。``1.0`` = 退回旧行为。
 
         Returns
         -------
         list[Hit]
-            按 RRF score 降序。允许返回少于 top_k（候选不足时）。
+            按（affinity 加权后的）RRF score 降序。允许返回少于 top_k。
 
         Failure isolation
         -----------------
         * 任一信号抛异常 → 只 log warning，剩下的信号继续融合。
         * embedder 未 ready / sqlite-vec 不可用 → 自动跳过 vec 路。
         * 所有信号都挂 → 返回空 list（调用方据此降级）。
+        * session-affinity 元数据补取失败 → 只 log，退回未降权结果（不抛）。
         """
         if not query or not query.strip():
             return []
@@ -230,6 +293,26 @@ class Retriever:
         # 才能构造 Hit。一次 SQL 批量拉。
         if not fused:
             return []
+
+        # ---- session-affinity（OpenSpec D1）----------------------------
+        # 只在调用方传了当前 session 上下文时启用；否则完全退回旧行为
+        # （Strangler-Fig：现有 recall(query, top_k=...) 调用零影响 / 1.5）。
+        # affinity 必须在"裁到 top_k 之前"应用 —— 被降权的跨 session 项目
+        # 记忆要真正掉出排名，而不是只把分数压低却仍占坑（spec: SHALL NOT
+        # rank above memories relevant to the current request）。
+        apply_affinity = cur_session_id is not None or cur_session_kind is not None
+        if apply_affinity:
+            decay = (
+                cross_session_decay
+                if cross_session_decay is not None
+                else _DEFAULT_CROSS_SESSION_DECAY
+            )
+            # decay>=1.0 直接跳过整段（纯函数也会返回 1.0，这里再省一次
+            # 全量 meta 取，保证回退路径与旧行为 byte-identical）。
+            if decay < 1.0:
+                fused = await self._apply_session_affinity(
+                    fused, cur_session_id, cur_session_kind, decay
+                )
 
         top_items = fused[:effective_top_k]
         ids = [mid for mid, _, _ in top_items]
@@ -464,6 +547,208 @@ class Retriever:
             int(r[0]): {"content": r[1], "created_at": float(r[2])}
             for r in rows
         }
+
+    async def _fetch_session_meta(
+        self, message_ids: list[int]
+    ) -> dict[int, dict]:
+        """批量拿每条 message 的 session-affinity 判定所需元数据。
+
+        Returns ``{id: {session_id, is_summary, tool_calls, content, role}}``。
+        空列表返回 ``{}``。这些字段都在 ``messages`` 表里（schema v10：
+        is_summary/tool_calls 已存在），一次 ``IN (...)`` 取齐，O(候选数)。
+        """
+        if not message_ids:
+            return {}
+        placeholders = ",".join("?" for _ in message_ids)
+        db_path = str(self._db._db_path)
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute(
+                f"SELECT id, session_id, is_summary, tool_calls, content, role "
+                f"FROM messages WHERE id IN ({placeholders})",
+                tuple(message_ids),
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+        return {
+            int(r[0]): {
+                "session_id": r[1],
+                "is_summary": r[2],
+                "tool_calls": r[3],
+                "content": r[4],
+                "role": r[5],
+            }
+            for r in rows
+        }
+
+    async def _apply_session_affinity(
+        self,
+        fused: list[tuple[int, float, str]],
+        cur_sid: str | None,
+        cur_kind: str | None,
+        decay: float,
+    ) -> list[tuple[int, float, str]]:
+        """对 RRF 融合结果乘 session-affinity 后重排（OpenSpec D1）。
+
+        在裁 top_k **之前** 调用：被降权的跨 session 项目记忆要真正掉
+        rank（spec: SHALL NOT rank above memories relevant to current
+        request），不能只压分却仍占坑。
+
+        失败隔离：补取 session 元数据出错只 log，原样返回未降权 fused
+        （recall 不因 affinity 这一步崩，符合 retriever 的降级契约）。
+        """
+        if not fused:
+            return fused
+        ids = [mid for mid, _, _ in fused]
+        try:
+            smeta = await self._fetch_session_meta(ids)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "session-affinity meta fetch failed: %s (n=%d); "
+                "falling back to un-weighted fused",
+                exc,
+                len(ids),
+            )
+            return fused
+
+        reweighted: list[tuple[int, float, str]] = []
+        for mid, score, source in fused:
+            row = smeta.get(mid)
+            if row is None:
+                # message 在 fan-out 与 meta 取之间被删 → 不降权，保留。
+                reweighted.append((mid, score, source))
+                continue
+            aff = _session_affinity(row, cur_sid, cur_kind, decay)
+            reweighted.append((mid, score * aff, source))
+
+        # 重排：affinity 加权后分数降序；同分按 message_id 升序稳定 tie-break
+        # （与 _rrf_fuse 末尾的 tie-break 规则一致，结果 deterministic）。
+        reweighted.sort(key=lambda t: (-t[1], t[0]))
+        return reweighted
+
+
+# ======================================================================
+# Session-affinity pure functions (no IO) — OpenSpec D1
+# ======================================================================
+
+
+def _session_kind(session_id: str | None) -> str:
+    """判定一个 session 的"种类"：``"code"`` 还是 ``"companion"``。
+
+    约定（design.md §D1）：``code-`` 前缀的 session 是 code-mode 项目会话；
+    其余（含陪伴默认 ``"default"``、普通 uuid、缺失）都是 companion。
+    保守策略：拿不准 → companion（不把记忆边界升级成更强的 code 项目类）。
+    """
+    if not session_id:
+        return "companion"
+    if session_id.startswith(_CODE_SESSION_PREFIX):
+        return "code"
+    return "companion"
+
+
+def _is_project_class(mem_row: dict) -> bool:
+    """判定一条记忆是"项目/任务类"还是"人物/偏好/闲聊类"。
+
+    规则优先，**不引 LLM**（design.md §D1 / tasks 1.4）。命中任一即项目类：
+
+    * ``is_summary == 1`` —— LLM 对一段（多为 code）会话的总结
+    * ``tool_calls`` 非空 —— agent 真干过活（write_file / run_shell …）
+    * source ``session_id`` 以 ``code-`` 开头 **且** 正文含路径/代码特征
+
+    其余（纯文本闲聊 / 偏好陈述 / companion 普通消息）→ 人物类。
+
+    Parameters
+    ----------
+    mem_row:
+        记忆行 dict，至少含 ``session_id`` / ``is_summary`` / ``tool_calls``
+        / ``content``。缺字段按"无该特征"处理（不抛）。
+    """
+    if _truthy_int(mem_row.get("is_summary")):
+        return True
+    tc = mem_row.get("tool_calls")
+    if tc is not None and str(tc).strip() not in ("", "[]", "null", "None"):
+        return True
+    sid = mem_row.get("session_id")
+    if sid and str(sid).startswith(_CODE_SESSION_PREFIX):
+        content = str(mem_row.get("content") or "")
+        lowered = content.lower()
+        if any(hint in lowered for hint in _CODE_FEATURE_HINTS):
+            return True
+    return False
+
+
+def _session_affinity(
+    mem_row: dict,
+    cur_sid: str | None,
+    cur_kind: str | None,
+    decay: float,
+) -> float:
+    """纯函数：算一条记忆相对当前 session 的 affinity 乘性权重。
+
+    返回值乘到 RRF 融合分上（不是过滤 —— 保留"桌宠记得你"）。矩阵
+    （design.md §D1 / specs/memory-recall/spec.md）::
+
+        same session                                  → 1.0
+        cur=companion, mem from code, 项目/任务类      → decay   (默认 0.15)
+        cur=companion, mem from code, 人物/偏好/闲聊类 → 0.8
+        cur=code,      mem from other code session     → 0.5
+        其它                                           → 1.0
+
+    Strangler-Fig：``decay == 1.0`` 时**所有**分支都返回 1.0，完全退回
+    旧召回行为（spec: decay=1.0 restores legacy behavior）。
+
+    Parameters
+    ----------
+    mem_row:
+        记忆行 dict（``session_id`` / ``is_summary`` / ``tool_calls`` /
+        ``content``）。缺 ``session_id`` → 当作"无法判定来源"，返回 1.0
+        （不降权，安全保守）。
+    cur_sid:
+        当前请求所在 session_id。
+    cur_kind:
+        当前 session 种类 ``"companion"`` | ``"code"``；None 时由
+        ``cur_sid`` 推断。
+    decay:
+        跨 session 项目类降权系数（来自 config）。1.0 = 不降权（回退）。
+    """
+    # Strangler-Fig 总开关：decay=1.0 → 旧行为，所有 affinity=1.0。
+    # 放最前面，保证回退路径零分支歧义。
+    if decay >= 1.0:
+        return 1.0
+
+    mem_sid = mem_row.get("session_id")
+    # 来源不明（旧数据 / 异常行）→ 不降权，保守返回 1.0。
+    if not mem_sid:
+        return 1.0
+
+    # 同 session：原权重，不动（spec: Same-session memory unaffected）。
+    if cur_sid is not None and mem_sid == cur_sid:
+        return 1.0
+
+    cur_kind = cur_kind or _session_kind(cur_sid)
+    mem_kind = _session_kind(mem_sid)
+
+    if cur_kind == "companion" and mem_kind == "code":
+        # companion 当前会话被 code-session 记忆"污染"的主路径。
+        if _is_project_class(mem_row):
+            return decay  # 强降权，防 8 天前 VPN 项目劫持"画图"请求
+        return _PERSON_CLASS_COMPANION_AFFINITY  # 人物/偏好类只轻降
+
+    if cur_kind == "code" and mem_kind == "code":
+        # 当前 code session ← 另一个 code session（已排除同 session）。
+        return _CODE_FROM_OTHER_CODE_AFFINITY
+
+    # 其它（cur=code←companion、companion←companion 跨 session 等）→ 不降权。
+    return 1.0
+
+
+def _truthy_int(value) -> bool:
+    """把 SQLite 可能返回的 0/1/None/'1' 归一成 bool（容错，不抛）。"""
+    if value is None:
+        return False
+    try:
+        return int(value) != 0
+    except (TypeError, ValueError):
+        return bool(value)
 
 
 # ======================================================================
