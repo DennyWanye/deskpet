@@ -65,10 +65,23 @@ class ContextConfig:
     separate dataclasses through the call sites.
     """
 
+    # 2026-05-15 一次性按 4x 放大（200K → 800K context 同比例），
+    # 与 config.toml [agent].context_window_tokens=800000 配套。
+    # 调研依据：
+    #   - Claude Code: compact at ~83% window
+    #   - Cline: compact at 80% window
+    #   - DeepSeek-TUI: cycle restart at 75% (768K of 1M)
+    #   - Codex: per-model effective_context_window_percent = 95%
+    # 当前 deskpet 是 absolute char/msg 阈值，不是按比例；中长期应该改成
+    # per-model 比例触发（参考 codex-rs/models-manager/src/model_info.rs）。
+
     # B1 truncation
-    tool_result_threshold: int = 4000
-    tool_result_head: int = 1500
-    tool_result_tail: int = 500
+    # 4K → 16K：原阈值对应 32K context 时代，工具结果切太狠是今天 small/code
+    # 模式下 50-轮爆的主因之一（小说网站 sid=code-rkjdd9vo 反复 fetch_tool_result
+    # 拿切片导致循环）。Codex 的 exec/MCP 阈值是 1 MiB，16K 是保守中间值。
+    tool_result_threshold: int = 16_000
+    tool_result_head: int = 6_000
+    tool_result_tail: int = 2_000
     # B1 self-awareness — the G1 fix lives here.  Adding a new "must keep
     # full body" tool is a one-set-edit, not a code change.
     skip_truncation_for_tools: set[str] = field(
@@ -76,11 +89,17 @@ class ContextConfig:
     )
 
     # B2 compaction
-    compact_message_threshold: int = 20
-    compact_char_threshold: int = 60_000
-    compact_keep_recent: int = 6
+    # 20 msgs / 60K chars → 80 msgs / 300K chars：800K context 下 60K 太早压缩，
+    # 反复摘要会破 prefix cache 也会丢细节。Claude Code 的触发点是
+    # (window - max(out, 20K) - 13K)，800K 模型下约 767K（96%）。这里保守一些。
+    compact_message_threshold: int = 80
+    compact_char_threshold: int = 300_000
+    # keep_recent 也从 6 → 12，避免长 agent 任务（write_file 大块文件）压缩后
+    # 丢失最近上下文。
+    compact_keep_recent: int = 12
 
-    # B3 budget
+    # B3 budget — 比例不动，因为 0.80/0.95 已经和行业一致；window 自动跟着
+    # config.toml 的 800K 走，warn 在 640K / block 在 760K。
     budget_warn_pct: float = 0.80
     budget_block_pct: float = 0.95
 

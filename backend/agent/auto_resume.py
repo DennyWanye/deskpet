@@ -182,6 +182,14 @@ class AutoResumeOrchestrator:
 
         # 3) Supervisor said ask_user → don't auto-spawn, don't bump.
         if sup_action.action == "ask_user":
+            # 2026-05-15: 此前是静默 return，事后看 log 无法解释
+            # "为啥 max_iter 触发了 auto_resume 但没 spawn" —— 因为
+            # supervisor 明确判了 ask_user，需要人介入。落 INFO 日志。
+            logger.info(
+                "auto_resume_skipped sid=%s reason=supervisor_decided_ask_user "
+                "attempts=%d snapshot_reason=%s",
+                sid, attempts_so_far, snapshot.get("reason", ""),
+            )
             return AutoResumeResult(
                 action="ask_user",
                 attempt=attempts_so_far,
@@ -190,6 +198,15 @@ class AutoResumeOrchestrator:
 
         # 4) Supervisor said wait/cancel/etc — degrade to popup path too.
         if sup_action.action != "nudge" or not sup_action.hint_for_main_agent:
+            # 同样落日志：supervisor 给了非 nudge 决策或 nudge 但没 hint，
+            # auto_resume 无法 spawn，最终用户会看到"自愈失败"。
+            logger.info(
+                "auto_resume_skipped sid=%s reason=supervisor_no_actionable_nudge "
+                "action=%s has_hint=%s attempts=%d",
+                sid, sup_action.action,
+                bool(sup_action.hint_for_main_agent),
+                attempts_so_far,
+            )
             return AutoResumeResult(
                 action="ask_user",
                 attempt=attempts_so_far,
@@ -268,8 +285,6 @@ class AutoResumeOrchestrator:
     async def _emit_exhausted(
         self, sid: str, snapshot: dict[str, Any], attempts: int,
     ) -> None:
-        if self._emit is None:
-            return
         # final_error: best-effort summary from snapshot
         final_error = (
             snapshot.get("detail")
@@ -277,6 +292,21 @@ class AutoResumeOrchestrator:
             or snapshot.get("reason")
             or ""
         )
+        # 2026-05-15: 此前这里只 emit WS 不写日志 → 用户在 UI 上看到红字
+        # "自愈失败（N 次尝试）: ..." 但 backend.log 里找不到对应记录，事后
+        # 完全没法溯源到底卡在哪个 supervisor 决策上。WARNING 级别落盘 +
+        # snapshot 的 reason/iteration 一并打下来，方便后续翻 transcript。
+        logger.warning(
+            "auto_resume_exhausted sid=%s attempts=%d reason=%s "
+            "snapshot_iter=%s final_error=%s",
+            sid,
+            attempts,
+            snapshot.get("reason", ""),
+            snapshot.get("iteration", ""),
+            str(final_error)[:300],
+        )
+        if self._emit is None:
+            return
         try:
             await self._emit("auto_resume_exhausted", {
                 "session_id": sid,

@@ -33,6 +33,14 @@ deskpet/
 cd backend
 uv sync
 
+# BGE-M3 语义嵌入需要 CUDA torch（PyPI 默认是 CPU-only 轮子）。
+# 2026-05-15 verified 组合（其余版本踩过 segfault 坑）：
+pip install --index-url https://download.pytorch.org/whl/cu124 \
+    torch torchvision torchaudio
+pip install "transformers>=4.45,<5" "FlagEmbedding>=1.2,<1.4" "peft<0.15"
+# 验证：python -c "from FlagEmbedding import BGEM3FlagModel; import torch; print(torch.cuda.is_available())"
+# 必须输出 True 才能脱离 Embedder mock 模式；详见 pyproject.toml 的 ABI pinning 注释。
+
 # 本地开发建议开启 dev 模式（跳过 WebSocket 共享密钥校验）
 export DESKPET_DEV_MODE=1   # Windows: set DESKPET_DEV_MODE=1
 uv run python main.py

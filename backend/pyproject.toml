@@ -34,7 +34,23 @@ dependencies = [
     "sqlite-vec>=0.1",
     # P4-S2: BGE-M3 embedding (multilingual, 1024-dim) via FlagEmbedding.
     # INT8 weights live in user_models_dir()/bge-m3-int8/ (~286MB).
-    "FlagEmbedding>=1.2",
+    #
+    # 2026-05-15 ABI pinning（踩坑记录）：FlagEmbedding 1.4 + transformers 5.x
+    # + peft 0.19 + pandas 3.0 在 Windows + Python 3.11 上 import 链直接
+    # ACCESS_VIOLATION（segfault）。1.3.5 + transformers 4.57 + peft 0.14
+    # 这组合 verified 稳定（cu124 torch / RTX 4090 / fp16 / 1396ms 加载）。
+    # 解除 pin 之前先在 dev venv 上 `python -c "from FlagEmbedding import BGEM3FlagModel"`
+    # 跑通再放行——否则 backend 会静默降级 mock 模式。
+    "FlagEmbedding>=1.2,<1.4",
+    "transformers>=4.45,<5",
+    "peft<0.15",
+    # torch CUDA wheel：默认 PyPI 是 CPU-only，部署时需要显式选择 CUDA
+    # channel。在 dev venv 中执行：
+    #   pip install --index-url https://download.pytorch.org/whl/cu124 \
+    #       torch torchvision torchaudio
+    # 然后 `pip install -e .[dev]` 不会覆盖（torch 版本号匹配即可）。
+    # CI / frozen build 通过 build-msi.ps1 控制 CUDA channel。
+    "torch>=2.6,<3",
     # P4-S5: web tool suite — trafilatura extracts main article text and
     # metadata from arbitrary HTML, much more robust than BeautifulSoup for
     # news / blog / docs pages.

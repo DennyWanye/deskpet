@@ -14,7 +14,11 @@ model = "gemma4:e4b"
 base_url = "http://localhost:11434/v1"
 api_key = "ollama"
 temperature = 0.7
-max_tokens = 2048
+# 2026-05-15: 2048 token 输出对 code mode write_file 6KB+ 文件不够（~2000 token
+# 直接被截断成 malformed JSON）。agent_loop.py 已 hardcode 提到 8192，这里同步
+# 让 config.toml 不再误导。8192 对 deepseek-v4-pro / claude-sonnet / gpt-5 都安全；
+# 本地小模型（gemma:4b 等）实际上限通常 4096，按需调低即可。
+max_tokens = 8192
 daily_budget_cny = 10.0
 # 当 base_url 不是 localhost 时，BillingLedger 会按 daily_budget_cny 限额；
 # localhost 调用始终免费不计费。
@@ -199,9 +203,17 @@ salience_weight = 0.05
 # budget allocator. `interrupt_enabled` hooks ASR hot-words ("等一下/停")
 # to cancel an in-flight turn; `tts_pre_narration` triggers the TTS
 # pre-utterance on the first stream chunk (design.md D2 / task 12.14).
+#
+# 2026-05-15 调研 Claude Code / Codex / Aider / Cline / DeepSeek-TUI 之后修正：
+# - deepseek-v4-pro 名义支持 1M，但论文 Figure 9 实测召回 256K=0.76 / 1M=0.59，
+#   context 越大利用率越差。DeepSeek-TUI 自己也只用到 768K 就触发 cycle restart。
+# - 这里设 800_000 给上层 budget 用 + ContextManager 阈值同比例 ×4
+#   （配套常量改在 backend/agent/context_manager.py::ContextConfig）。
+# - 切到 claude-sonnet/opus (200K) 或本地 ollama (32K) 时需要降这个值，
+#   后续应改成 per-model map（参考 codex-rs/models-manager/src/model_info.rs）。
 [agent]
 max_iterations = 20
-context_window_tokens = 200000
+context_window_tokens = 800000
 interrupt_enabled = true
 tts_pre_narration = true
 

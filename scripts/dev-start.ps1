@@ -26,14 +26,30 @@ Get-Process | Where-Object { $_.ProcessName -in @("python","deskpet","deskpet-ba
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
+# 2026-05-15: 必须显式指向 .venv python，否则 PATH 会解析到系统 Python，
+# 进而装在 .venv 的 FlagEmbedding / torch-cuda 全部白装，BGE-M3 静默
+# 降级 mock。dev 模式 venv 是 backend/.venv，frozen 模式由 backend_launch.rs
+# 解析；这里只管 dev。
+$venvPy = Join-Path $backend ".venv\Scripts\python.exe"
+if (-not (Test-Path $venvPy)) {
+    Write-Host "ERROR: backend .venv missing at $venvPy" -ForegroundColor Red
+    Write-Host "  Run: cd backend; python -m venv .venv; .venv\Scripts\Activate.ps1; pip install -e .[dev]" -ForegroundColor Yellow
+    exit 1
+}
+
 Write-Host "==> Starting backend in a new console window..." -ForegroundColor Cyan
+Write-Host "    interpreter: $venvPy" -ForegroundColor DarkGray
 $env_args = @{
     DESKPET_USER_DATA_DIR = $userdata
     DESKPET_DEV_MODE      = "1"
+    # Make Tauri's backend_launch.rs use the same .venv if it ever spawns
+    # a parallel sidecar (defends against the "two backends, one wins
+    # 8100" race we hit on 2026-05-15).
+    DESKPET_PYTHON        = $venvPy
 }
 $envCmd = ($env_args.GetEnumerator() | ForEach-Object { "`$env:$($_.Key)='$($_.Value)'" }) -join "; "
 Start-Process -FilePath "powershell" `
-    -ArgumentList "-NoExit", "-Command", "$envCmd; cd '$backend'; python main.py" `
+    -ArgumentList "-NoExit", "-Command", "$envCmd; cd '$backend'; & '$venvPy' main.py" `
     -WorkingDirectory $backend
 
 # Backend takes ~5-8s to bind 8100; give it a head start so the
