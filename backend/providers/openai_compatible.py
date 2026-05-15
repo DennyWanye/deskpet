@@ -289,6 +289,11 @@ class OpenAICompatibleProvider:
         wants ``format: "json"`` instead, so we shim that case below.
         """
         temp = temperature if temperature is not None else self.temperature
+        # Phase 1.3 (D4) 前缀稳定纪律 —— 与流式路径一致地抹平历史抖动
+        # 字段。即便此方法当前只作流式 fallback 用，调用方传进来的
+        # messages 已是流式路径 stabilize 过的副本；这里再 stabilize
+        # 一次是幂等的，且保证此方法被直接调用时同样有前缀稳定保证。
+        messages = _stabilize_prefix(messages)
         payload: dict = {
             "model": self.model,
             "messages": messages,
@@ -551,6 +556,8 @@ class OpenAICompatibleProvider:
         usage = data.get("usage") or {}
         # Stash so billing.ledger can debit (matches stream behavior).
         self.last_usage = usage
+        # Phase 1.3.4: prompt-cache 命中率埋点（非流路径）。
+        _log_cache_hit_rate(usage, where="nonstream")
         return {
             "content": msg.get("content") or "",
             "reasoning_content": reasoning_content,
@@ -596,6 +603,12 @@ class OpenAICompatibleProvider:
         import asyncio as _asyncio
         temp = temperature if temperature is not None else self.temperature
         self.last_usage = None
+        # Phase 1.3 (D4): 前缀稳定纪律。在装 payload 之前先抹平历史里
+        # 会抖动的字段（tool-call-only assistant 的 content / 空
+        # reasoning_content），让出站字节前缀跨轮稳定 —— prefix cache
+        # 命中的硬前提。下游所有分支（reasoning-400 strip 重试 /
+        # _stamp_cache_control / 非流 fallback）都建立在这个稳定副本上。
+        messages = _stabilize_prefix(messages)
         payload: dict = {
             "model": self.model,
             "messages": messages,
@@ -1280,6 +1293,11 @@ class OpenAICompatibleProvider:
             stop_reason=final_stop,
         )
 
+        # Phase 1.3.4: prompt-cache 命中率埋点。回包带
+        # prompt_tokens_details.cached_tokens（OpenAI / deepseek）→
+        # 记命中率；chinzy 现状常不回该字段 → 记 unknown，绝不崩。
+        _log_cache_hit_rate(final_usage, where="stream")
+
         yield {
             "type": "final",
             "content": full_content,
@@ -1321,6 +1339,163 @@ class OpenAICompatibleProvider:
                 return False
         except Exception:
             return False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 1.3 — 4-breakpoint prompt cache + 前缀稳定纪律
+# (OpenSpec 2026-05-15-context-1m-rearch · design.md D4)
+#
+# OpenAI-compat（chinzy / deepseek-v4-pro）走 **prefix cache**：命中条件
+# 是 messages 历史前缀的字节流跨轮稳定。命中条件不是我们打什么标记，而
+# 是"前缀别变"。所以这一段做两件事：
+#   1. `_stabilize_prefix`：抹平上游历史里会抖动的字段（tool-call-only
+#      assistant 的 content 缺失/None；reasoning_content 空串 vs 无 key）
+#      —— 抄 DeepSeek-TUI 的纪律"绝不改写历史前缀"。
+#   2. `_cache_breakpoint_order` / `_extract_cached_tokens` 是纯函数，
+#      给单测断言装配顺序契约 + 防御式取回包 cached_tokens。
+#
+# Anthropic `cache_control`（tasks 1.3.3）由 `llm/anthropic_adapter.py`
+# 完整实现（最后一个 system block + 最后一个 tool 打 ephemeral，已读
+# cache_read/creation tokens）—— 此处不重复，详见 evidence。
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _cache_breakpoint_order(
+    messages: list[dict], *, has_tools: bool
+) -> list[str]:
+    """返回这批 messages 的 4-breakpoint 逻辑断点序（纯函数，给单测）。
+
+    design.md D4 规定的稳定→易变装配顺序：
+
+        [0]    system (persona + 静态指令)        ← breakpoint 1
+        [1]    tools schema                       ← breakpoint 2
+        [2]    memory / repo-map block            ← breakpoint 3
+        [3..]  对话历史 + tool_results            ← 易变
+        [last] 最近 user turn 之前                ← breakpoint 4
+
+    实际装配在上游（ContextAssembler / chat handler）；provider 只在
+    边界给出契约序，让单测能断言"上游没把易变块插进前缀"。
+
+    - `tools` 不是一条 message（是 payload 顶层字段），由 `has_tools`
+      决定是否占断点位。
+    - `memory` 只有真有 memory/repo-map block（system 消息里含
+      ``<memory_block>`` 或第 2 条 system）才占位，否则不硬塞，
+      避免浪费 breakpoint。
+    """
+    order: list[str] = []
+    has_system = any(m.get("role") == "system" for m in (messages or []))
+    if has_system:
+        order.append("system")
+    if has_tools:
+        order.append("tools")
+    # memory/repo-map 约定：要么显式 <memory_block> 标记，要么是
+    # 第二条 system 消息（ContextAssembler 产出独立 system block）。
+    sys_msgs = [m for m in (messages or []) if m.get("role") == "system"]
+    has_memory = len(sys_msgs) >= 2 or any(
+        isinstance(m.get("content"), str)
+        and "<memory_block>" in m.get("content", "")
+        for m in sys_msgs
+    )
+    if has_memory:
+        order.append("memory")
+    order.append("history")
+    order.append("last-user-pre")
+    return order
+
+
+def _stabilize_prefix(messages: list[dict]) -> list[dict]:
+    """返回 messages 的副本，抹平会破坏 prefix-cache 字节哈希的抖动。
+
+    纪律（抄 DeepSeek-TUI，design.md D4）：**绝不改写历史前缀**。
+    上游同一逻辑轮在不同请求里可能：
+      - tool-call-only assistant：某次带 ``content: None``、某次完全
+        没有 ``content`` 字段、某次 ``content: ""`` —— 三种序列化字节
+        不同，prefix cache 全 miss。统一成稳定 ``""``。
+      - ``reasoning_content``：某轮带空串、某轮没这个 key —— "有 key
+        但空" 和 "无 key" 序列化字节也不同。空/None 一律删除该 key。
+
+    只动 assistant 行的这两个字段；system/user/tool 原样透传。不删
+    消息、不改下标（tool_call/tool_result 配对靠下标，动不得）。
+    输入不被原地修改（返回深拷副本里需要改的那几行）。
+    """
+    out: list[dict] = []
+    for m in messages or []:
+        if m.get("role") != "assistant":
+            out.append(m)
+            continue
+        fixed = dict(m)
+        # tool-call-only / content 缺失或 None → 稳定 "" placeholder
+        if fixed.get("content") is None:
+            fixed["content"] = ""
+        # reasoning_content 空/None → 删 key（不要 "空 key" vs "无 key" 抖）
+        rc = fixed.get("reasoning_content")
+        if rc is None or rc == "":
+            fixed.pop("reasoning_content", None)
+        out.append(fixed)
+    return out
+
+
+def _extract_cached_tokens(usage: dict | None) -> int | None:
+    """防御式取回包里的 cached_tokens（命中的 prompt token 数）。
+
+    位置优先级：
+      1. usage.prompt_tokens_details.cached_tokens  ← OpenAI / deepseek 标准
+      2. usage.cached_tokens                        ← 部分中转站平铺
+
+    任何缺失 / 类型不对 → 返回 ``None``（调用方记 ``unknown``，
+    绝不让脏数据把 LLM 调用搞崩 —— 这是硬约束）。
+    """
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        v = details.get("cached_tokens")
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, int):
+            return v
+    v = usage.get("cached_tokens")
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    return None
+
+
+def _log_cache_hit_rate(usage: dict | None, *, where: str) -> None:
+    """落一条 prompt-cache 命中率日志（1.3.4）。
+
+    回包带 cached_tokens → 记 cached/prompt + 命中率百分比；
+    字段缺失（chinzy 现状常见）→ 记 ``cached_tokens=unknown``，绝不崩。
+    """
+    try:
+        cached = _extract_cached_tokens(usage)
+        prompt = None
+        if isinstance(usage, dict):
+            pt = usage.get("prompt_tokens")
+            if isinstance(pt, int) and not isinstance(pt, bool):
+                prompt = pt
+        if cached is None:
+            logger.info(
+                "p4s25_prompt_cache_hit",
+                where=where,
+                cached_tokens="unknown",
+                prompt_tokens=prompt if prompt is not None else "unknown",
+                hit_rate="unknown",
+            )
+            return
+        rate = (
+            round(cached / prompt, 4) if prompt and prompt > 0 else 0.0
+        )
+        logger.info(
+            "p4s25_prompt_cache_hit",
+            where=where,
+            cached_tokens=cached,
+            prompt_tokens=prompt if prompt is not None else "unknown",
+            hit_rate=rate,
+        )
+    except Exception as exc:  # noqa: BLE001 — 日志埋点绝不能影响主流程
+        logger.debug("p4s25_prompt_cache_hit_log_failed err=%s", str(exc)[:120])
 
 
 def _is_anthropic_endpoint(base_url: str) -> bool:
