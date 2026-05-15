@@ -295,11 +295,21 @@ class ContextManager:
         tokens + window + ratio + advice string).  Caller decides what
         to do with WARN/BLOCK.
         """
+        # Phase 1.1 followup: pass the already-resolved per-model window
+        # (config.model_info carries the full builtin/global/project
+        # 3-layer resolution). v2 → authoritative; v1 rollback → pass
+        # None so token_budget falls back to its legacy name table.
+        _window = (
+            self.config.model_info.context_window
+            if self.config.v2_enabled and self.config.model_info is not None
+            else None
+        )
         return check_budget(
             messages,
             model=model,
             warn_pct=self.config.budget_warn_pct,
             block_pct=self.config.budget_block_pct,
+            context_window=_window,
         )
 
     # ───────────────────── B2 history compaction ─────────────────────

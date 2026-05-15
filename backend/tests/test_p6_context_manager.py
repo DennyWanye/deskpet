@@ -179,14 +179,23 @@ def test_check_budget_delegates_to_b3():
 def test_check_budget_uses_config_thresholds():
     """Custom warn_pct=0.5: ratio ≈0.6 → WARN.
 
-    deepseek-v4-pro has a 64,000 token window. To hit ratio ≈ 0.6 we
-    need ~38,400 tokens — roughly 153,000 chars (char/4 heuristic).
+    2026-05-15 (Phase 1.1 followup): this asserts custom warn_pct is
+    honored — independent of which model. It used to assume
+    deepseek-v4-pro=64K (now correctly 1M via the per-model map), which
+    made the old 153K-char payload only ~3.8% of the window. Pin the
+    window deterministically via the resolved ``_default`` model_info
+    (32_000) so the threshold math stays small and stable.
     """
-    cfg = ContextConfig(budget_warn_pct=0.5, budget_block_pct=0.95)
+    from llm.model_info import resolve
+
+    info = resolve("_default", None)  # 32_000-token window, stable
+    cfg = ContextConfig(
+        model_info=info, budget_warn_pct=0.5, budget_block_pct=0.95
+    )
     ctx = ContextManager(config=cfg)
 
-    # ~153_600 chars → ~38,400 tokens → ratio ≈ 0.6 on 64k window
-    big_body = "x" * 153_000
+    # ~76_800 chars → ~19,200 tokens → ratio ≈ 0.6 on the 32k window
+    big_body = "x" * 76_000
     msgs = [{"role": "user", "content": big_body}]
 
     result = ctx.check_budget(msgs, model="deepseek-v4-pro")

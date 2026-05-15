@@ -52,14 +52,25 @@ DEFAULT_CONTEXT_WINDOW = 8192
 # provider returns under ``/v1/models``. Match is case-insensitive +
 # stripped of provider prefix (e.g. "anthropic/claude-sonnet-4.5"
 # → "claude-sonnet-4.5").
+#
+# 2026-05-15 (Phase 1.1 followup): this table is now the **legacy
+# fallback only**. The authoritative per-model window comes from
+# ``llm.model_info`` (3-layer builtin/global/project resolve), threaded
+# through ``ContextManager.check_budget → check_budget(context_window=)``.
+# This table still backs (a) v2_enabled=False rollback, (b) direct
+# callers that don't pass context_window, (c) models not yet in
+# model_info.BUILTIN (gpt-4o / qwen / glm / kimi …). The stale
+# deepseek-v4* = 64_000 values (a 6.4% under-count vs the real 1M
+# window) were the headline bug — synced to reality below.
 _KNOWN_WINDOWS: dict[str, int] = {
-    # DeepSeek family — chinzy exposes these
-    "deepseek-v4-pro": 64_000,
-    "deepseek-v4-flash": 64_000,
-    "deepseek-v3.2": 64_000,
-    "deepseek-v3.1": 64_000,
-    "deepseek-chat": 32_000,
-    "deepseek-reasoner": 64_000,
+    # DeepSeek family — chinzy exposes these. v4 is 1M context (matches
+    # llm.model_info.BUILTIN["deepseek-v4-pro"]).
+    "deepseek-v4-pro": 1_000_000,
+    "deepseek-v4-flash": 1_000_000,
+    "deepseek-v3.2": 128_000,
+    "deepseek-v3.1": 128_000,
+    "deepseek-chat": 64_000,
+    "deepseek-reasoner": 128_000,
     # Anthropic
     "claude-sonnet-4.5": 200_000,
     "claude-opus-4.5": 200_000,
@@ -151,9 +162,21 @@ def estimate_tokens(messages: list[dict[str, Any]]) -> int:
 
 def get_context_window(model_name: str) -> int:
     """Return trained context window for ``model_name`` (case-insensitive,
-    provider prefix stripped). Falls back to DEFAULT_CONTEXT_WINDOW for
-    unknown models — conservative on purpose so compaction kicks in
-    earlier rather than later.
+    provider prefix stripped).
+
+    Resolution order (Phase 1.1 followup — single source of truth is
+    ``llm.model_info`` when it knows the model):
+
+      1. ``llm.model_info.BUILTIN[model]`` — the per-model map. Consulted
+         directly (no ``resolve()`` call → no per-budget-check log spam,
+         no I/O); the 3-layer global/project override is already baked
+         into ``ContextConfig.model_info`` and reaches us via the
+         explicit ``context_window=`` arg in :func:`check_budget`, so
+         here we only need the builtin floor.
+      2. ``_KNOWN_WINDOWS`` — legacy fallback for models not yet in
+         model_info.BUILTIN (gpt-4o / qwen / glm / kimi …).
+      3. ``DEFAULT_CONTEXT_WINDOW`` — conservative, so compaction kicks
+         in earlier rather than later for genuinely unknown models.
     """
     if not model_name:
         return DEFAULT_CONTEXT_WINDOW
@@ -161,6 +184,18 @@ def get_context_window(model_name: str) -> int:
     # Strip provider prefix like "anthropic/claude-sonnet-4.5"
     if "/" in normalized:
         normalized = normalized.split("/", 1)[1]
+
+    # 1. per-model map (authoritative for models it knows)
+    try:
+        from llm.model_info import BUILTIN
+
+        info = BUILTIN.get(normalized)
+        if info is not None:
+            return info.context_window
+    except Exception:  # noqa: BLE001 — model_info import must never break budget
+        pass
+
+    # 2/3. legacy table → conservative default
     return _KNOWN_WINDOWS.get(normalized, DEFAULT_CONTEXT_WINDOW)
 
 
@@ -170,14 +205,28 @@ def check_budget(
     model: str,
     warn_pct: float = DEFAULT_WARN_PCT,
     block_pct: float = DEFAULT_BLOCK_PCT,
+    context_window: int | None = None,
 ) -> BudgetCheckResult:
     """Pre-call budget check.
 
     Returns a BudgetCheckResult with the verdict and supporting numbers.
     Caller decides what to do: log, compact, ask user, or abort.
+
+    ``context_window``: when provided (e.g. by
+    :meth:`ContextManager.check_budget` passing
+    ``config.model_info.context_window``), it is **authoritative** — the
+    full 3-layer per-model resolution (builtin/global/project) already
+    happened at ContextConfig construction, so we must NOT re-derive a
+    (possibly stale) window from :func:`get_context_window` here. When
+    ``None`` (legacy / v1-rollback / direct callers) we fall back to the
+    name-based lookup.
     """
     tokens = estimate_tokens(messages)
-    window = get_context_window(model)
+    window = (
+        context_window
+        if context_window is not None and context_window > 0
+        else get_context_window(model)
+    )
     ratio = tokens / window if window > 0 else 0.0
 
     if ratio >= block_pct:

@@ -100,21 +100,32 @@ def test_below_warn_returns_ok():
     assert result.ratio < DEFAULT_WARN_PCT
 
 
+# 2026-05-15 (Phase 1.1 followup): these exercise the WARN/BLOCK *ratio
+# logic*, not any model's window. They used to hardcode
+# model="deepseek-v4-pro" against the then-stale 64K table value; after
+# the per-model fix deepseek-v4-pro is 1M, so old payload sizes no
+# longer trip the thresholds. Pass explicit context_window= (the new
+# authoritative param) to keep the threshold math deterministic and
+# decoupled from the model table.
+_FIXED_WINDOW = 64_000
+
+
 def test_above_warn_below_block_returns_warn():
-    # Construct messages whose estimated tokens land between warn and block
-    # deepseek-v4-pro context = 64k → warn at 80% = ~51k tokens.
-    # ~51k tokens × 4 chars = ~204k chars. Use a 220k-char user message.
+    # warn at 80% = ~51k tokens → ~220k chars lands between warn & block.
     msgs = [{"role": "user", "content": "x" * 220_000}]
-    result = check_budget(msgs, model="deepseek-v4-pro")
+    result = check_budget(
+        msgs, model="deepseek-v4-pro", context_window=_FIXED_WINDOW
+    )
     assert result.verdict == BudgetCheck.WARN
     assert DEFAULT_WARN_PCT <= result.ratio < DEFAULT_BLOCK_PCT
 
 
 def test_above_block_returns_block():
-    # Block threshold is 95%; 64k × 0.95 × 4 = ~243k chars.
-    # 300k chars guarantees we're past block.
+    # 64k × 0.95 × 4 = ~243k chars; 300k guarantees past block.
     msgs = [{"role": "user", "content": "x" * 300_000}]
-    result = check_budget(msgs, model="deepseek-v4-pro")
+    result = check_budget(
+        msgs, model="deepseek-v4-pro", context_window=_FIXED_WINDOW
+    )
     assert result.verdict == BudgetCheck.BLOCK
     assert result.ratio >= DEFAULT_BLOCK_PCT
 
@@ -122,7 +133,11 @@ def test_above_block_returns_block():
 def test_custom_thresholds():
     msgs = [{"role": "user", "content": "x" * 1000}]
     result = check_budget(
-        msgs, model="deepseek-v4-pro", warn_pct=0.001, block_pct=0.002
+        msgs,
+        model="deepseek-v4-pro",
+        warn_pct=0.001,
+        block_pct=0.002,
+        context_window=_FIXED_WINDOW,
     )
     # 250 tokens / 64000 = 0.0039 ratio → above block (0.002)
     assert result.verdict == BudgetCheck.BLOCK
@@ -130,7 +145,9 @@ def test_custom_thresholds():
 
 def test_result_includes_actionable_advice_in_block():
     msgs = [{"role": "user", "content": "x" * 300_000}]
-    result = check_budget(msgs, model="deepseek-v4-pro")
+    result = check_budget(
+        msgs, model="deepseek-v4-pro", context_window=_FIXED_WINDOW
+    )
     assert result.verdict == BudgetCheck.BLOCK
     # The result should carry a hint string for the UI/log
     assert result.advice
