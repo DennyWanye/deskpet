@@ -1384,6 +1384,27 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         logger.warning("p5_supervisor_watchdog_start_failed", error=str(exc))
 
+    # Phase 1.1.5 — 启动落一行 model_context_resolved，让用户/日志一眼
+    # 看到当前默认模型解析出的有效窗口 + 来源链。每次 chat 会话另会按
+    # session 的实际 model + project_root 再 resolve（resolve() 自带日志）。
+    try:
+        from llm.model_info import resolve as _resolve_mi
+
+        _startup_v2 = bool(
+            ((config.raw.get("context") or {}).get("manager") or {})
+            .get("v2_enabled", True)
+        )
+        if _startup_v2:
+            # resolve() 自身落 model_context_resolved INFO 日志。
+            _resolve_mi(config.llm.local.model, project_root=None)
+        else:
+            logger.info(
+                "model_context_resolved model=%s window=legacy source=v1_rollback",
+                config.llm.local.model,
+            )
+    except Exception as _mi_exc:  # noqa: BLE001
+        logger.warning("model_context_startup_resolve_failed err=%s", _mi_exc)
+
     logger.info("startup complete")
     yield
     # P5-S1: stop the watchdog cleanly so its task doesn't dangle past
@@ -3031,8 +3052,31 @@ async def control_channel(ws: WebSocket):
                         # block (~60 lines re-implementing what
                         # chat_prep.prepare_chat_messages_for_chain does
                         # cleanly) was removed in Phase 6.
+                        # Phase 1.1.4 — per-model context map wiring. Resolve
+                        # this session's ModelContextInfo via the 3-layer
+                        # chain (builtin ← %APPDATA% global ← project
+                        # .deskpet/context.toml). Code mode passes its
+                        # project_root so the project layer applies; non-code
+                        # mode passes None (only builtin + global). The
+                        # [context.manager].v2_enabled knob is the
+                        # Strangler-Fig rollback闸 — false 退回 2026-05-15
+                        # stop-gap 绝对值 ContextConfig，忽略 per-model map。
                         from agent.context_manager import ContextManager as _CtxMgr
-                        _ctx_mgr = _CtxMgr()
+                        _ctx_v2_enabled = bool(
+                            ((config.raw.get("context") or {}).get("manager") or {})
+                            .get("v2_enabled", True)
+                        )
+                        _ctx_model = getattr(_provider, "model", "") or "_default"
+                        _ctx_proot = (
+                            _cmm.project_root(_sid)
+                            if (_in_code_mode and _cmm is not None)
+                            else None
+                        )
+                        _ctx_mgr = _CtxMgr.for_session(
+                            model=_ctx_model,
+                            project_root=_ctx_proot,
+                            v2_enabled=_ctx_v2_enabled,
+                        )
 
                         # ─── P5-S2 Phase 3.15: provider_chain resolution ───
                         # If the LLMProviderRegistry is wired up (Phase 1+2)

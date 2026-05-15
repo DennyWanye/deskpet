@@ -63,22 +63,43 @@ def _build_long_history(n: int = 25, body_chars: int = 200) -> list[dict]:
 
 
 def test_default_config_values():
-    """ContextConfig default values match P6 design.md §模块 2."""
-    cfg = ContextConfig()
+    """Phase 1.1.3：ContextConfig 默认走 v2 per-model 比例（design.md D2）。
 
-    # B1 truncation
-    assert cfg.tool_result_threshold == 4000
-    assert cfg.tool_result_head == 1500
-    assert cfg.tool_result_tail == 500
+    无注入 model_info → 懒解析 ``_default`` (32K window)。阈值由
+    ``@property`` 按 window 比例算，不再是 2026-05-15 stop-gap 的写死
+    绝对值（proposal.md：stop-gap 配置被 per-model 化取代）。
+    """
+    cfg = ContextConfig()
+    assert cfg.v2_enabled is True
+
+    # B1 truncation — v2: max(8_000, 32_000 // 25) = 8_000 floor
+    assert cfg.tool_result_threshold == 8_000
+    # head/tail 两路共用稳定切片量
+    assert cfg.tool_result_head == 6_000
+    assert cfg.tool_result_tail == 2_000
     # B1 self-awareness — G1 fix core
     assert cfg.skip_truncation_for_tools == {"fetch_tool_result"}
 
-    # B2 compaction
+    # B2 compaction — v2: _default 32K → compact_at 32_000*0.80=25_600；
+    # message 阈值 max(20, 32_000//10_000)=20
+    assert cfg.compact_at_tokens == 25_600
     assert cfg.compact_message_threshold == 20
-    assert cfg.compact_char_threshold == 60_000
-    assert cfg.compact_keep_recent == 6
+    assert cfg.compact_keep_recent == 12
 
-    # B3 budget
+    # B3 budget — 比例两路共用
+    assert cfg.budget_warn_pct == 0.80
+    assert cfg.budget_block_pct == 0.95
+
+
+def test_legacy_v1_config_values_when_v2_disabled():
+    """Strangler-Fig 回退闸：v2_enabled=False → 2026-05-15 stop-gap 绝对值。"""
+    cfg = ContextConfig(v2_enabled=False)
+    assert cfg.tool_result_threshold == 16_000
+    assert cfg.tool_result_head == 6_000
+    assert cfg.tool_result_tail == 2_000
+    assert cfg.compact_message_threshold == 80
+    assert cfg.compact_char_threshold == 300_000
+    assert cfg.compact_keep_recent == 12
     assert cfg.budget_warn_pct == 0.80
     assert cfg.budget_block_pct == 0.95
 
@@ -94,31 +115,43 @@ def test_facade_holds_ref_to_global_store():
 
 
 def test_config_is_overridable():
-    """ContextConfig is a real dataclass; every threshold can be overridden.
+    """ContextConfig 仍是真 dataclass：可注入字段可独立 override。
 
-    Guards against accidentally using class-level mutables (e.g. a bare
-    ``set()`` default shared across instances) for ``skip_truncation_for_tools``.
+    Phase 1.1.3 后阈值是 @property（按 model_info 比例算），不再是可写
+    字段；可 override 的是 model_info / head / tail / budget pct /
+    skip set。仍守护 ``skip_truncation_for_tools`` 不是共享类级 mutable。
     """
+    from llm.model_info import resolve as _resolve
+
     cfg1 = ContextConfig(
-        tool_result_threshold=8000,
-        compact_message_threshold=40,
+        model_info=_resolve("claude-sonnet-4-5"),  # 200K window
         budget_warn_pct=0.7,
         skip_truncation_for_tools={"fetch_tool_result", "my_special_tool"},
     )
-    cfg2 = ContextConfig()  # defaults
+    cfg2 = ContextConfig()  # defaults → _default 32K
 
-    assert cfg1.tool_result_threshold == 8000
-    assert cfg1.compact_message_threshold == 40
+    # 注入 sonnet：compact_at = 200_000*0.83 = 166_000；
+    # tool_result = max(8_000, 200_000//25)=8_000
+    assert cfg1.compact_at_tokens == 166_000
+    assert cfg1.tool_result_threshold == 8_000
     assert cfg1.budget_warn_pct == 0.7
     assert "my_special_tool" in cfg1.skip_truncation_for_tools
 
     # cfg2's defaults are NOT contaminated by cfg1
-    assert cfg2.tool_result_threshold == 4000
+    assert cfg2.compact_at_tokens == 25_600  # _default 32K*0.80
     assert "my_special_tool" not in cfg2.skip_truncation_for_tools
 
     # Mutating cfg1's set must not leak into cfg2's set (no shared default).
     cfg1.skip_truncation_for_tools.add("yet_another")
     assert "yet_another" not in cfg2.skip_truncation_for_tools
+
+
+def test_config_v1_legacy_path_gives_absolute_control():
+    """需要绝对值控制（旧行为）时走 v2_enabled=False 回退闸。"""
+    cfg = ContextConfig(v2_enabled=False)
+    # v1 写死阈值，不随 model 变
+    assert cfg.tool_result_threshold == 16_000
+    assert cfg.compact_message_threshold == 80
 
 
 # ───────────────── 2.2 Budget check (B3 wrap) ─────────────────
@@ -231,9 +264,13 @@ def test_maybe_compact_failure_returns_original():
 
 
 def test_record_tool_result_truncates_long():
-    """6000 char read_file result → returns (truncated_string, ref_id)."""
+    """12000 char read_file result → returns (truncated_string, ref_id).
+
+    Phase 1.1.3：v2 默认 _default(32K) 的 tool_result_threshold=8_000，
+    用 12_000 确保超阈值触发切片（保留本测原意：长 body 被截断）。
+    """
     ctx = ContextManager()
-    big = "a" * 6000
+    big = "a" * 12000
 
     content, ref_id = ctx.record_tool_result(tool_name="read_file", result=big)
 
@@ -280,7 +317,7 @@ def test_record_tool_result_custom_skip_list():
     """Custom ContextConfig.skip_truncation_for_tools honored."""
     cfg = ContextConfig(skip_truncation_for_tools={"my_tool"})
     ctx = ContextManager(config=cfg)
-    big = "d" * 6000
+    big = "d" * 12000  # > v2 _default tool_result_threshold (8_000)
 
     content, ref_id = ctx.record_tool_result(tool_name="my_tool", result=big)
 
@@ -300,7 +337,7 @@ def test_record_tool_result_uses_global_ref_store():
     full body — proving facade + fetch_tool_result share the same store.
     """
     ctx = ContextManager()
-    big = "e" * 6000
+    big = "e" * 12000  # > v2 _default tool_result_threshold (8_000)
 
     _content, ref_id = ctx.record_tool_result(tool_name="read_file", result=big)
 

@@ -39,7 +39,10 @@ Design choices
 """
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Tuple
 
 from agent.history_compactor import compact_messages, should_compact
@@ -49,59 +52,158 @@ from agent.tool_result_truncator import (
     get_global_ref_store,
     maybe_truncate_tool_result,
 )
+from llm.model_info import ModelContextInfo, resolve as resolve_model_info
+
+logger = logging.getLogger(__name__)
 
 
 # Type alias matching what history_compactor expects.
 SummarizeFn = Callable[[str], Awaitable[str]]
 
 
+# ─── Phase 1.1.3 Strangler-Fig 回退闸 ───────────────────────────
+#
+# [context.manager].v2_enabled=false（config.toml 或 env DESKPET_CTX_V2=0）
+# 时 ContextConfig 退回 2026-05-15 stop-gap 的绝对值常量路径；默认 True
+# 走 per-model 比例（design.md D2）。main.py 启动时读 config 并把布尔传进
+# ContextManager；这里的 env 兜底只是给单测/快速回滚用。
+def _v2_default_enabled() -> bool:
+    raw = os.environ.get("DESKPET_CTX_V2")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", ""}
+
+
+# 2026-05-15 stop-gap 绝对值（v2_enabled=false 的 legacy 路径沿用这些）。
+# 调研依据：Claude Code compact ~83% / Cline 80% / DeepSeek-TUI 75% /
+# Codex effective 95%。v1 是按 800K context 同比例 ×4 放大的写死值。
+_LEGACY_TOOL_RESULT_THRESHOLD = 16_000
+_LEGACY_TOOL_RESULT_HEAD = 6_000
+_LEGACY_TOOL_RESULT_TAIL = 2_000
+_LEGACY_COMPACT_MESSAGE_THRESHOLD = 80
+_LEGACY_COMPACT_CHAR_THRESHOLD = 300_000
+_LEGACY_COMPACT_KEEP_RECENT = 12
+# v1 没有 per-model window，compact_at_tokens 用 800K×0.95 的 stop-gap 近似
+# （config.toml [agent].context_window_tokens=800000 配套）。
+_LEGACY_CONTEXT_WINDOW = 800_000
+_LEGACY_EFFECTIVE_PCT = 0.95
+_LEGACY_COMPACT_AT_PCT = 0.95
+
+
 @dataclass
 class ContextConfig:
     """Unified configuration for B1 + B2 + B3.
 
-    Defaults match the per-module defaults — they live here so the
-    AgentLoop can override any single value (e.g. raise compaction
-    threshold for long-context models) without having to thread three
-    separate dataclasses through the call sites.
+    Phase 1.1.3（design.md D2）：阈值从写死绝对值改为按 resolved model
+    window 比例计算的 ``@property``。
+
+    - **v2（默认）**：注入 ``model_info: ModelContextInfo``（由
+      ``llm.model_info.resolve()`` 三层解析得到）。所有阈值随 model 窗口
+      自动伸缩，切模型零配置编辑。不注入则懒解析 ``_default``。
+    - **v1（``v2_enabled=False``）**：Strangler-Fig 回退闸，退回 2026-05-15
+      stop-gap 的绝对值常量；忽略 per-model map。
+
+    ``tool_result_head/tail``、``compact_keep_recent``、
+    ``skip_truncation_for_tools``、``budget_warn_pct/block_pct`` 两路共用，
+    仍是普通字段（AgentLoop 可单独 override 任意一个）。
     """
 
-    # 2026-05-15 一次性按 4x 放大（200K → 800K context 同比例），
-    # 与 config.toml [agent].context_window_tokens=800000 配套。
-    # 调研依据：
-    #   - Claude Code: compact at ~83% window
-    #   - Cline: compact at 80% window
-    #   - DeepSeek-TUI: cycle restart at 75% (768K of 1M)
-    #   - Codex: per-model effective_context_window_percent = 95%
-    # 当前 deskpet 是 absolute char/msg 阈值，不是按比例；中长期应该改成
-    # per-model 比例触发（参考 codex-rs/models-manager/src/model_info.rs）。
+    # 注入的 per-model 画像。None + v2 → 懒解析 _default；v1 下忽略。
+    model_info: Optional[ModelContextInfo] = None
+    v2_enabled: bool = field(default_factory=_v2_default_enabled)
 
-    # B1 truncation
-    # 4K → 16K：原阈值对应 32K context 时代，工具结果切太狠是今天 small/code
-    # 模式下 50-轮爆的主因之一（小说网站 sid=code-rkjdd9vo 反复 fetch_tool_result
-    # 拿切片导致循环）。Codex 的 exec/MCP 阈值是 1 MiB，16K 是保守中间值。
-    tool_result_threshold: int = 16_000
-    tool_result_head: int = 6_000
-    tool_result_tail: int = 2_000
+    # B1 head/tail：两路共用的稳定切片量（不随 window 变——这是"保留多少
+    # 给 LLM 看结构"的经验值，window 大不代表要 head 更多噪音）。
+    tool_result_head: int = _LEGACY_TOOL_RESULT_HEAD
+    tool_result_tail: int = _LEGACY_TOOL_RESULT_TAIL
     # B1 self-awareness — the G1 fix lives here.  Adding a new "must keep
     # full body" tool is a one-set-edit, not a code change.
     skip_truncation_for_tools: set[str] = field(
         default_factory=lambda: {"fetch_tool_result"},
     )
 
-    # B2 compaction
-    # 20 msgs / 60K chars → 80 msgs / 300K chars：800K context 下 60K 太早压缩，
-    # 反复摘要会破 prefix cache 也会丢细节。Claude Code 的触发点是
-    # (window - max(out, 20K) - 13K)，800K 模型下约 767K（96%）。这里保守一些。
-    compact_message_threshold: int = 80
-    compact_char_threshold: int = 300_000
-    # keep_recent 也从 6 → 12，避免长 agent 任务（write_file 大块文件）压缩后
-    # 丢失最近上下文。
-    compact_keep_recent: int = 12
+    # Phase 1.2 File-read dedup（design.md D3）：读取类工具白名单。
+    # 同 path 被这些工具重复读 → 历史里旧 tool_result 原地替换成 superseded
+    # marker（只动 read-class，不动 write/edit/run_shell）。可一处加白名单。
+    read_class_tools: set[str] = field(
+        default_factory=lambda: {
+            "read_file",
+            "mcp_filesystem_read_text_file",
+        },
+    )
 
-    # B3 budget — 比例不动，因为 0.80/0.95 已经和行业一致；window 自动跟着
-    # config.toml 的 800K 走，warn 在 640K / block 在 760K。
+    # B2 compaction message count 阈值（消息条数维度，与 char 维度并列；
+    # 仍是普通字段，per-model 比例只作用在 token/char 维度）。
+    compact_keep_recent: int = _LEGACY_COMPACT_KEEP_RECENT
+
+    # B3 budget 比例 — 0.80/0.95 已和业界一致，两路共用。分母在 v2 下是
+    # model_info.context_window * effective_pct（见 effective_window_tokens）。
     budget_warn_pct: float = 0.80
     budget_block_pct: float = 0.95
+
+    # ─── 内部：解析出当前生效的 ModelContextInfo ───
+    def _resolved_model_info(self) -> ModelContextInfo:
+        """v2 下返回注入的 model_info；未注入则懒解析 _default。"""
+        if self.model_info is not None:
+            return self.model_info
+        # 未注入：保守按 _default（unknown model）。resolve 落一行日志。
+        return resolve_model_info("_default", project_root=None)
+
+    # ─── per-model 比例阈值（D2）/ v1 legacy 绝对值 ───
+
+    @property
+    def effective_window_tokens(self) -> int:
+        """有效窗口 = context_window * effective_pct（budget 分母用）。"""
+        if not self.v2_enabled:
+            return int(_LEGACY_CONTEXT_WINDOW * _LEGACY_EFFECTIVE_PCT)
+        mi = self._resolved_model_info()
+        return int(mi.context_window * mi.effective_pct)
+
+    @property
+    def compact_at_tokens(self) -> int:
+        """触发 compaction / cycle restart 的水位线（token）。
+
+        v2: window * compact_at_pct（1M×0.75=750_000；200K×0.83=166_000）。
+        v1: 800K × 0.95 的 stop-gap 近似。
+        """
+        if not self.v2_enabled:
+            return int(_LEGACY_CONTEXT_WINDOW * _LEGACY_COMPACT_AT_PCT)
+        mi = self._resolved_model_info()
+        return int(mi.context_window * mi.compact_at_pct)
+
+    @property
+    def tool_result_threshold(self) -> int:
+        """B1 单条 tool_result 超过此 char 数才切。
+
+        v2: max(8_000, window // 25)（1M→40K；200K/32K→8K floor）。
+        v1: 写死 16_000。
+        """
+        if not self.v2_enabled:
+            return _LEGACY_TOOL_RESULT_THRESHOLD
+        return max(8_000, self._resolved_model_info().context_window // 25)
+
+    @property
+    def compact_message_threshold(self) -> int:
+        """B2 历史压缩的消息条数阈值。
+
+        v2: window 越大允许越多 turn（window // 10_000，下限 20）。
+        v1: 写死 80。
+        """
+        if not self.v2_enabled:
+            return _LEGACY_COMPACT_MESSAGE_THRESHOLD
+        return max(20, self._resolved_model_info().context_window // 10_000)
+
+    @property
+    def compact_char_threshold(self) -> int:
+        """B2 历史压缩的字符总量阈值。
+
+        v2: compact_at_tokens * ~3.5 char/token 近似（与 B3 token 维度
+        同步触发，避免 char 维度提前/滞后于 token 水位）。
+        v1: 写死 300_000。
+        """
+        if not self.v2_enabled:
+            return _LEGACY_COMPACT_CHAR_THRESHOLD
+        return int(self.compact_at_tokens * 3.5)
 
 
 class ContextManager:
@@ -141,6 +243,46 @@ class ContextManager:
         # the ``fetch_tool_result`` tool reads.  Pass a custom store only
         # in tests that need isolation.
         self.ref_store = ref_store if ref_store is not None else get_global_ref_store()
+        # Phase 1.2 File-read dedup（D3）：normalized_path → 该 path 最近一次
+        # 出现的 message 下标。同 path 再次被 read-class 工具读取时，把这个
+        # 旧下标处的 tool_result content 原地替换成 superseded marker。
+        self._read_path_seen: dict[str, int] = {}
+
+    # ─────────────── Phase 1.1.4 per-session 工厂 ───────────────
+
+    @classmethod
+    def for_session(
+        cls,
+        *,
+        model: str,
+        project_root: Optional[Path] = None,
+        v2_enabled: bool = True,
+        summarize_fn: Optional[SummarizeFn] = None,
+        ref_store: Optional[ToolResultRefStore] = None,
+    ) -> "ContextManager":
+        """按 model + project_root 三层 resolve 注入 ModelContextInfo。
+
+        集成点（design.md D1/D2）：
+          - **code mode**：调用方传 ``CodeModeManager.get(sid).project_root``
+            → 项目层 ``<root>/.deskpet/context.toml`` 覆盖生效
+          - **非 code mode**：``project_root=None`` → 只走 builtin + global 两层
+          - ``v2_enabled=False``：Strangler-Fig 回退闸——忽略 per-model map，
+            ContextConfig 退回 2026-05-15 stop-gap 绝对值
+
+        ``resolve()`` 内部已落 ``model_context_resolved`` INFO 日志
+        （task 1.1.5），这里不重复打。
+        """
+        if v2_enabled:
+            mi = resolve_model_info(model, project_root=project_root)
+            config = ContextConfig(model_info=mi, v2_enabled=True)
+        else:
+            # 回退闸：不解析 per-model，ContextConfig 走 legacy 绝对值。
+            config = ContextConfig(v2_enabled=False)
+        return cls(
+            config=config,
+            summarize_fn=summarize_fn,
+            ref_store=ref_store,
+        )
 
     # ─────────────────────── B3 token budget ───────────────────────
 
@@ -237,6 +379,88 @@ class ContextManager:
             head_chars=self.config.tool_result_head,
             tail_chars=self.config.tool_result_tail,
         )
+
+    # ──────────── Phase 1.2 File-read dedup（D3）────────────
+
+    @staticmethod
+    def _normalize_read_path(raw: Any) -> Optional[str]:
+        """把工具 args 里的 path 规范化成稳定 key。
+
+        - 正反斜杠统一、相对段折叠：``Path(p).resolve()``
+        - Windows 盘符 / 大小写不敏感文件系统：``casefold()``
+          （``G:\\proj\\App.jsx`` 与 ``g:/proj/App.jsx`` → 同一 key）
+        - 任意异常（非字符串 / 畸形路径）→ None（调用方据此跳过，绝不抛）
+        """
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            resolved = Path(raw).resolve()
+            return str(resolved).casefold()
+        except (OSError, ValueError, RuntimeError):
+            return None
+
+    def dedup_file_reads(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        new_index: int,
+        iteration: int,
+    ) -> int:
+        """同 path 重复读 → 历史里旧 tool_result body 原地替换成 superseded
+        marker（design.md D3）。
+
+        调用时机：agent loop 把这条 tool message append 进 ``messages``
+        **之后**，传入它的下标 ``new_index``。
+
+        语义（spec long-run-context）：
+          - 仅对 ``config.read_class_tools`` 生效（read_file /
+            mcp_filesystem_read_text_file / 可配白名单）；write/edit/
+            run_shell 一律跳过
+          - path 经 :meth:`_normalize_read_path` 规范化（Windows 大小写 /
+            正反斜杠归一）
+          - **不删消息**，只把旧下标那条的 ``content`` 换成 marker——保持
+            message 数组长度 + 下标稳定，避免 tool_call/tool_result 配对
+            错位
+          - dict 记录该 path 最近出现的下标，下一次读再 supersede 它
+
+        返回本次被 supersede 的旧条数（0 或 1，便于调用方落日志/统计）。
+        """
+        if tool_name not in self.config.read_class_tools:
+            return 0
+        norm = self._normalize_read_path((tool_args or {}).get("path"))
+        if norm is None:
+            return 0
+
+        superseded = 0
+        prev_index = self._read_path_seen.get(norm)
+        if (
+            prev_index is not None
+            and prev_index != new_index
+            and 0 <= prev_index < len(messages)
+        ):
+            old_msg = messages[prev_index]
+            # 只换 content；role/tool_call_id/name 等配对字段一律不动。
+            if isinstance(old_msg, dict) and "content" in old_msg:
+                disp = (tool_args or {}).get("path")
+                old_msg["content"] = (
+                    f"<file {disp} was re-read at iteration {iteration}; "
+                    "superseded — see the later read>"
+                )
+                superseded = 1
+                logger.info(
+                    "p4_file_read_superseded path=%s old_idx=%d "
+                    "new_idx=%d iter=%d",
+                    str(disp)[:200],
+                    prev_index,
+                    new_index,
+                    iteration,
+                )
+
+        # 记录/更新该 path 的最新下标。
+        self._read_path_seen[norm] = new_index
+        return superseded
 
     # ─────────────────── High-level prepare ───────────────────
 

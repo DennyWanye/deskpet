@@ -18,6 +18,9 @@ as ``{"type": "error", "payload": {"message": "..."}}``.
 """
 from __future__ import annotations
 
+import tomllib
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Optional
 
 import structlog
@@ -37,6 +40,9 @@ P4_IPC_MESSAGE_TYPES = frozenset(
         "memory_l1_delete",
         # P4-S16: SettingsPanel "BGE-M3 状态" 卡片探针。
         "embedder_status",
+        # Phase 1.1.6（context-1m-rearch）: SettingsPanel「模型上下文」卡片。
+        "model_context_get",
+        "model_context_set",
     }
 )
 
@@ -65,6 +71,10 @@ async def handle(
             await _handle_memory_l1_delete(ws, payload, service_context)
         elif msg_type == "embedder_status":
             await _handle_embedder_status(ws, payload, service_context)
+        elif msg_type == "model_context_get":
+            await _handle_model_context_get(ws, payload)
+        elif msg_type == "model_context_set":
+            await _handle_model_context_set(ws, payload)
         else:
             # Shouldn't happen — membership check is done by caller.
             await _send_error(ws, f"unknown P4 message type: {msg_type}")
@@ -343,6 +353,202 @@ async def _handle_embedder_status(
                 "is_mock": is_mock,
                 "model_path": model_path,
             },
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.1.6 — 模型上下文配置卡片（SettingsPanel）
+#
+# get：当前 model 三层 resolve 后的窗口/compact/source + builtin 全表，
+#      供前端渲染"来源链"+下拉。
+# set：把单个 model 的字段覆盖深合并写回 global / project TOML。无
+#      tomli_w 依赖，手写 TOML（同 provider_registry._format_*）。
+# ---------------------------------------------------------------------------
+
+# resolve() 允许 override 的字段白名单（与 model_info._OVERRIDABLE_FIELDS
+# 对齐——这里独立列一份避免 p4_ipc 反向依赖 model_info 的私有常量）。
+_MODEL_CTX_OVERRIDABLE = (
+    "context_window",
+    "effective_pct",
+    "compact_at_pct",
+    "recall_sweet_tokens",
+)
+
+
+def _builtin_table_payload() -> dict[str, Any]:
+    """把 model_info.BUILTIN 摊平成 JSON 友好 dict（去掉 model/source）。"""
+    from llm.model_info import BUILTIN
+
+    out: dict[str, Any] = {}
+    for name, info in BUILTIN.items():
+        d = asdict(info)
+        d.pop("model", None)
+        d.pop("source", None)
+        out[name] = d
+    return out
+
+
+async def _handle_model_context_get(ws: Any, payload: dict[str, Any]) -> None:
+    """返回 ``model`` 三层 resolve 结果 + builtin 全表。
+
+    payload: ``{model?: str, project_root?: str}``。缺 model → ``_default``
+    （resolve 内部已兜底）。project_root 给定 → 走项目层（code mode）。
+    """
+    from llm.model_info import resolve
+
+    model = str(payload.get("model") or "_default")
+    proot_raw = payload.get("project_root")
+    project_root = Path(proot_raw) if proot_raw else None
+    try:
+        info = resolve(model, project_root=project_root)
+    except Exception as exc:  # noqa: BLE001 — 解析必须健壮
+        logger.warning(
+            "p4_ipc.model_context_get_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        await ws.send_json(
+            {
+                "type": "model_context_get_response",
+                "payload": {
+                    "model": model,
+                    "resolved": {},
+                    "builtin": {},
+                    "reason": f"resolve_error: {type(exc).__name__}",
+                },
+            }
+        )
+        return
+    await ws.send_json(
+        {
+            "type": "model_context_get_response",
+            "payload": {
+                "model": info.model,
+                "resolved": {
+                    "context_window": info.context_window,
+                    "effective_pct": info.effective_pct,
+                    "compact_at_pct": info.compact_at_pct,
+                    "recall_sweet_tokens": info.recall_sweet_tokens,
+                    "source": info.source,
+                },
+                "builtin": _builtin_table_payload(),
+            },
+        }
+    )
+
+
+def _format_model_overrides_toml(models: dict[str, dict[str, Any]]) -> str:
+    """把 ``{model: {field: value}}`` 渲染成 ``[models."x"]`` TOML 文本。
+
+    手写（无 tomli_w 依赖，同 provider_registry）。字段值只可能是 int /
+    float（白名单字段都是数值），不需要字符串转义。
+    """
+    lines: list[str] = [
+        "# DeskPet per-model context overrides — Phase 1.1（context-1m-rearch）",
+        "# 由 SettingsPanel「模型上下文」卡片就地编辑写回；可手编。",
+        "",
+    ]
+    for model in sorted(models):
+        fields = models[model]
+        if not fields:
+            continue
+        lines.append(f'[models."{model}"]')
+        for key in sorted(fields):
+            val = fields[key]
+            if isinstance(val, bool):
+                lines.append(f"{key} = {'true' if val else 'false'}")
+            elif isinstance(val, float):
+                lines.append(f"{key} = {val}")
+            else:
+                lines.append(f"{key} = {int(val)}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _merge_model_override(
+    target: Path, model: str, fields: dict[str, Any]
+) -> None:
+    """深合并：读现有 TOML → 仅替换该 model 的白名单字段 → 重写整文件。
+
+    其他 model 段、该 model 未改的字段全部保留（深合并语义）。
+    """
+    existing: dict[str, Any] = {}
+    if target.is_file():
+        try:
+            existing = tomllib.loads(target.read_text("utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            existing = {}
+    models = dict(existing.get("models") or {})
+    cur = dict(models.get(model) or {})
+    for key, value in fields.items():
+        if key not in _MODEL_CTX_OVERRIDABLE:
+            logger.warning(
+                "p4_ipc.model_context_set_ignored_field",
+                model=model,
+                field=key,
+            )
+            continue
+        cur[key] = value
+    models[model] = cur
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_format_model_overrides_toml(models), encoding="utf-8")
+
+
+async def _handle_model_context_set(ws: Any, payload: dict[str, Any]) -> None:
+    """把单个 model 的字段覆盖写回 global / project TOML（深合并）。
+
+    payload: ``{scope: "global"|"project", model: str,
+                fields: {field: value}, project_root?: str}``
+    """
+    scope = str(payload.get("scope") or "global")
+    model = str(payload.get("model") or "")
+    fields = payload.get("fields") or {}
+    if not model or not isinstance(fields, dict):
+        await ws.send_json(
+            {
+                "type": "model_context_set_ack",
+                "payload": {"ok": False, "reason": "model/fields required"},
+            }
+        )
+        return
+    try:
+        if scope == "project":
+            proot_raw = payload.get("project_root")
+            if not proot_raw:
+                await ws.send_json(
+                    {
+                        "type": "model_context_set_ack",
+                        "payload": {
+                            "ok": False,
+                            "reason": "project scope requires project_root",
+                        },
+                    }
+                )
+                return
+            target = Path(proot_raw) / ".deskpet" / "context.toml"
+        else:
+            import paths as _paths
+
+            target = _paths.user_data_dir() / "model_overrides.toml"
+        _merge_model_override(target, model, fields)
+    except OSError as exc:
+        logger.warning(
+            "p4_ipc.model_context_set_write_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        await ws.send_json(
+            {
+                "type": "model_context_set_ack",
+                "payload": {"ok": False, "reason": f"write_error: {exc}"},
+            }
+        )
+        return
+    await ws.send_json(
+        {
+            "type": "model_context_set_ack",
+            "payload": {"ok": True, "scope": scope, "model": model},
         }
     )
 

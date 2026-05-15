@@ -217,6 +217,24 @@ context_window_tokens = 800000
 interrupt_enabled = true
 tts_pre_narration = true
 
+# Phase 1.1（2026-05-15 context-1m-rearch）— ContextManager per-model 化。
+#
+# v2_enabled=true（默认）：ContextManager 阈值（B1 truncate / B2 compact /
+#   B3 budget）按 *每个模型* 的上下文窗口比例自动伸缩，窗口由三层 resolve
+#   决定：内置表 ← %APPDATA%/deskpet/model_overrides.toml ← 项目
+#   <root>/.deskpet/context.toml（仅 code mode）。切模型零配置编辑。
+#   此时上面的 [agent].context_window_tokens 降级为 ContextAssembler 的
+#   fallback only，ContextManager 不再读它。
+#
+# v2_enabled=false：Strangler-Fig 回退闸 —— 退回 2026-05-15 stop-gap 的
+#   绝对值 ContextConfig（tool_result 16K / compact 800K×0.95），忽略
+#   per-model map。仅在 per-model 路径出问题需快速回滚时设 false。
+#
+# 内置模型表见 backend/llm/model_info.py::BUILTIN；用户/项目覆盖通过
+# SettingsPanel「模型上下文」卡片就地编辑写回对应 TOML。
+[context.manager]
+v2_enabled = true
+
 # P4-S7: ContextAssembler v1 (see openspec/changes/p4-poseidon-agent-harness
 # /specs/context-assembler/spec.md). Runs once before every agent loop:
 # classifies task_type → fans out components in parallel → budget-allocates

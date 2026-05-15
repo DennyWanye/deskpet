@@ -340,7 +340,9 @@ class TestG1FetchToolResultRoundTrip:
         # REAL ContextManager — no mocks for the unit under test.
         ctx = ContextManager()
 
-        big_body = "FULL_BODY_" + ("A" * 6000)
+        # Phase 1.1.3: v2 默认 _default(32K) tool_result_threshold=8_000，
+        # 用 12_000 确保 regular tool 仍被截断（保留本测 G1 对照原意）。
+        big_body = "FULL_BODY_" + ("A" * 12000)
         envelope = {"ok": True, "result": big_body, "error": None}
 
         llm = _ScriptedLLM([
@@ -385,6 +387,6 @@ class TestG1FetchToolResultRoundTrip:
         regular_out, regular_ref = ctx.record_tool_result(
             tool_name="read_file", result=big_body,
         )
-        # 6000 chars > default threshold (4000) → ref expected
+        # 12_000 chars > v2 _default tool_result_threshold (8_000) → ref expected
         assert regular_ref is not None
         assert len(regular_out) < len(big_body)
