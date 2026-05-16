@@ -30,6 +30,9 @@ from .registry import registry
 _DEFAULT_MODEL = "gpt-image-2"
 _DEFAULT_SIZE = "1024x1024"
 _TIMEOUT_S = 120.0
+# chinzy 上游瞬时断连重试（断连/超时/5xx）。退避索引 = attempt-1。
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF = (3.0, 6.0)
 
 _SCHEMA: dict[str, Any] = {
     "name": "generate_image",
@@ -170,58 +173,87 @@ def _handle_generate_image(args: dict[str, Any], task_id: str = "") -> str:
         "response_format": "b64_json",
     }
 
-    try:
-        with httpx.Client(timeout=_TIMEOUT_S) as cli:
-            resp = cli.post(
-                f"{base_url}/images/generations",
-                json=payload,
-                headers=headers,
-            )
-        if resp.status_code != 200:
-            detail = ""
-            try:
-                detail = json.dumps(resp.json(), ensure_ascii=False)[:300]
-            except Exception:  # noqa: BLE001
-                detail = ""
-            return _err(
-                f"image API HTTP {resp.status_code}",
-                "图像生成接口返回非 200。可能是 chinzy 不支持该 model、"
-                f"额度或参数问题。响应：{detail}",
-                status=resp.status_code,
-            )
-        data = (resp.json() or {}).get("data") or []
-        if not data:
-            return _err(
-                "empty image response",
-                "接口 200 但 data 为空，无法取回图片。",
-            )
-        item = data[0]
-        png: bytes
-        if item.get("b64_json"):
-            png = base64.b64decode(item["b64_json"])
-        elif item.get("url"):
+    # 2026-05-16: chinzy 上游对慢/复杂出图请求会瞬时断连
+    # （RemoteProtocolError "Server disconnected"，AGENTS.md 记录的已知
+    # 抽风）。简单 prompt ~28s 成功、复杂 gacha-UI >62s 被掐。像 chat
+    # 路径一样对瞬时错误重试：断连/超时/5xx 重试至多 3 次带退避；
+    # 4xx（鉴权/额度/参数）是确定性错误，立即返回不重试。
+    png: bytes | None = None
+    last_transient = ""
+    for _attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
             with httpx.Client(timeout=_TIMEOUT_S) as cli:
-                dl = cli.get(item["url"])
-            if dl.status_code != 200:
-                return _err(
-                    "image download failed",
-                    f"取回图片 URL 失败 HTTP {dl.status_code}。",
+                resp = cli.post(
+                    f"{base_url}/images/generations",
+                    json=payload,
+                    headers=headers,
                 )
-            png = dl.content
-        else:
+            if resp.status_code in (502, 503, 504):
+                last_transient = f"HTTP {resp.status_code}（上游网关瞬时）"
+            elif resp.status_code != 200:
+                detail = ""
+                try:
+                    detail = json.dumps(resp.json(), ensure_ascii=False)[:300]
+                except Exception:  # noqa: BLE001
+                    detail = ""
+                return _err(  # 4xx 等确定性错误：不重试
+                    f"image API HTTP {resp.status_code}",
+                    "图像生成接口返回非 200。可能是 model 不支持、额度或"
+                    f"参数问题。响应：{detail}",
+                    status=resp.status_code,
+                )
+            else:
+                data = (resp.json() or {}).get("data") or []
+                if not data:
+                    return _err(
+                        "empty image response",
+                        "接口 200 但 data 为空，无法取回图片。",
+                    )
+                item = data[0]
+                if item.get("b64_json"):
+                    png = base64.b64decode(item["b64_json"])
+                    break
+                if item.get("url"):
+                    with httpx.Client(timeout=_TIMEOUT_S) as cli:
+                        dl = cli.get(item["url"])
+                    if dl.status_code != 200:
+                        return _err(
+                            "image download failed",
+                            f"取回图片 URL 失败 HTTP {dl.status_code}。",
+                        )
+                    png = dl.content
+                    break
+                return _err(
+                    "no image payload",
+                    "响应里既没有 b64_json 也没有 url，无法保存图片。",
+                )
+        except (
+            httpx.TimeoutException,
+            httpx.RemoteProtocolError,
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.WriteError,
+            httpx.PoolTimeout,
+        ) as exc:
+            last_transient = f"{type(exc).__name__}: {exc}"
+        except httpx.HTTPError as exc:
+            # chinzy 主要失败模式就是连接被掐；其余 httpx 错误也按瞬时处理
+            last_transient = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001 — tool must never raise
             return _err(
-                "no image payload",
-                "响应里既没有 b64_json 也没有 url，无法保存图片。",
+                "image gen failed",
+                f"未预期错误：{type(exc).__name__}: {exc}",
             )
-    except httpx.TimeoutException:
+        if _attempt < _MAX_ATTEMPTS:
+            time.sleep(_RETRY_BACKOFF[_attempt - 1])
+
+    if png is None:
         return _err(
-            "image API timeout",
-            f"图像生成超时（>{int(_TIMEOUT_S)}s）。稍后再试或换更简单的描述。",
+            "image API error",
+            f"图像接口连试 {_MAX_ATTEMPTS} 次仍失败（chinzy 上游不稳定，"
+            f"常见瞬时断连）：{last_transient}。稍后再试，或把描述写简单"
+            "点 —— 复杂出图更慢、上游更容易把连接掐掉。",
         )
-    except httpx.HTTPError as exc:
-        return _err("image API error", f"网络/接口错误：{exc}")
-    except Exception as exc:  # noqa: BLE001 — tool must never raise
-        return _err("image gen failed", f"未预期错误：{type(exc).__name__}: {exc}")
 
     ws = _workspace_dir()
     fname = f"genimg_{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}.png"

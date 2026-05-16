@@ -131,6 +131,60 @@ def test_open_failure_still_ok(img_mod, monkeypatch):
     assert out["opened"] is False  # best-effort: tool still succeeds
 
 
+def test_transient_disconnect_retries_then_succeeds(img_mod, monkeypatch):
+    """chinzy 'Server disconnected' on attempt 1 → retry → 200 on
+    attempt 2. The real 2026-05-16 failure mode (RemoteProtocolError)."""
+    import httpx
+
+    m, ws = img_mod
+    monkeypatch.setattr(m.time, "sleep", lambda *_a: None)  # no real backoff
+    calls = {"n": 0}
+
+    def _flaky_post(self, url, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response."
+            )
+        return _Resp(200, {"data": [{"b64_json": _B64}]})
+
+    monkeypatch.setattr(_FakeClient, "post", _flaky_post)
+    out = json.loads(m._handle_generate_image({"prompt": "复杂场景"}, ""))
+    assert calls["n"] == 2  # retried once
+    assert out["ok"] is True
+    assert Path(out["path"]).read_bytes() == _PNG
+
+
+def test_all_attempts_disconnect_returns_error(img_mod, monkeypatch):
+    import httpx
+
+    m, _ = img_mod
+    monkeypatch.setattr(m.time, "sleep", lambda *_a: None)
+
+    def _always_drop(self, url, **k):
+        raise httpx.RemoteProtocolError("Server disconnected")
+
+    monkeypatch.setattr(_FakeClient, "post", _always_drop)
+    out = json.loads(m._handle_generate_image({"prompt": "x"}, ""))
+    assert out["ok"] is False
+    assert "连试" in out["hint"] and "3" in out["hint"]  # exhausted 3 attempts
+
+
+def test_4xx_does_not_retry(img_mod, monkeypatch):
+    """Deterministic 4xx (auth/quota/param) must NOT retry — fail fast."""
+    m, _ = img_mod
+    calls = {"n": 0}
+
+    def _post_400(self, url, **k):
+        calls["n"] += 1
+        return _Resp(400, {"error": {"message": "bad request"}})
+
+    monkeypatch.setattr(_FakeClient, "post", _post_400)
+    out = json.loads(m._handle_generate_image({"prompt": "x"}, ""))
+    assert calls["n"] == 1  # no retry on 4xx
+    assert out["ok"] is False
+
+
 def test_registered_in_registry():
     from deskpet.tools import registry
     import deskpet.tools.image_tools  # noqa: F401 — triggers registration
