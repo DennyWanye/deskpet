@@ -57,7 +57,12 @@ const barStyle: CSSProperties = {
   left: 8,
   right: 8,
   minHeight: 64,
-  maxHeight: 96,
+  // 2026-05-16: 96px 只够 ~3 行，自我介绍等长回复被截断且无法滚动
+  // （旧 alignItems:center 让 flex 子元素拿不到完整高度，内层
+  // overflowY:auto 失效）。抬到 280 让多数回复直接显示完整；超长内容
+  // 由内层 textStyle 的 overflowY:auto 滚动（配合 alignItems:stretch
+  // + minHeight:0）。
+  maxHeight: 280,
   background: "rgba(15, 18, 28, 0.85)",
   borderRadius: 14,
   border: "1px solid rgba(148, 163, 184, 0.14)",
@@ -68,7 +73,9 @@ const barStyle: CSSProperties = {
   zIndex: 10,
   overflow: "hidden",
   display: "flex",
-  alignItems: "center",
+  // stretch（非 center）：让文本子元素撑满 bar 高度，其 overflowY:auto
+  // 才能在 maxHeight 内真正滚动。短消息顶部对齐，可读性更好。
+  alignItems: "stretch",
   backdropFilter: "blur(14px)",
   boxShadow: "0 4px 24px rgba(0, 0, 0, 0.18)",
 };
@@ -76,6 +83,9 @@ const barStyle: CSSProperties = {
 const textStyle: CSSProperties = {
   flex: 1,
   overflowY: "auto",
+  // minHeight:0 是 flex 子元素能正确滚动的关键 —— 没有它，flex item
+  // 默认 min-height:auto 不会缩小到内容以下，overflow 永不触发。
+  minHeight: 0,
   maxHeight: "100%",
   whiteSpace: "pre-wrap",
   wordBreak: "break-word",
