@@ -3025,6 +3025,33 @@ async def control_channel(ws: WebSocket):
                     else:
                         _msgs = [{"role": "user", "content": _text}]
 
+                    # 2026-05-16 bugfix（实测：companion 让生成 Excel，做到
+                    # 一半 max_iter=8 触发 auto_resume，LLM 收到字面
+                    # ``<<auto_resume>>`` 当用户消息 → "用户在测试系统" →
+                    # 重新自我介绍 + 反问"要我做什么"，丢掉原任务）。
+                    # sentinel 永远不该作为 LLM 的 user turn 出现；把最后一
+                    # 条 user 消息的字面 sentinel 换成明确的续跑指令。具体
+                    # "缺什么" 由紧随其后的 [Supervisor] system hint 补充；
+                    # bundle.history 已带原任务上下文。
+                    if _is_sentinel:
+                        _resume_directive = (
+                            "（系统自动续跑：你上一轮还没把用户请求的任务做完"
+                            "就达到了迭代上限。**不要重新自我介绍、不要反问用户"
+                            "想做什么**——回顾上面的对话历史与工具结果，找出用户"
+                            "最初请求的那个任务还差哪些步骤，直接继续把它做完。）"
+                        )
+                        for _i in range(len(_msgs) - 1, -1, -1):
+                            if _msgs[_i].get("role") == "user":
+                                _msgs[_i] = {
+                                    **_msgs[_i],
+                                    "content": _resume_directive,
+                                }
+                                break
+                        else:
+                            _msgs.append(
+                                {"role": "user", "content": _resume_directive}
+                            )
+
                     # P5-S4: pop any queued supervisor hints for this sid
                     # and inject them at the top of the system stack as a
                     # single ``[Supervisor]`` system message. This is the
@@ -3099,12 +3126,15 @@ async def control_channel(ws: WebSocket):
                         _shim = _Shim(provider=_provider)
                         # P4-S22: Code mode bumps max_iterations to 50 so
                         # long tool-use chains (read → grep → edit → bash
-                        # → repeat) can finish a real task. Companion
-                        # mode stays at 8 — anything past that is
-                        # usually a runaway loop in chitchat context.
+                        # → repeat) can finish a real task.
+                        # 2026-05-16: companion 8 → 16。实测"找桌面的
+                        # 花名册并生成 Excel"这类正当多步任务（搜目录→
+                        # 定位文件→读→生成→写）8 轮就爆，过早触发
+                        # auto_resume。16 给真实任务留余量，仍远小于
+                        # code 的 50，纯闲聊跑满 16 仍会被 supervisor 接住。
                         _cmm = service_context.get("code_mode")
                         _in_code_mode = bool(_cmm and _cmm.is_enabled(_sid))
-                        _max_iter = 50 if _in_code_mode else 8
+                        _max_iter = 50 if _in_code_mode else 16
 
                         # P5-S2 D2: long tool_call args reliability hint.
                         # Models (deepseek-v4-pro etc.) corrupt JSON escapes
