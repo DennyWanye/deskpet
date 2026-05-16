@@ -160,7 +160,15 @@ def _handle_generate_image(args: dict[str, Any], task_id: str = "") -> str:
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    payload = {"model": model, "prompt": prompt, "size": size, "n": 1}
+    # 2026-05-16 中专站确认契约：OpenAI 标准 Images API，显式请求
+    # b64_json（规格明确要求；服务端把 n 钳到 [1,10]）。
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "n": 1,
+        "response_format": "b64_json",
+    }
 
     try:
         with httpx.Client(timeout=_TIMEOUT_S) as cli:
