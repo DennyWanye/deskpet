@@ -11,15 +11,10 @@
  * The WS dispatcher (`./ws.ts`) auto-connects on import; we just
  * subscribe to the zustand store from here.
  */
-import { useState, useMemo, useCallback } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { useSessionsStore, collect_inbox } from "../stores/sessionsStore";
-import {
-  MessageStreamPanel,
-  type StreamFilter,
-} from "../components/MessageStreamPanel";
-import { forPet } from "../petText";
+import { useSessionsStore } from "../stores/sessionsStore";
 import { SessionSidebar } from "./SessionSidebar";
 import { MessageStream } from "./MessageStream";
 import { InputBar } from "./InputBar";
@@ -43,79 +38,6 @@ export function CodePanelRoot() {
 
   const session = useSessionsStore((s) => s.sessions[s.active_sid]);
   const messages = session?.messages ?? [];
-
-  // 2026-05-16: 左侧「信息显示区域」—— 复用桌宠窗 MessageStreamPanel
-  // (embedded) 显示本 session 聊天流 + supervisor ⚠/🚨 inbox。数据全在
-  // 共享 zustand store；chatMessages 用 App.tsx 同款 forPet 清洗（滤
-  // <think>/工具 trace），warnings/errors 用 collect_inbox。
-  const [streamCollapsed, setStreamCollapsed] = useState(false);
-  const [streamFilter, setStreamFilter] = useState<StreamFilter>("all");
-  const set_active = useSessionsStore((s) => s.set_active);
-  const dismiss_alert = useSessionsStore((s) => s.dismiss_alert);
-  const dismiss_all_alerts = useSessionsStore((s) => s.dismiss_all_alerts);
-  const clear_supervisor_alert = useSessionsStore(
-    (s) => s.clear_supervisor_alert,
-  );
-
-  const streamChat = useMemo(
-    () =>
-      messages.flatMap((m, i) => {
-        const ts = Date.now() - (messages.length - i) * 1000;
-        if (m.role === "user") {
-          return [{ role: "user" as const, text: m.text ?? "", ts }];
-        }
-        // assistant: 滤掉工具调用/结果/错误 trace + 仅 think 的块，
-        // 剥 <think>。这些噪声不进信息区（完整内容仍在右侧主流/历史）。
-        const clean = forPet(m.text);
-        if (!clean) return [];
-        return [{ role: "assistant" as const, text: clean, ts }];
-      }),
-    [messages],
-  );
-  const warningItems = useMemo(
-    () => collect_inbox(sessions, "yellow"),
-    [sessions],
-  );
-  const errorItems = useMemo(
-    () => collect_inbox(sessions, "red"),
-    [sessions],
-  );
-
-  const jumpToSession = useCallback(
-    (sid: string) => {
-      set_active(sid);
-      set_view("chat");
-    },
-    [set_active],
-  );
-  const handleAlertChoice = useCallback(
-    (
-      sid: string,
-      alert_id: string,
-      button_index: number,
-      button_text: string,
-    ) => {
-      try {
-        codePanelWS.send({
-          type: "supervisor_user_choice",
-          payload: {
-            session_id: sid,
-            alert_id,
-            button_index,
-            button_text,
-          },
-        });
-      } catch (e) {
-        console.warn("[code-panel] supervisor_user_choice send failed:", e);
-      }
-      dismiss_alert(sid, alert_id);
-      const cur = sessions[sid]?.supervisor_alert;
-      if (cur && cur.alert_id === alert_id) {
-        clear_supervisor_alert(sid);
-      }
-    },
-    [dismiss_alert, clear_supervisor_alert, sessions],
-  );
 
   const close_panel = async () => {
     // P4-S24 followup: clicking the inline ✕ should be equivalent to
@@ -205,56 +127,27 @@ export function CodePanelRoot() {
         </button>
       </header>
 
-      {/* Body — 3 列：侧栏 | 信息显示区域 | 聊天主区 (2026-05-16) */}
+      {/* Body — sidebar + main */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <SessionSidebar
           onShowDashboard={() => set_view("dashboard")}
           onPick={() => set_view("chat")}
         />
         {view === "chat" ? (
-          <>
-            {/* 信息显示区域 —— 聊天流 + supervisor 告警，复用桌宠窗
-                MessageStreamPanel(embedded)。折叠时收成窄条。 */}
-            <div
-              style={{
-                width: streamCollapsed ? 18 : 320,
-                flexShrink: 0,
-                height: "100%",
-                display: "flex",
-                overflow: "hidden",
-              }}
-            >
-              <MessageStreamPanel
-                embedded
-                collapsed={streamCollapsed}
-                filter={streamFilter}
-                chatMessages={streamChat}
-                warnings={warningItems}
-                errors={errorItems}
-                onCollapse={() => setStreamCollapsed(true)}
-                onExpand={() => setStreamCollapsed(false)}
-                onSetFilter={setStreamFilter}
-                onDismiss={dismiss_alert}
-                onDismissAll={dismiss_all_alerts}
-                onJumpToSession={jumpToSession}
-                onChoice={handleAlertChoice}
-              />
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              background: "#0f1218",
+              overflow: "hidden",
+            }}
+          >
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              <MessageStream messages={messages} />
             </div>
-            <div
-              style={{
-                flex: 1,
-                display: "flex",
-                flexDirection: "column",
-                background: "#0f1218",
-                overflow: "hidden",
-              }}
-            >
-              <div style={{ flex: 1, overflow: "hidden" }}>
-                <MessageStream messages={messages} />
-              </div>
-              <InputBar />
-            </div>
-          </>
+            <InputBar />
+          </div>
         ) : (
           <SessionGridView onSelectSession={() => set_view("chat")} />
         )}
