@@ -170,6 +170,14 @@ capability_gate_enabled = true
 # 旧行为（自由写盘）。session 类型语义，非权限墙。
 write_scope_enforced = true
 
+# 2026-05-16: generate_image 工具（文生图）。用户说"生成图片"时 agent
+# 调用，走 llm_runtime.json 的 base_url+api_key（同 chinzy 端点）的
+# POST /v1/images/generations，存到 workspace 并用系统看图器打开。
+# model 缺省 gpt-image-2；要换别的图像模型改这里即可（端点不支持时
+# 工具返回 ok:false 不崩）。
+[image]
+model = "gpt-image-2"
+
 [memory]
 # P3-S7: leave db_path empty to use the OS-standard user data directory
 # (%AppData%\deskpet\data\memory.db on Windows). Set an absolute path
