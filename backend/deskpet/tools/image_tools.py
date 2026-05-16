@@ -29,10 +29,17 @@ from .registry import registry
 
 _DEFAULT_MODEL = "gpt-image-2"
 _DEFAULT_SIZE = "1024x1024"
-_TIMEOUT_S = 120.0
-# chinzy 上游瞬时断连重试（断连/超时/5xx）。退避索引 = attempt-1。
-_MAX_ATTEMPTS = 3
-_RETRY_BACKOFF = (3.0, 6.0)
+# 2026-05-16 timeout 协调：之前 per-request=registry=120s → 单次慢出图
+# 或一次重试就被 registry 的 asyncio.wait_for(120s) 砍掉，重试形同虚设。
+# 现在 per-HTTP-attempt=100s，最多 2 次（1 次重试足够接住 chinzy 瞬时
+# 断连——实测断连发生在 ~62s），registry 总超时另设 _TOOL_TIMEOUT_S
+# 覆盖 2×100 + 退避，保证重试能真正跑完。
+_TIMEOUT_S = 100.0          # 单次 HTTP 请求超时
+_MAX_ATTEMPTS = 2           # 总尝试次数（1 次重试）
+_RETRY_BACKOFF = (5.0,)     # attempt 2 前退避
+# 注册到 ToolRegistry 的总超时：必须 > 最坏重试预算
+# (2×100 + 5 = 205) 否则 registry 会在重试跑完前杀掉 handler。
+_TOOL_TIMEOUT_S = 240.0
 
 _SCHEMA: dict[str, Any] = {
     "name": "generate_image",
@@ -282,5 +289,5 @@ registry.register(
     _SCHEMA,
     _handle_generate_image,
     permission_category="network",
-    timeout_seconds=_TIMEOUT_S,
+    timeout_seconds=_TOOL_TIMEOUT_S,
 )

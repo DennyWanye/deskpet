@@ -167,7 +167,8 @@ def test_all_attempts_disconnect_returns_error(img_mod, monkeypatch):
     monkeypatch.setattr(_FakeClient, "post", _always_drop)
     out = json.loads(m._handle_generate_image({"prompt": "x"}, ""))
     assert out["ok"] is False
-    assert "连试" in out["hint"] and "3" in out["hint"]  # exhausted 3 attempts
+    # exhausted all attempts (message embeds the configured _MAX_ATTEMPTS)
+    assert "连试" in out["hint"] and str(m._MAX_ATTEMPTS) in out["hint"]
 
 
 def test_4xx_does_not_retry(img_mod, monkeypatch):
