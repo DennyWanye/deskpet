@@ -148,23 +148,19 @@ def _open_file(path: Path) -> bool:
         return False
 
 
-def _handle_generate_image(args: dict[str, Any], task_id: str = "") -> str:
-    prompt = args.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        return _err(
-            "prompt required",
-            "generate_image 需要 prompt 字段（图片的文字描述）。"
-            "示例：{\"prompt\": \"一只戴墨镜的橘猫，扁平插画风\"}",
-        )
-    size = str(args.get("size") or _DEFAULT_SIZE)
-    model = _image_model()
-
+def _generate_png(
+    prompt: str, size: str, model: str
+) -> tuple[bytes | None, str | None]:
+    """Blocking: chinzy POST + transient-retry → (png_bytes, None) on
+    success, or (None, error_hint) on failure. No file IO. Reused by
+    BOTH the legacy sync handler and the async ImageGenerationWorker —
+    single copy of the slow logic. Never raises.
+    """
     base_url, api_key = _resolve_endpoint()
     if not base_url:
-        return _err(
-            "no image endpoint",
+        return None, (
             "没解析到图像生成 endpoint（llm_runtime.json / config 都没有 "
-            "base_url）。请先在设置里配好 LLM endpoint。",
+            "base_url）。请先在设置里配好 LLM endpoint。"
         )
 
     headers = {"Content-Type": "application/json"}
@@ -180,12 +176,9 @@ def _handle_generate_image(args: dict[str, Any], task_id: str = "") -> str:
         "response_format": "b64_json",
     }
 
-    # 2026-05-16: chinzy 上游对慢/复杂出图请求会瞬时断连
-    # （RemoteProtocolError "Server disconnected"，AGENTS.md 记录的已知
-    # 抽风）。简单 prompt ~28s 成功、复杂 gacha-UI >62s 被掐。像 chat
-    # 路径一样对瞬时错误重试：断连/超时/5xx 重试至多 3 次带退避；
-    # 4xx（鉴权/额度/参数）是确定性错误，立即返回不重试。
-    png: bytes | None = None
+    # chinzy 上游对慢/复杂出图会瞬时断连（RemoteProtocolError
+    # "Server disconnected"）。断连/超时/5xx 重试带退避；4xx 确定性
+    # 错误立即返回不重试。
     last_transient = ""
     for _attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
@@ -203,37 +196,24 @@ def _handle_generate_image(args: dict[str, Any], task_id: str = "") -> str:
                     detail = json.dumps(resp.json(), ensure_ascii=False)[:300]
                 except Exception:  # noqa: BLE001
                     detail = ""
-                return _err(  # 4xx 等确定性错误：不重试
-                    f"image API HTTP {resp.status_code}",
-                    "图像生成接口返回非 200。可能是 model 不支持、额度或"
-                    f"参数问题。响应：{detail}",
-                    status=resp.status_code,
+                return None, (  # 4xx 确定性错误：不重试
+                    f"图像接口 HTTP {resp.status_code}：可能是 model 不支持、"
+                    f"额度或参数问题。响应：{detail}"
                 )
             else:
                 data = (resp.json() or {}).get("data") or []
                 if not data:
-                    return _err(
-                        "empty image response",
-                        "接口 200 但 data 为空，无法取回图片。",
-                    )
+                    return None, "接口 200 但 data 为空，无法取回图片。"
                 item = data[0]
                 if item.get("b64_json"):
-                    png = base64.b64decode(item["b64_json"])
-                    break
+                    return base64.b64decode(item["b64_json"]), None
                 if item.get("url"):
                     with httpx.Client(timeout=_TIMEOUT_S) as cli:
                         dl = cli.get(item["url"])
                     if dl.status_code != 200:
-                        return _err(
-                            "image download failed",
-                            f"取回图片 URL 失败 HTTP {dl.status_code}。",
-                        )
-                    png = dl.content
-                    break
-                return _err(
-                    "no image payload",
-                    "响应里既没有 b64_json 也没有 url，无法保存图片。",
-                )
+                        return None, f"取回图片 URL 失败 HTTP {dl.status_code}。"
+                    return dl.content, None
+                return None, "响应里既没有 b64_json 也没有 url，无法保存图片。"
         except (
             httpx.TimeoutException,
             httpx.RemoteProtocolError,
@@ -244,32 +224,54 @@ def _handle_generate_image(args: dict[str, Any], task_id: str = "") -> str:
         ) as exc:
             last_transient = f"{type(exc).__name__}: {exc}"
         except httpx.HTTPError as exc:
-            # chinzy 主要失败模式就是连接被掐；其余 httpx 错误也按瞬时处理
             last_transient = f"{type(exc).__name__}: {exc}"
-        except Exception as exc:  # noqa: BLE001 — tool must never raise
-            return _err(
-                "image gen failed",
-                f"未预期错误：{type(exc).__name__}: {exc}",
-            )
+        except Exception as exc:  # noqa: BLE001 — never raise
+            return None, f"未预期错误：{type(exc).__name__}: {exc}"
         if _attempt < _MAX_ATTEMPTS:
             time.sleep(_RETRY_BACKOFF[_attempt - 1])
 
-    if png is None:
-        return _err(
-            "image API error",
-            f"图像接口连试 {_MAX_ATTEMPTS} 次仍失败（chinzy 上游不稳定，"
-            f"常见瞬时断连）：{last_transient}。稍后再试，或把描述写简单"
-            "点 —— 复杂出图更慢、上游更容易把连接掐掉。",
-        )
+    return None, (
+        f"图像接口连试 {_MAX_ATTEMPTS} 次仍失败（chinzy 上游不稳定，常见"
+        f"瞬时断连）：{last_transient}。稍后再试，或把描述写简单点 —— "
+        "复杂出图更慢、上游更容易把连接掐掉。"
+    )
 
+
+def _save_image(png: bytes) -> Path:
+    """Save PNG into workspace, return the path. Raises on IO failure."""
     ws = _workspace_dir()
     fname = f"genimg_{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}.png"
     out = ws / fname
+    out.write_bytes(png)
+    return out
+
+
+def _validate_prompt(args: dict[str, Any]) -> str | None:
+    prompt = args.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    return prompt
+
+
+def _handle_generate_image_sync(args: dict[str, Any], task_id: str = "") -> str:
+    """Legacy synchronous blocking path (config [image].async_enabled=
+    false). Kept verbatim-behavior for Strangler-Fig rollback."""
+    prompt = _validate_prompt(args)
+    if prompt is None:
+        return _err(
+            "prompt required",
+            "generate_image 需要 prompt 字段（图片的文字描述）。"
+            '示例：{"prompt": "一只戴墨镜的橘猫，扁平插画风"}',
+        )
+    size = str(args.get("size") or _DEFAULT_SIZE)
+    model = _image_model()
+    png, err = _generate_png(prompt, size, model)
+    if png is None:
+        return _err("image gen failed", err or "未知错误")
     try:
-        out.write_bytes(png)
+        out = _save_image(png)
     except Exception as exc:  # noqa: BLE001
         return _err("save failed", f"写入 workspace 失败：{exc}")
-
     opened = _open_file(out)
     return json.dumps(
         {
@@ -278,6 +280,71 @@ def _handle_generate_image(args: dict[str, Any], task_id: str = "") -> str:
             "opened": opened,
             "prompt": prompt,
             "model": model,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _async_enabled() -> bool:
+    try:
+        import config as _cfg  # type: ignore[import-not-found]
+
+        return bool(
+            (_cfg.config.raw.get("image") or {}).get("async_enabled", True)
+        )
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _handle_generate_image(args: dict[str, Any], task_id: str = "") -> str:
+    """Dispatch: async (default) → submit to ImageGenerationWorker and
+    return immediately so the agent turn doesn't block 60–240s; the
+    worker pushes the result back to the pet when done. sync (rollback)
+    → legacy blocking path.
+    """
+    if not _async_enabled():
+        return _handle_generate_image_sync(args, task_id)
+
+    prompt = _validate_prompt(args)
+    if prompt is None:
+        return _err(
+            "prompt required",
+            "generate_image 需要 prompt 字段（图片的文字描述）。"
+            '示例：{"prompt": "一只戴墨镜的橘猫，扁平插画风"}',
+        )
+    size = str(args.get("size") or _DEFAULT_SIZE)
+    model = _image_model()
+    # session_id + worker 由 chat handler 经 set_session_context 注入
+    # （同 _write_scope_root 机制，registry 把它们 merge 进 args）。
+    # 这样工具不用 import main 的 ServiceContext 单例（会循环/重量）。
+    session_id = str(args.get("_session_id") or "default")
+    worker = args.get("_image_worker")
+    if worker is None:
+        # worker 不可用（未注册/构造失败）→ 不静默失败，回退同步，
+        # 用户至少能拿到图（慢但可用）。
+        return _handle_generate_image_sync(args, task_id)
+
+    status, job_id = worker.submit(
+        session_id=session_id, prompt=prompt, size=size, model=model
+    )
+    if status == "already_generating":
+        return json.dumps(
+            {
+                "ok": True,
+                "status": "already_generating",
+                "message": "🎨 同样的图我已经在画了，稍等一下下就好~",
+            },
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {
+            "ok": True,
+            "status": "generating",
+            "job_id": job_id,
+            "message": (
+                "🎨 在画了，稍等~ 画好我会自动打开给你看，"
+                "这会儿你想聊点别的也行。"
+            ),
         },
         ensure_ascii=False,
     )

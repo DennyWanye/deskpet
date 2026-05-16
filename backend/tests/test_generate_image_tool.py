@@ -186,6 +186,72 @@ def test_4xx_does_not_retry(img_mod, monkeypatch):
     assert out["ok"] is False
 
 
+def test_async_dispatch_returns_immediately_no_http(img_mod, monkeypatch):
+    """async_enabled=true + worker present → tool returns instantly with
+    status:generating and does NOT perform the HTTP request."""
+    m, _ = img_mod
+    monkeypatch.setattr(m, "_async_enabled", lambda: True)
+
+    submitted = {}
+
+    class _FakeWorker:
+        def submit(self, *, session_id, prompt, size, model):
+            submitted.update(
+                session_id=session_id, prompt=prompt, size=size, model=model
+            )
+            return "queued", "job_abc"
+
+    # worker injected into args via set_session_context (same as
+    # _write_scope_root / _session_id). If HTTP were called it'd blow
+    # up (no post_resp set) — assert it isn't.
+    _FakeClient.post_resp = None
+    out = json.loads(
+        m._handle_generate_image(
+            {
+                "prompt": "一只猫",
+                "_session_id": "default",
+                "_image_worker": _FakeWorker(),
+            },
+            "",
+        )
+    )
+    assert out["ok"] is True
+    assert out["status"] == "generating"
+    assert out["job_id"] == "job_abc"
+    assert "在画了" in out["message"]
+    assert submitted["session_id"] == "default"
+    assert submitted["prompt"] == "一只猫"
+
+
+def test_async_dispatch_dedup_message(img_mod, monkeypatch):
+    m, _ = img_mod
+    monkeypatch.setattr(m, "_async_enabled", lambda: True)
+
+    class _DupWorker:
+        def submit(self, **k):
+            return "already_generating", ""
+
+    out = json.loads(
+        m._handle_generate_image(
+            {"prompt": "P", "_image_worker": _DupWorker()}, ""
+        )
+    )
+    assert out["ok"] is True
+    assert out["status"] == "already_generating"
+    assert "已经在画" in out["message"]
+
+
+def test_async_enabled_false_uses_sync_path(img_mod, monkeypatch):
+    """Strangler-Fig: async_enabled=false → legacy blocking sync path
+    (does perform HTTP)."""
+    m, _ = img_mod
+    monkeypatch.setattr(m, "_async_enabled", lambda: False)
+    _FakeClient.post_resp = _Resp(200, {"data": [{"b64_json": _B64}]})
+    out = json.loads(m._handle_generate_image({"prompt": "x"}, ""))
+    assert out["ok"] is True
+    assert out.get("path", "").endswith(".png")  # sync path saved a file
+
+
 def test_registered_in_registry():
     from deskpet.tools import registry
     import deskpet.tools.image_tools  # noqa: F401 — triggers registration

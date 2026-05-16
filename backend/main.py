@@ -542,6 +542,9 @@ try:
     from deskpet.memory.session_db import SessionDB as _SessionDB
     from deskpet.memory.embedder import Embedder as _Embedder
     from deskpet.memory.vector_worker import VectorWorker as _VectorWorker
+    from deskpet.memory.image_worker import (
+        ImageGenerationWorker as _ImageWorker,
+    )
     from deskpet.memory.retriever import Retriever as _Retriever
     from deskpet.skills.loader import SkillLoader as _SkillLoader
 
@@ -646,6 +649,51 @@ try:
     service_context.register("session_db", _session_db)
     service_context.register("vector_worker", _vector_worker)
     service_context.register("embedder", _embedder)
+
+    # OpenSpec 2026-05-16-async-image-gen: ImageGenerationWorker —
+    # generate_image submits a job and returns instantly; this worker
+    # does the slow chinzy POST + retry + save + open in the background
+    # and pushes the result back to the pet via _image_notifier (reuses
+    # the control-ws chat_v2_final path → zero frontend change, petText
+    # cleaning applies). async_enabled=false → not started (tool falls
+    # back to legacy sync blocking).
+    _img_cfg = (config.raw.get("image") if hasattr(config, "raw") else None) or {}
+
+    async def _image_notifier(_sid: str, _text: str) -> None:
+        # 1) push as chat_v2_final to the originating session's control
+        #    conn (fallback: default / broadcast all, mirrors auto_resume).
+        _payload = {"type": "chat_v2_final", "payload": {"text": _text}}
+        _wsobj = (
+            _control_connections.get(_sid)
+            or _control_connections.get("default")
+        )
+        try:
+            if _wsobj is not None:
+                await _wsobj.send_json(_payload)
+            else:
+                for _w in list(_control_connections.values()):
+                    try:
+                        await _w.send_json(_payload)
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception as _nex:  # noqa: BLE001
+            logger.debug("image_notifier_ws_failed sid=%s err=%s", _sid, _nex)
+        # 2) persist to SessionDB as an assistant message so
+        #    ChatHistoryPanel / L2 recall have it (same as a normal reply).
+        try:
+            _sdb_n = service_context.get("session_db")
+            if _sdb_n is not None:
+                await _sdb_n.append_message(
+                    session_id=_sid, role="assistant", content=_text,
+                )
+        except Exception as _pex:  # noqa: BLE001
+            logger.debug("image_notifier_persist_failed err=%s", _pex)
+
+    _image_worker = _ImageWorker(
+        notifier=_image_notifier,
+        max_concurrent=int(_img_cfg.get("max_concurrent", 2)),
+    )
+    service_context.register("image_worker", _image_worker)
 
     # P4-S22: Code Mode session manager (per-base-session enable map).
     from deskpet.code_mode import CodeModeManager as _CodeModeManager
@@ -899,6 +947,19 @@ async def lifespan(app: FastAPI):
             logger.info("p4_vector_worker_ready")
         except Exception as exc:
             logger.warning("p4_vector_worker_start_failed", error=str(exc))
+    # OpenSpec 2026-05-16-async-image-gen: start the ImageGenerationWorker
+    # unless async disabled (then generate_image runs legacy sync).
+    _iw = service_context.get("image_worker")
+    _img_async = bool(
+        ((config.raw.get("image") if hasattr(config, "raw") else None) or {})
+        .get("async_enabled", True)
+    )
+    if _iw is not None and _img_async:
+        try:
+            await _iw.start()
+            logger.info("image_worker_ready")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("image_worker_start_failed", error=str(exc))
     # P4-S15: MCPManager — bootstrap from raw [mcp] section. start() is
     # tolerant: missing section / disabled servers / spawn failures are all
     # logged but don't raise. Only the manager handle is registered; the
@@ -1439,6 +1500,12 @@ async def lifespan(app: FastAPI):
             await _vw.stop()
         except Exception as exc:
             logger.warning("p4_vector_worker_stop_failed", error=str(exc))
+    _iw = service_context.get("image_worker")
+    if _iw is not None:
+        try:
+            await _iw.stop()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("image_worker_stop_failed", error=str(exc))
     _sl = service_context.get("skill_loader")
     if _sl is not None:
         try:
@@ -3291,6 +3358,18 @@ async def control_channel(ws: WebSocket):
                                 _ws_enforced = bool(
                                     _comp_cfg.get("write_scope_enforced", True)
                                 )
+                                # OpenSpec 2026-05-16-async-image-gen:
+                                # generate_image needs _session_id (route
+                                # the completion back to this pet session)
+                                # + _image_worker (submit target). Inject
+                                # them ALWAYS via the same merge mechanism;
+                                # _write_scope_root is added conditionally.
+                                _sctx: dict[str, Any] = {
+                                    "_session_id": _sid,
+                                    "_image_worker": service_context.get(
+                                        "image_worker"
+                                    ),
+                                }
                                 if _ws_enforced:
                                     from agent.write_scope import (
                                         resolve_workspace_root as _resolve_ws,
@@ -3300,15 +3379,10 @@ async def control_channel(ws: WebSocket):
                                             _comp_cfg.get("workspace_root", "")
                                         )
                                     )
-                                    deskpet_tool_registry_v2.set_session_context(
-                                        _sid,
-                                        {"_write_scope_root": str(_ws_root)},
-                                    )
-                                else:
-                                    # 显式回退：清掉可能残留的 scope
-                                    deskpet_tool_registry_v2.set_session_context(
-                                        _sid, None
-                                    )
+                                    _sctx["_write_scope_root"] = str(_ws_root)
+                                deskpet_tool_registry_v2.set_session_context(
+                                    _sid, _sctx
+                                )
                             except Exception as _ws_exc:  # noqa: BLE001
                                 logger.debug(
                                     "companion_write_scope_skipped sid=%s err=%s",

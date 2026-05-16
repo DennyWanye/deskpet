@@ -23,6 +23,7 @@ _VALID_SERVICES = frozenset({
     # 这里转成正式 register 路径，避免 getattr(sc, "_p4_xxx") 这种隐式约定。
     "embedder",            # BGE-M3 Embedder (with mock fallback)
     "vector_worker",       # VectorWorker draining embedding queue → vec0
+    "image_worker",        # ImageGenerationWorker (async generate_image)
     "session_db",          # P4 canonical L2 SessionDB (state.db)
     # --- P4-S22 Code Mode ----------------------------------------------------
     "code_mode",           # CodeModeManager — per-base-session enable map

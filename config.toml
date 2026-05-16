@@ -177,6 +177,12 @@ write_scope_enforced = true
 # 工具返回 ok:false 不崩）。
 [image]
 model = "gpt-image-2"
+# OpenSpec 2026-05-16-async-image-gen：true（默认）→ generate_image 秒
+# 返回，ImageGenerationWorker 后台出图、画好自动推回桌宠（agent 回合
+# 不阻塞 60-240s）。false → 退回旧同步阻塞实现（Strangler-Fig 回退）。
+async_enabled = true
+# 后台 worker 最大并发出图数（防同时太多打爆 chinzy + 控成本 $0.15/张）。
+max_concurrent = 2
 
 [memory]
 # P3-S7: leave db_path empty to use the OS-standard user data directory
