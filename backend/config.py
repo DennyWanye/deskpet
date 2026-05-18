@@ -219,6 +219,9 @@ _KNOWN_EXTRAS_BY_DATACLASS: dict[str, frozenset[str]] = {
         "providers", "fallback_chain",
         "model", "base_url", "api_key", "temperature", "max_tokens",
         "endpoints",
+        # 2026-05-17 deepseek-inline-cot-dsml-sanitize Strangler-Fig flag,
+        # read via config.raw["llm"]["sanitize_inline_cot_dsml"].
+        "sanitize_inline_cot_dsml",
     }),
 }
 

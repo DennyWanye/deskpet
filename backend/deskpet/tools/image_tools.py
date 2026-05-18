@@ -336,6 +336,20 @@ def _handle_generate_image(args: dict[str, Any], task_id: str = "") -> str:
             },
             ensure_ascii=False,
         )
+    if status != "queued":
+        # 关键修复：submit 返回 "unavailable"（worker 未存活/入队失败）
+        # 时**不能**再谎报 "generating" success —— 那会让 agent 说
+        # “在画了”，但 job 从未入队、永不出图（静默失败，用户实测到的
+        # bug）。最佳实践 = 优雅降级：回退同步路径，慢但用户必拿到图；
+        # 同时落日志以便定位 worker 不可用的根因。
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "generate_image: worker.submit status=%r (not queued) "
+            "→ falling back to sync generation",
+            status,
+        )
+        return _handle_generate_image_sync(args, task_id)
     return json.dumps(
         {
             "ok": True,

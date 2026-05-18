@@ -20,6 +20,14 @@ temperature = 0.7
 # 本地小模型（gemma:4b 等）实际上限通常 4096，按需调低即可。
 max_tokens = 8192
 daily_budget_cny = 10.0
+# 2026-05-17 deepseek-inline-cot-dsml-sanitize (Strangler-Fig, 默认开)：
+# chinzy 的 deepseek-v4-pro 有时把思维链 <｜begin▁of▁thinking｜>…
+# <｜end▁of▁thinking｜> 和原生 <｜｜DSML｜｜tool_calls> 工具协议内联进
+# content（而非结构化 reasoning_content / tool_calls 字段），未清洗会
+# 泄漏进 write_file 内容污染目标文件。开启 → provider 在唯一 chokepoint
+# 剥离内联 CoT + 把内联 DSML 提取为结构化 tool_calls。设 false 立即回退
+# 旧的原样透传（demo 回滚用，无需重启逻辑改动）。
+sanitize_inline_cot_dsml = true
 # 当 base_url 不是 localhost 时，BillingLedger 会按 daily_budget_cny 限额；
 # localhost 调用始终免费不计费。
 
@@ -338,6 +346,28 @@ command = ""
 args = []
 transport = "stdio"
 enabled = false
+
+# 2026-05-18: Playwright MCP — code-mode session agents get browser_*
+# tools (navigate/click/type/snapshot/tabs) for simulated-human E2E
+# testing. Accessibility-tree based (no vision model needed; works
+# with deepseek-v4-pro AND gpt-5.5). `--isolated` = fresh in-memory
+# profile per run; `--allowed-origins` locks the test agent to the
+# project's localhost dev server (footgun guard — must NOT roam the
+# internet). MCP manager auto-connects from this entry (same path as
+# the filesystem server). Set enabled=false to fully revert.
+[[mcp.servers]]
+name = "playwright"
+command = "npx"
+args = ["@playwright/mcp@latest", "--isolated", "--browser", "chromium", "--allowed-origins", "http://localhost;http://127.0.0.1"]
+transport = "stdio"
+enabled = true
+
+# Strangler-Fig flags for the code-mode E2E capabilities. Tools/servers
+# stay dark unless their flag is true (revert = set false).
+[code_e2e]
+playwright_mcp_enabled = true
+browser_use_enabled = false
+computer_use_enabled = false
 
 # ─────────────────────────────────────────────────────────────────
 # P4-S6: multi-provider LLM layer (Anthropic / OpenAI / Gemini).

@@ -5,9 +5,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   type SessionState,
+  type SupervisorAlertEntry,
+  collect_inbox,
+  count_unhandled_by_severity,
   pet_focus_sid,
   severity_score,
   severity_score_breakdown,
+  useSessionsStore,
 } from "./sessionsStore";
 
 function mk(over: Partial<SessionState>): SessionState {
@@ -153,6 +157,87 @@ describe("pet_focus_sid", () => {
       c: mk({ base_session_id: "c", status: "running", tool_signature_repeat: 5 }),
     };
     expect(pet_focus_sid(sids, now)).toBe("c"); // 10 + 40 = 50, beats b's 30
+  });
+
+  it("inbox: count_unhandled_by_severity tallies across sessions and dedups severities", () => {
+    const mkAlert = (id: string, sev: "yellow" | "red"): SupervisorAlertEntry => ({
+      alert_id: id,
+      severity: sev,
+      action: "nudge",
+      diagnosis: id,
+      user_message: id,
+      suggested_buttons: [],
+      received_at: now,
+    });
+    const sids = {
+      a: mk({
+        base_session_id: "a",
+        supervisor_inbox: [mkAlert("a1", "yellow"), mkAlert("a2", "red")],
+      }),
+      b: mk({
+        base_session_id: "b",
+        supervisor_inbox: [mkAlert("b1", "yellow"), mkAlert("b2", "yellow")],
+      }),
+      c: mk({ base_session_id: "c" }),
+    };
+    expect(count_unhandled_by_severity(sids, "yellow")).toBe(3);
+    expect(count_unhandled_by_severity(sids, "red")).toBe(1);
+    const reds = collect_inbox(sids, "red");
+    expect(reds).toHaveLength(1);
+    expect(reds[0].session_id).toBe("a");
+    expect(reds[0].alert_id).toBe("a2");
+  });
+
+  it("inbox: apply_supervisor_alert dedups by alert_id (no double-counting on ws replay)", () => {
+    useSessionsStore.setState({
+      active_sid: "default",
+      sessions: {},
+      inflight_count: 0,
+      inflight_max: 2,
+    });
+    const store = useSessionsStore.getState();
+    store.ensure("s1", { project_name: "S1" });
+    const alert: SupervisorAlertEntry = {
+      alert_id: "alert-X",
+      severity: "yellow",
+      action: "nudge",
+      diagnosis: "d",
+      user_message: "m",
+      suggested_buttons: ["A", "B"],
+      received_at: now,
+    };
+    store.apply_supervisor_alert("s1", alert);
+    store.apply_supervisor_alert("s1", alert); // duplicate landing
+    expect(useSessionsStore.getState().sessions.s1.supervisor_inbox).toHaveLength(1);
+    store.dismiss_alert("s1", "alert-X");
+    expect(useSessionsStore.getState().sessions.s1.supervisor_inbox).toHaveLength(0);
+    expect(useSessionsStore.getState().sessions.s1.supervisor_alert).toBeNull();
+    expect(useSessionsStore.getState().sessions.s1.supervisor_severity).toBe("green");
+  });
+
+  it("inbox: dismiss_all_alerts clears one severity but keeps the other", () => {
+    useSessionsStore.setState({
+      active_sid: "default",
+      sessions: {},
+      inflight_count: 0,
+      inflight_max: 2,
+    });
+    const store = useSessionsStore.getState();
+    store.ensure("s1");
+    const mkA = (id: string, sev: "yellow" | "red"): SupervisorAlertEntry => ({
+      alert_id: id,
+      severity: sev,
+      action: "nudge",
+      diagnosis: id,
+      user_message: id,
+      suggested_buttons: [],
+      received_at: now,
+    });
+    store.apply_supervisor_alert("s1", mkA("y1", "yellow"));
+    store.apply_supervisor_alert("s1", mkA("r1", "red"));
+    store.dismiss_all_alerts("yellow");
+    const inbox = useSessionsStore.getState().sessions.s1.supervisor_inbox ?? [];
+    expect(inbox.map((a) => a.alert_id)).toEqual(["r1"]);
   });
 
   it("companion-mode sids without project_root or code_session_id are excluded", () => {

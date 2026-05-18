@@ -110,6 +110,16 @@ class ImageGenerationWorker:
             session_id=session_id, prompt=prompt, size=size, model=model
         )
         if self._loop is None or self._task is None or self._task.done():
+            # 不再静默返回 unavailable —— 落日志说明是哪个条件触发
+            # （loop 未起 / task 未创建 / task 已结束），便于定位
+            # “generate_image 说在画了但永不出图” 的根因。
+            log.warning(
+                "image_worker.submit unavailable: loop=%s task=%s "
+                "task_done=%s — worker not alive at submit time",
+                "set" if self._loop is not None else "None",
+                "set" if self._task is not None else "None",
+                (self._task.done() if self._task is not None else "n/a"),
+            )
             return "unavailable", ""
         key = job.dedup_key()
         # dedup is best-effort sync check against the set (set ops are

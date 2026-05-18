@@ -59,6 +59,19 @@ export type SessionStatus =
   | "permission"
   | "error";
 
+/** P5-S3-Inbox — single supervisor alert payload, kept in two places:
+ *   • `supervisor_alert` (latest, drives PetStateMachine)
+ *   • `supervisor_inbox`  (queue of unhandled, drives toolbar badge + MessageStreamPanel) */
+export interface SupervisorAlertEntry {
+  alert_id: string;
+  severity: "green" | "yellow" | "red";
+  action: "nudge" | "ask_user";
+  diagnosis: string;
+  user_message: string;
+  suggested_buttons: string[];
+  received_at: number;
+}
+
 export interface SessionState {
   base_session_id: string;
   code_session_id: string | null;
@@ -82,15 +95,11 @@ export interface SessionState {
   /** Last supervisor severity colour (green | yellow | red). */
   supervisor_severity?: "green" | "yellow" | "red";
   /** Latest supervisor alert payload, or null if none active. */
-  supervisor_alert?: {
-    alert_id: string;
-    severity: "green" | "yellow" | "red";
-    action: "nudge" | "ask_user";
-    diagnosis: string;
-    user_message: string;
-    suggested_buttons: string[];
-    received_at: number;
-  } | null;
+  supervisor_alert?: SupervisorAlertEntry | null;
+  /** Inbox of unhandled supervisor alerts (yellow + red). Newest first.
+   * Lives in the session so jumping to a session shows its history.
+   * Cleared on dismiss / handle. */
+  supervisor_inbox?: SupervisorAlertEntry[];
   // P5-S2 Phase 5: 自愈尝试计数。0 = 未在自愈中；>0 表示
   // backend AutoResumeOrchestrator 正在第 N 次尝试。
   // ws.ts 收到 auto_resume_started 时设为 attempt 值；
@@ -124,8 +133,15 @@ interface SessionsStore {
   remove(sid: string): void;
   set_inflight(delta: number): void;
   // P5-S3: supervisor surface
-  apply_supervisor_alert(sid: string, alert: NonNullable<SessionState["supervisor_alert"]>): void;
+  apply_supervisor_alert(sid: string, alert: SupervisorAlertEntry): void;
   clear_supervisor_alert(sid: string): void;
+  /** Remove a single alert from the inbox (and clear `supervisor_alert`
+   * if it matches). Used when user clicks a button or "已知道" in the
+   * MessageStreamPanel. */
+  dismiss_alert(sid: string, alert_id: string): void;
+  /** Clear all alerts of one severity across all sessions. Used by the
+   * toolbar's "全部已读" sweep button. */
+  dismiss_all_alerts(severity: "yellow" | "red"): void;
 }
 
 const newId = (): string =>
@@ -147,6 +163,7 @@ const blank_session = (sid: string): SessionState => ({
   tool_signature_repeat: 0,
   supervisor_severity: "green",
   supervisor_alert: null,
+  supervisor_inbox: [],
   auto_resume_attempts: 0,
   // multi-provider-management Phase 5: default = no binding ⇒ "Global Chain".
   provider_id: null,
@@ -261,6 +278,14 @@ export const useSessionsStore = create<SessionsStore>((set) => ({
   apply_supervisor_alert(sid, alert) {
     set((state) => {
       const cur = state.sessions[sid] ?? blank_session(sid);
+      const prev_inbox = cur.supervisor_inbox ?? [];
+      // Dedup by alert_id — if the same alert lands twice (ws reconnect
+      // replays, double broadcast), don't grow the badge.
+      const filtered = prev_inbox.filter((a) => a.alert_id !== alert.alert_id);
+      const next_inbox =
+        alert.severity === "yellow" || alert.severity === "red"
+          ? [alert, ...filtered].slice(0, 50)
+          : filtered;
       return {
         sessions: {
           ...state.sessions,
@@ -268,6 +293,7 @@ export const useSessionsStore = create<SessionsStore>((set) => ({
             ...cur,
             supervisor_severity: alert.severity,
             supervisor_alert: alert,
+            supervisor_inbox: next_inbox,
             last_activity: Date.now(),
           },
         },
@@ -287,7 +313,99 @@ export const useSessionsStore = create<SessionsStore>((set) => ({
       };
     });
   },
+
+  dismiss_alert(sid, alert_id) {
+    set((state) => {
+      const cur = state.sessions[sid];
+      if (!cur) return state;
+      const next_inbox = (cur.supervisor_inbox ?? []).filter(
+        (a) => a.alert_id !== alert_id,
+      );
+      const next_alert =
+        cur.supervisor_alert && cur.supervisor_alert.alert_id === alert_id
+          ? null
+          : cur.supervisor_alert ?? null;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sid]: {
+            ...cur,
+            supervisor_inbox: next_inbox,
+            supervisor_alert: next_alert,
+            // Severity downgrades to green only when nothing pending.
+            supervisor_severity: next_inbox.length === 0
+              ? "green"
+              : cur.supervisor_severity,
+          },
+        },
+      };
+    });
+  },
+
+  dismiss_all_alerts(severity) {
+    set((state) => {
+      const next: Record<string, SessionState> = {};
+      for (const [sid, s] of Object.entries(state.sessions)) {
+        const remaining = (s.supervisor_inbox ?? []).filter(
+          (a) => a.severity !== severity,
+        );
+        const cur_alert_dismissed =
+          s.supervisor_alert && s.supervisor_alert.severity === severity;
+        next[sid] = {
+          ...s,
+          supervisor_inbox: remaining,
+          supervisor_alert: cur_alert_dismissed ? null : s.supervisor_alert ?? null,
+          supervisor_severity:
+            remaining.length === 0 ? "green" : s.supervisor_severity,
+        };
+      }
+      return { sessions: next };
+    });
+  },
 }));
+
+// ----------------------------------------------------------------------
+// Inbox selectors. Pure helpers — components call these from useMemo.
+// ----------------------------------------------------------------------
+
+export function count_unhandled_by_severity(
+  sessions: Record<string, SessionState>,
+  severity: "yellow" | "red",
+): number {
+  let n = 0;
+  for (const s of Object.values(sessions)) {
+    for (const a of s.supervisor_inbox ?? []) {
+      if (a.severity === severity) n += 1;
+    }
+  }
+  return n;
+}
+
+export interface InboxItem extends SupervisorAlertEntry {
+  session_id: string;
+  project_name: string;
+}
+
+export function collect_inbox(
+  sessions: Record<string, SessionState>,
+  severity: "yellow" | "red",
+): InboxItem[] {
+  const out: InboxItem[] = [];
+  for (const s of Object.values(sessions)) {
+    for (const a of s.supervisor_inbox ?? []) {
+      if (a.severity === severity) {
+        out.push({
+          ...a,
+          session_id: s.base_session_id,
+          project_name: s.project_name || s.base_session_id,
+        });
+      }
+    }
+  }
+  // Newest first
+  out.sort((a, b) => b.received_at - a.received_at);
+  return out;
+}
 
 // ----------------------------------------------------------------------
 // P5-S3 — severity score + pet focus selectors.

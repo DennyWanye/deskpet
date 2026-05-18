@@ -219,11 +219,21 @@ def _resolve_llm_api_key(configured: str) -> str:
 
 _resolved_api_key = _resolve_llm_api_key(config.llm.local.api_key)
 
+# 2026-05-17 deepseek-inline-cot-dsml-sanitize Strangler-Fig flag (default
+# on). Read once; passed to every OpenAICompatibleProvider so setting
+# [llm] sanitize_inline_cot_dsml = false instantly restores legacy raw
+# passthrough after a restart (demo rollback).
+_sanitize_cot_dsml = bool(
+    (config.raw.get("llm") or {}).get("sanitize_inline_cot_dsml", True)
+)
+logger.info("sanitize_inline_cot_dsml_flag", enabled=_sanitize_cot_dsml)
+
 local_llm = OpenAICompatibleProvider(
     base_url=config.llm.local.base_url,
     api_key=_resolved_api_key,
     model=config.llm.local.model,
     temperature=config.llm.local.temperature,
+    sanitize_inline_cot_dsml=_sanitize_cot_dsml,
 )
 
 # P4-S25 (2026-05-09): cross-endpoint Ollama fallback removed at user
@@ -247,6 +257,7 @@ if config.llm.cloud is not None:
             api_key=_cloud_key,
             model=config.llm.cloud.model,
             temperature=config.llm.cloud.temperature,
+            sanitize_inline_cot_dsml=_sanitize_cot_dsml,
         )
 
 # P2-1-S8: BillingLedger — SQLite ledger of every chat_stream call + its
@@ -1162,6 +1173,7 @@ async def lifespan(app: FastAPI):
                             api_key=_sup_api_key,
                             model=_sup_model,
                             temperature=0.1,
+                            sanitize_inline_cot_dsml=_sanitize_cot_dsml,
                         )
                         logger.info(
                             "supervisor_provider_resolved id=%s base_url=%s model=%s",
@@ -1665,6 +1677,7 @@ async def update_cloud_config(body: CloudConfigRequest, request: Request):
         api_key=resolved_key,
         model=body.model,
         temperature=current_temperature,
+        sanitize_inline_cot_dsml=_sanitize_cot_dsml,
     )
 
     # Hot-swap: replace module-level local_llm. The chat handler reads
@@ -3294,6 +3307,7 @@ async def control_channel(ws: WebSocket):
                                             api_key=_api_key,
                                             model=_entry.model,
                                             temperature=getattr(_entry, "temperature", 0.7),
+                                            sanitize_inline_cot_dsml=_sanitize_cot_dsml,
                                         ))
                                     _provider_chain = _chain
                         except Exception as _resolve_exc:  # noqa: BLE001

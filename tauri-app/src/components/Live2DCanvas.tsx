@@ -4,6 +4,11 @@ interface Live2DCanvasProps {
   modelPath: string;
   onFpsUpdate?: (fps: number) => void;
   mouthOpenY?: number; // 0.0 ~ 1.0, drives ParamMouthOpenY for lip sync
+  /** 2026-05-17: pet 渲染区逻辑宽（CSS px）。桌宠窗加了左侧常驻消息
+   * 面板后，窗口变宽但 Hiyori 必须只居中在右侧 pet 列里 —— 否则会
+   * 居中到整窗(含面板)被面板挡住/被裁切。App 传 innerWidth - 面板宽。
+   * 不传 → 退回整窗宽(旧行为，零回归)。高度仍取 innerHeight。 */
+  petWidth?: number;
 }
 
 /**
@@ -42,12 +47,15 @@ export interface Live2DHandle {
  * We render offscreen and display each frame via <img> (HTML = composites OK).
  */
 export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function Live2DCanvas(
-  { modelPath, onFpsUpdate, mouthOpenY = 0 },
+  { modelPath, onFpsUpdate, mouthOpenY = 0, petWidth },
   ref,
 ) {
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
+  const [size, setSize] = useState(() => ({
+    w: petWidth ?? window.innerWidth,
+    h: window.innerHeight,
+  }));
   // Use ref for mode to avoid re-render killing the render loop. We don't
   // expose this as React state because the render loop captures it once and
   // toggling it would otherwise tear down + re-init the whole pipeline.
@@ -108,7 +116,8 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
 
   // Track viewport
   useEffect(() => {
-    const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
+    const onResize = () =>
+      setSize({ w: petWidth ?? window.innerWidth, h: window.innerHeight });
     window.addEventListener("resize", onResize);
     console.warn("[Pet] viewport:", window.innerWidth, "x", window.innerHeight, "dpr:", window.devicePixelRatio);
     return () => window.removeEventListener("resize", onResize);

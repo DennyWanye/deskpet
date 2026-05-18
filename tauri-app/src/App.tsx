@@ -1,10 +1,15 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
+import {
+  MessageStreamPanel,
+  type StreamFilter,
+} from "./components/MessageStreamPanel";
+import { collect_inbox } from "./stores/sessionsStore";
+import { forPet } from "./petText";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { ContextTracePanel } from "./components/ContextTracePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { DialogBar } from "./components/DialogBar";
-import { ChatHistoryPanel } from "./components/ChatHistoryPanel";
 import { UserBubble } from "./components/UserBubble";
 import { StartupOverlay, type BootState } from "./components/StartupOverlay";
 import { useBudgetToast } from "./hooks/useBudgetToast";
@@ -244,6 +249,107 @@ function App() {
   const applySupervisorAlert = useSessionsStore((s) => s.apply_supervisor_alert);
   const clearSupervisorAlert = useSessionsStore((s) => s.clear_supervisor_alert);
   const ensureSession = useSessionsStore((s) => s.ensure);
+  // 2026-05-17 桌宠窗左侧常驻消息面板 —— 复用 MessageStreamPanel。
+  const dismissAlert = useSessionsStore((s) => s.dismiss_alert);
+  const dismissAllAlerts = useSessionsStore((s) => s.dismiss_all_alerts);
+  const [streamFilter, setStreamFilter] = useState<StreamFilter>("all");
+  // 2026-05-18: 左侧大消息面板可显示/隐藏。打开时隐藏底部小 DialogBar
+  // （二者职责重叠，避免冗余）；关闭时回到桌宠+DialogBar 形态。
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
+  // 2026-05-18 抖动/位移根因修复：
+  //  ① 桌宠改为 webview 内 absolute right:0（见 render）→ 不再随 flex
+  //     重排，切面板时 React 不会把桌宠瞬移到左边（旧版「剧烈抖动」根因）。
+  //  ② 预解析 Tauri window 句柄并缓存 → 切换时无 dynamic-import 延迟，
+  //     setSize/setPosition 背靠背近原子，几乎单帧完成。
+  //  ③ 首帧(config open)冻结 openW/petW 物理基线 → 每次都用同一组尺寸，
+  //     杜绝按比例反复换算的累积舍入漂移（旧版「桌宠位置会移动」根因）。
+  //  ④ 锁定窗口**右缘**屏幕 X（newX = 当前右缘 - newW）。桌宠贴右缘，
+  //     右缘恒定 → 开/关前后乃至异步间隙桌宠屏幕位置完全一致，零跳。
+  const winApiRef = useRef<{
+    win: any;
+    PhysicalSize: any;
+    PhysicalPosition: any;
+  } | null>(null);
+  const geomRef = useRef<{
+    openW: number;
+    petW: number;
+    h: number;
+    anchorRightX: number;
+    anchorY: number;
+  } | null>(null);
+  const geomToggleMounted = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const mod = await import("@tauri-apps/api/window");
+        const win = mod.getCurrentWindow?.();
+        if (!win || cancelled) return;
+        winApiRef.current = {
+          win,
+          PhysicalSize: mod.PhysicalSize,
+          PhysicalPosition: mod.PhysicalPosition,
+        };
+        const size = await win.outerSize();
+        const pos = await win.outerPosition();
+        if (cancelled) return;
+        const openW = size.width;
+        const h = size.height;
+        const petW = Math.round(openW * (282 / 626));
+        // 冻结屏幕右缘锚点（首帧 config-open 几何）。此后每次切换都
+        // 目标这同一个 rightX/Y，绝不按当前几何反推 → 零累积漂移、
+        // 桌宠位置确定不动。代价：用户拖窗后下次切换会吸附回此锚点
+        // （桌宠"不许动"优先级高于跟随拖动，符合用户明确诉求）。
+        geomRef.current = {
+          openW,
+          petW,
+          h,
+          anchorRightX: pos.x + openW,
+          anchorY: pos.y,
+        };
+      } catch (e) {
+        console.warn("[Pet] window api preload failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!geomToggleMounted.current) {
+      geomToggleMounted.current = true;
+      return; // 首帧即 config open，几何已对，跳过
+    }
+    const api = winApiRef.current;
+    const geom = geomRef.current;
+    if (!api || !geom) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { win, PhysicalSize, PhysicalPosition } = api;
+        // 用冻结锚点，不再 re-read 当前几何 → 确定性、零漂移、更少
+        // await（切换更接近单帧、更顺）。
+        const newW = leftPanelOpen ? geom.openW : geom.petW;
+        const newX = geom.anchorRightX - newW;
+        const newY = geom.anchorY;
+        if (cancelled) return;
+        // 两个 IPC 背靠背派发（不在中间 await）→ 窗口管理器尽量在
+        // 同一帧应用 size+position，把 2-call 残留瞬变压到最小。最终
+        // 态与顺序无关（size、position 都是绝对值）。
+        await Promise.all([
+          win.setSize(new PhysicalSize(newW, geom.h)),
+          win.setPosition(new PhysicalPosition(newX, newY)),
+        ]);
+      } catch (e) {
+        console.warn("[Pet] panel toggle window geom failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [leftPanelOpen]);
   // Recompute pet state on session change OR every 5s so age_penalty
   // grows even without new events.
   useEffect(() => {
@@ -254,6 +360,29 @@ function App() {
   // Control channel (text chat + interrupt + emotion/action events)
   const { state, lastMessage, sendChatV2, sendInterrupt, getChannel: getControlChannel } =
     useControlChannel(8100, secret);
+
+  // 2026-05-18: 连接(或重连)后从 SessionDB 回灌 default 会话历史，
+  // 使左侧消息面板重启后也显示历史记录（后端 session_messages_load
+  // → session_messages_response，已在上面 lastMessage switch 处理）。
+  const historyLoadedRef = useRef(false);
+  useEffect(() => {
+    if (state !== "connected") {
+      historyLoadedRef.current = false;
+      return;
+    }
+    if (historyLoadedRef.current) return;
+    const ch = getControlChannel();
+    if (!ch) return;
+    try {
+      ch.send({
+        type: "session_messages_load",
+        payload: { session_id: "default", limit: 200 },
+      });
+      historyLoadedRef.current = true;
+    } catch (e) {
+      console.warn("[Pet] session_messages_load send failed:", e);
+    }
+  }, [state, getControlChannel]);
 
   // P4-S20: toggle to route chat through the new tool_use loop
   // P4-S20-LLM-Unified: chat 路径已统一 — backend `chat` 和 `chat_v2`
@@ -352,7 +481,6 @@ function App() {
 
   // VN 底栏 —— 最新用户输入（驱动 UserBubble 淡出计时）+ 历史面板开关。
   const [latestUserInput, setLatestUserInput] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
 
   // Audio channel (voice pipeline)
   const {
@@ -431,6 +559,22 @@ function App() {
           },
         ]);
         break;
+      case "session_messages_response": {
+        // 2026-05-18: 重启/连接后从 SessionDB 回灌历史会话 → 左侧消息
+        // 面板显示历史记录（之前只有实时消息，重启即空）。只取
+        // user/assistant（tool 行非对话，streamChat 的 forPet 也会滤）；
+        // 这是权威近 200 条快照，直接替换 messages。
+        const p: any = (lastMessage as any).payload || {};
+        const rows: any[] = Array.isArray(p.messages) ? p.messages : [];
+        const hist = rows
+          .filter((r) => r && (r.role === "user" || r.role === "assistant"))
+          .map((r) => ({
+            role: r.role as "user" | "assistant",
+            text: String(r.text ?? ""),
+          }));
+        setMessages(hist);
+        break;
+      }
       case "chat_v2_error": {
         // P4-S22 fix: render whatever the backend sent — `error`
         // (catch-all path), `detail` (AgentLoop ErrorEvent), or
@@ -587,20 +731,6 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isPlaying, handleInterrupt]);
 
-  // Escape 关闭对话历史面板 —— 只在 historyOpen 为真时绑定，和上面的
-  // isPlaying-Escape 处理器解耦。两者都只改 state，可以共存：即使同时
-  // 触发也只是关闭面板 + 打断 TTS，都是用户按 Esc 合理期待的"停止"语义。
-  useEffect(() => {
-    if (!historyOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setHistoryOpen(false);
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [historyOpen]);
-
   const toggleRecording = async () => {
     if (isRecording) {
       stopRecording();
@@ -673,6 +803,62 @@ function App() {
     [getControlChannel, clearSupervisorAlert],
   );
 
+  // ── 2026-05-17 左侧常驻消息面板数据/接线（照搬 CodePanelRoot 模式）──
+  // 主线程聊天流：messages.flatMap + forPet（滤 <think>/工具 trace，剥
+  // think），合成 ts（store 不带 ts，按序回推）。
+  const streamChat = useMemo(
+    () =>
+      messages.flatMap((m, i) => {
+        const ts = Date.now() - (messages.length - i) * 1000;
+        if (m.role === "user") {
+          return [{ role: "user" as const, text: m.text ?? "", ts }];
+        }
+        const clean = forPet(m.text);
+        if (!clean) return [];
+        return [{ role: "assistant" as const, text: clean, ts }];
+      }),
+    [messages],
+  );
+  const streamWarnings = useMemo(
+    () => collect_inbox(sessions, "yellow"),
+    [sessions],
+  );
+  const streamErrors = useMemo(
+    () => collect_inbox(sessions, "red"),
+    [sessions],
+  );
+  // 桌宠是单主线程：跳转 = 打开完整历史面板兜底。
+  // 桌宠单主线程：原"历史按钮"弹窗已撤，历史信息即在本消息面板内
+  // 展示。jump = 确保面板可见（而非再开独立弹窗）。
+  const handlePanelJump = useCallback(() => setLeftPanelOpen(true), []);
+  const handlePanelChoice = useCallback(
+    (
+      sid: string,
+      alert_id: string,
+      button_index: number,
+      button_text: string,
+    ) => {
+      const ch = getControlChannel();
+      if (ch) {
+        ch.send({
+          type: "supervisor_user_choice",
+          payload: {
+            session_id: sid,
+            alert_id,
+            button_index,
+            button_text,
+          },
+        });
+      }
+      dismissAlert(sid, alert_id);
+      const cur = sessions[sid]?.supervisor_alert;
+      if (cur && cur.alert_id === alert_id) {
+        clearSupervisorAlert(sid);
+      }
+    },
+    [getControlChannel, dismissAlert, clearSupervisorAlert, sessions],
+  );
+
   // Bubble background click → open code panel and request focus on this sid.
   const handleBubbleClickBackground = useCallback(
     (sid: string) => {
@@ -696,28 +882,168 @@ function App() {
 
   return (
     <div
-      // `data-tauri-drag-region` (Tauri 2) makes any mousedown on this
-      // element start a window drag. Children that are interactive
-      // (buttons, inputs, the Live2D canvas with its own pointer events,
-      // any panel with `pointer-events: auto`) automatically swallow the
-      // event before it bubbles up here, so the drag region only kicks
-      // in when the user grabs the truly empty (transparent) shell —
-      // which is exactly the gesture users expect for "move my pet
-      // around the desktop".
-      data-tauri-drag-region
       style={{
+        position: "relative",
         width: "100vw",
         height: "100vh",
         backgroundColor: "transparent",
-        position: "relative",
         overflow: "hidden",
       }}
     >
+      {/* 2026-05-18 左侧消息面板：仅 leftPanelOpen 时渲染（不再保留
+          透明占位列）。关闭时窗口本身缩小到仅桌宠（见 leftPanelOpen
+          的 window-resize effect），透明玻璃块随窗口一起消失；桌宠
+          屏幕位置由窗口反向平移保持恒定。data-bp-selectable 放开选区。 */}
+      {leftPanelOpen && (
+        <aside
+          data-bp-selectable=""
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: 344,
+            height: "100vh",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            background:
+              "linear-gradient(160deg, rgba(17,21,34,0.93) 0%, rgba(13,16,26,0.9) 55%, rgba(15,23,42,0.92) 100%)",
+            borderRight: "1px solid rgba(99,102,241,0.30)",
+            boxShadow:
+              "10px 0 30px -14px rgba(0,0,0,0.6), inset -1px 0 0 rgba(148,163,184,0.10)",
+            backdropFilter: "blur(14px)",
+          }}
+        >
+            <div
+              style={{
+                flexShrink: 0,
+                padding: "11px 14px 9px",
+                fontSize: 12.5,
+                fontWeight: 600,
+                letterSpacing: 0.3,
+                color: "#c7d2fe",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 7,
+                borderBottom: "1px solid rgba(148,163,184,0.12)",
+                background:
+                  "linear-gradient(180deg, rgba(79,70,229,0.18), rgba(79,70,229,0))",
+              }}
+            >
+              <span
+                style={{ display: "flex", alignItems: "center", gap: 7 }}
+              >
+                <span style={{ fontSize: 14 }}>💬</span>
+                <span>消息 · 主线程</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setLeftPanelOpen(false)}
+                onMouseDown={(e) => e.stopPropagation()}
+                title="隐藏消息面板"
+                aria-label="隐藏消息面板"
+                style={{
+                  width: 24,
+                  height: 24,
+                  flexShrink: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "rgba(148,163,184,0.14)",
+                  color: "#c7d2fe",
+                  border: "1px solid rgba(148,163,184,0.22)",
+                  borderRadius: 6,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  padding: 0,
+                }}
+              >
+                ◀
+              </button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+              <MessageStreamPanel
+                embedded
+                filter={streamFilter}
+                chatMessages={streamChat}
+                warnings={streamWarnings}
+                errors={streamErrors}
+                onSetFilter={setStreamFilter}
+                onDismiss={dismissAlert}
+                onDismissAll={dismissAllAlerts}
+                onJumpToSession={handlePanelJump}
+                onChoice={handlePanelChoice}
+              />
+            </div>
+        </aside>
+      )}
+
+      {/* 右侧 = 原桌宠壳：透明 + `data-tauri-drag-region`。所有现有
+          absolute 覆盖层(DialogBar / 输入条 / 气泡 / 弹窗)相对此壳
+          定位，与改造前一致 → 行为零回归。空白透明区拖动 = 移动桌宠。 */}
+      <div
+        data-tauri-drag-region
+        style={{
+          // 桌宠壳**绝对贴 webview 右缘**，宽 282，与面板是否渲染、
+          // 窗口宽度无关 → 切面板时 React 永不重排桌宠（消除「剧烈
+          // 抖动」根因）；配合窗口右缘锁定，桌宠屏幕位置恒定不动。
+          // 所有内部 absolute 覆盖层仍以本壳为定位上下文，行为不变。
+          position: "absolute",
+          top: 0,
+          right: 0,
+          width: 282,
+          height: "100vh",
+          backgroundColor: "transparent",
+          overflow: "hidden",
+        }}
+      >
+      {/* 面板隐藏时：左上角悬浮「显示消息面板」按钮（始终可点，
+          drag-region 内的 button 是交互元素会吞掉拖动）。 */}
+      {!leftPanelOpen && (
+        <button
+          type="button"
+          onClick={() => setLeftPanelOpen(true)}
+          onMouseDown={(e) => e.stopPropagation()}
+          title="显示消息面板"
+          aria-label="显示消息面板"
+          // 左边缘垂直居中的小贴标 —— 避开顶部工具栏(记忆/设置等)
+          // 与底部 DialogBar/输入条，不再遮挡「记忆」按钮。
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: 0,
+            transform: "translateY(-50%)",
+            zIndex: 30,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            height: 30,
+            padding: "0 8px 0 6px",
+            background: "rgba(17,21,34,0.82)",
+            color: "#c7d2fe",
+            border: "1px solid rgba(99,102,241,0.34)",
+            borderLeft: "none",
+            borderTopRightRadius: 9,
+            borderBottomRightRadius: 9,
+            fontSize: 11,
+            cursor: "pointer",
+            backdropFilter: "blur(8px)",
+            boxShadow: "2px 2px 10px rgba(0,0,0,0.4)",
+          }}
+        >
+          ▶ 消息
+        </button>
+      )}
       <Live2DCanvas
         ref={liveRef}
         modelPath="/assets/live2d/hiyori/Hiyori.model3.json"
         onFpsUpdate={handleFpsUpdate}
         mouthOpenY={mouthOpenY}
+        // pet 区恒为 282 CSS px（= 改造前小窗宽度）。面板开/关时窗口
+        // 物理尺寸变，但 pet 列宽不变 → Hiyori 渲染与窗口/面板状态
+        // 完全解耦，切换不重排、不闪。
+        petWidth={282}
       />
 
       {/* P4-S20 — 权限请求弹窗（最高 zIndex） */}
@@ -783,21 +1109,18 @@ function App() {
         onClose={() => setSkillStoreOpen(false)}
       />
 
-      {/* VN 底栏：只展示最新一条助手回复 */}
-      <DialogBar
-        latestAssistant={latestAssistant ? stripMarkdown(latestAssistant) : null}
-        onOpenHistory={() => setHistoryOpen(true)}
-      />
+      {/* VN 底栏：只展示最新一条助手回复。左侧大消息面板打开时隐藏
+          （二者职责重叠）；面板关闭时回到桌宠+底栏形态。 */}
+      {!leftPanelOpen && (
+        <DialogBar
+          latestAssistant={
+            latestAssistant ? stripMarkdown(latestAssistant) : null
+          }
+        />
+      )}
 
       {/* 用户消息 2s 小气泡 */}
       <UserBubble text={latestUserInput} visibleMs={2000} />
-
-      {/* 完整会话历史（点 💬 按钮展开）*/}
-      <ChatHistoryPanel
-        open={historyOpen}
-        messages={messages.map((m) => ({ role: m.role, text: stripMarkdown(m.text) }))}
-        onClose={() => setHistoryOpen(false)}
-      />
 
       <div
         style={{
@@ -1034,6 +1357,7 @@ function App() {
           50% { opacity: 0.7; transform: scale(1.1); }
         }
       `}</style>
+      </div>
     </div>
   );
 }
