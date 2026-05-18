@@ -31,9 +31,7 @@ class _SDB:
 
 
 def _resolve(**kw):
-    return asyncio.get_event_loop().run_until_complete(
-        resolve_provider_for_session(**kw)
-    )
+    return asyncio.run(resolve_provider_for_session(**kw))
 
 
 def test_companion_session_untouched_no_binding_no_params() -> None:

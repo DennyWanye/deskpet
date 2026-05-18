@@ -2845,15 +2845,23 @@ async def control_channel(ws: WebSocket):
                 if msg_type == "code_session_set_provider":
                     new_pid = _payload.get("provider_id")  # may be None
                     new_model = current.get("preferred_model")
+                    # provider-only change preserves existing model_params.
+                    new_params = current.get("model_params")
                     out_type = "code_session_provider_set"
                 else:
                     new_pid = current.get("provider_id")  # preserve
                     new_model = _payload.get("model")  # may be None
+                    # code-session-model-params: Cursor picker sends
+                    # `params`; legacy `{session_id,model}` (no `params`
+                    # key) ⇒ provider defaults (None), per spec
+                    # "Back-compat IPC". Must be a dict or None.
+                    _raw_params = _payload.get("params")
+                    new_params = _raw_params if isinstance(_raw_params, dict) else None
                     out_type = "code_session_model_set"
 
                 try:
                     await _sdb_bind.set_code_session_provider_binding(
-                        _sid_target, new_pid, new_model,
+                        _sid_target, new_pid, new_model, new_params,
                     )
                 except Exception as exc:  # noqa: BLE001
                     await ws.send_json({
@@ -2867,6 +2875,7 @@ async def control_channel(ws: WebSocket):
                             "session_id": _sid_target,
                             "provider_id": new_pid,
                             "preferred_model": new_model,
+                            "model_params": new_params,
                         },
                     })
 

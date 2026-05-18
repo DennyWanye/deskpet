@@ -21,12 +21,12 @@ from deskpet.memory.session_db import SessionDB
 @pytest.fixture()
 def sdb(tmp_path: Path) -> SessionDB:
     db = SessionDB(db_path=str(tmp_path / "state.db"))
-    asyncio.get_event_loop().run_until_complete(db.initialize())
+    asyncio.run(db.initialize())
     return db
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_migration_008_added_model_params_column(sdb: SessionDB) -> None:

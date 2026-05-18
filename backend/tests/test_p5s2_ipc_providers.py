@@ -464,10 +464,15 @@ async def test_set_provider_binding_persists(fresh_registry, fresh_session_db):
         "session_id": "vpn-tunnel",
         "provider_id": "chinzy",
         "preferred_model": None,
+        "model_params": None,
     }
     # DB row written.
     binding = await sdb.get_code_session_provider_binding("vpn-tunnel")
-    assert binding == {"provider_id": "chinzy", "preferred_model": None}
+    assert binding == {
+        "provider_id": "chinzy",
+        "preferred_model": None,
+        "model_params": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -494,9 +499,14 @@ async def test_set_provider_null_clears_binding(fresh_registry, fresh_session_db
         "session_id": "vpn-tunnel",
         "provider_id": None,
         "preferred_model": None,
+        "model_params": None,
     }
     binding = await sdb.get_code_session_provider_binding("vpn-tunnel")
-    assert binding == {"provider_id": None, "preferred_model": None}
+    assert binding == {
+        "provider_id": None,
+        "preferred_model": None,
+        "model_params": None,
+    }
 
 
 # ---------- 2.12 code_session_set_model alone keeps chain global ------------
@@ -527,6 +537,59 @@ async def test_set_model_alone_keeps_chain_global(fresh_registry, fresh_session_
         "session_id": "vpn-tunnel",
         "provider_id": None,
         "preferred_model": "gpt-4o-mini",
+        "model_params": None,  # legacy {session_id,model} → provider defaults
     }
     binding = await sdb.get_code_session_provider_binding("vpn-tunnel")
-    assert binding == {"provider_id": None, "preferred_model": "gpt-4o-mini"}
+    assert binding == {
+        "provider_id": None,
+        "preferred_model": "gpt-4o-mini",
+        "model_params": None,
+    }
+
+
+# ---------- 2.13 code-session-model-params: params round-trip via IPC -------
+
+
+@pytest.mark.asyncio
+async def test_set_model_with_params_round_trip(fresh_registry, fresh_session_db):
+    """Cursor picker sends {session_id, model, params}; backend persists
+    and echoes model_params (code-session-model-params T4.1)."""
+    reg, _kc, _cfg = fresh_registry
+    sdb = fresh_session_db
+    await reg.add_provider(_seed_provider_args(pid="chinzy", api_key="sk"))
+    params = {
+        "thinking": True,
+        "fast": False,
+        "context": "1m",
+        "effort": "high",
+    }
+
+    client = TestClient(app)
+    cm, ws = _ws_open(client)
+    try:
+        ws.send_json(
+            {
+                "type": "code_session_set_model",
+                "payload": {
+                    "session_id": "code:proj-x",
+                    "model": "gpt-5.5",
+                    "params": params,
+                },
+            }
+        )
+        resp = _drain_until(ws, "code_session_model_set")
+    finally:
+        cm.__exit__(None, None, None)
+
+    assert resp["payload"] == {
+        "session_id": "code:proj-x",
+        "provider_id": None,
+        "preferred_model": "gpt-5.5",
+        "model_params": params,
+    }
+    binding = await sdb.get_code_session_provider_binding("code:proj-x")
+    assert binding == {
+        "provider_id": None,
+        "preferred_model": "gpt-5.5",
+        "model_params": params,
+    }

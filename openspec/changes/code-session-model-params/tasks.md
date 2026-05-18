@@ -16,7 +16,7 @@
 
 ## 4. IPC + config
 
-- [ ] 4.1 Extend `code_session_set_model` IPC handler in `main.py` to accept optional `params` (back-compat: missing params ⇒ provider defaults); persist via 1.2.
+- [x] 4.1 Extend `code_session_set_model` IPC handler in `main.py` to accept optional `params` (back-compat: missing params ⇒ provider defaults); persist via 1.2.
 - [x] 4.2 Add config knobs: `[agent] code_model = "gpt-5.5"`, `code_session_params_enabled = true`, and a `[code_models]` extensible model list (GPT-5.5/Codex 5.3/Sonnet 4.6/Opus 4.7/Gemini…). Apply to repo `config.toml` AND runtime `%APPDATA%/deskpet/config.toml`.
 
 ## 5. Frontend Cursor-style picker
