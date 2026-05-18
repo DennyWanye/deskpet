@@ -12,6 +12,27 @@ from providers._response_sanitizer import sanitize_response
 logger = structlog.get_logger()
 
 
+def _merge_code_params(payload: dict, code_params: dict | None) -> dict:
+    """code-session-model-params: splice the per-session request fragment.
+
+    Top-level keys (e.g. ``reasoning_effort``) are set directly; an
+    ``extra_body`` dict is shallow-merged. Total/pure: empty/None →
+    payload unchanged. Never overrides ``model``/``messages``.
+    """
+    if not code_params:
+        return payload
+    for k, v in code_params.items():
+        if k in ("model", "messages"):
+            continue
+        if k == "extra_body" and isinstance(v, dict):
+            eb = dict(payload.get("extra_body") or {})
+            eb.update(v)
+            payload["extra_body"] = eb
+        else:
+            payload[k] = v
+    return payload
+
+
 class OpenAICompatibleProvider:
     """LLM provider speaking OpenAI's /v1/chat/completions SSE protocol.
 
@@ -31,11 +52,17 @@ class OpenAICompatibleProvider:
         temperature: float = 0.7,
         timeout: float | None = None,
         sanitize_inline_cot_dsml: bool = True,
+        code_params: dict | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        # code-session-model-params: per-code-session request fragment
+        # (e.g. {"reasoning_effort":"high","extra_body":{...}}) produced
+        # by llm.code_params; merged into the chat payload. None/{} = no
+        # change (provider defaults / non-code sessions).
+        self.code_params = code_params or {}
         # 2026-05-17 deepseek-inline-cot-dsml-sanitize Strangler-Fig flag.
         # Default on; caller (provider registry) passes the config value.
         # False = byte-for-byte legacy passthrough (demo rollback).
@@ -148,6 +175,7 @@ class OpenAICompatibleProvider:
             "temperature": temp,
             "max_tokens": max_tokens,
         }
+        payload = _merge_code_params(payload, self.code_params)
         async with self._client(timeout=self.timeout) as client:
             async with client.stream(
                 "POST",
@@ -307,6 +335,7 @@ class OpenAICompatibleProvider:
             "temperature": temp,
             "max_tokens": max_tokens,
         }
+        payload = _merge_code_params(payload, self.code_params)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -633,6 +662,7 @@ class OpenAICompatibleProvider:
             "temperature": temp,
             "max_tokens": max_tokens,
         }
+        payload = _merge_code_params(payload, self.code_params)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"

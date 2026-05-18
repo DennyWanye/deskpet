@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 DEFAULT_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # v9 是 P4 的起手目标版本。spec "Schema Migration v8 → v9" 定义。
-TARGET_SCHEMA_VERSION = 15  # P5-S2: 007_p5s2_code_session_provider.sql
+TARGET_SCHEMA_VERSION = 16  # code-session-model-params: 008_p5s2_code_session_model_params.sql
 
 
 class MigrationError(RuntimeError):

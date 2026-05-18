@@ -3292,11 +3292,22 @@ async def control_channel(ws: WebSocket):
                             _registry = service_context.get("provider_registry")
                             if _registry is not None and _sdb is not None:
                                 from llm.resolution import resolve_provider_for_session as _resolve_chain
+                                # code-session-model-params: code-mode
+                                # default model (Strangler-Fig — empty/
+                                # absent ⇒ None ⇒ legacy shared model;
+                                # pet/companion never pass this, untouched).
+                                _agent_cfg = (config.raw.get("agent") if hasattr(config, "raw") else None) or {}
+                                _code_default_model = (
+                                    (str(_agent_cfg.get("code_model") or "").strip() or None)
+                                    if _in_code_mode
+                                    else None
+                                )
                                 _entries = await _resolve_chain(
                                     _sid,
                                     is_code_session=_in_code_mode,
                                     registry=_registry,
                                     session_db=_sdb,
+                                    code_default_model=_code_default_model,
                                 )
                                 if _entries:
                                     _chain: list[Any] = []
@@ -3308,6 +3319,7 @@ async def control_channel(ws: WebSocket):
                                             model=_entry.model,
                                             temperature=getattr(_entry, "temperature", 0.7),
                                             sanitize_inline_cot_dsml=_sanitize_cot_dsml,
+                                            code_params=getattr(_entry, "code_params", None),
                                         ))
                                     _provider_chain = _chain
                         except Exception as _resolve_exc:  # noqa: BLE001

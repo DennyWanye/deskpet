@@ -35,7 +35,24 @@ import copy
 import logging
 from typing import Any
 
+from llm.code_params import code_params_to_request
+
 logger = logging.getLogger("deskpet.llm.resolution")
+
+
+def _attach_code_params(entries: list[Any], model_params: Any) -> None:
+    """Attach the mapped chinzy request fragment to every entry, in-place.
+
+    ``code-session-model-params``: callers read ``entry.code_params``
+    and merge it into the OpenAI-compatible request. Empty/None params →
+    ``{}`` (provider defaults). Pure + total (never raises).
+    """
+    frag = code_params_to_request(model_params)
+    for e in entries:
+        try:
+            e.code_params = frag
+        except Exception:  # noqa: BLE001 — namespace may be slotted; non-fatal
+            pass
 
 
 async def resolve_provider_for_session(
@@ -44,6 +61,7 @@ async def resolve_provider_for_session(
     is_code_session: bool,
     registry: Any,
     session_db: Any,
+    code_default_model: str | None = None,
 ) -> list[Any]:
     """Return the list of ProviderEntry-like objects this session should walk.
 
@@ -71,15 +89,32 @@ async def resolve_provider_for_session(
     binding = await session_db.get_code_session_provider_binding(base_sid)
     provider_id = binding.get("provider_id")
     preferred_model = binding.get("preferred_model")
+    model_params = binding.get("model_params")
 
     # Step 3: pinned provider — single-element chain when it still exists.
     if provider_id:
         entry = registry.get_entry(provider_id)
         if entry is not None and getattr(entry, "enabled", True):
-            pinned = copy.copy(entry)
+            # Normalize to a mutable _ChainEntry so code_params attaches
+            # uniformly even if ProviderEntry is __slots__-ed.
+            pinned = _ChainEntry(
+                id=str(getattr(entry, "id", "")),
+                name=str(getattr(entry, "name", getattr(entry, "id", ""))),
+                base_url=str(getattr(entry, "base_url", "")),
+                model=str(getattr(entry, "model", "")),
+                api_key_ref=str(getattr(entry, "api_key_ref", "")),
+                priority=int(getattr(entry, "priority", 1)),
+                enabled=bool(getattr(entry, "enabled", True)),
+            )
             if preferred_model:
                 pinned.model = preferred_model
-            return [pinned]
+            elif code_default_model:
+                # code-session-model-params: no explicit model → code-mode
+                # default (e.g. gpt-5.5). Pet/companion never reach here.
+                pinned.model = code_default_model
+            out = [pinned]
+            _attach_code_params(out, model_params)
+            return out
         # Step 4: pinned-to-deleted (or disabled) — log + fall through.
         logger.info(
             "session_binding_stale sid=%s provider_id=%s "
@@ -92,6 +127,13 @@ async def resolve_provider_for_session(
     if preferred_model:
         for entry in chain:
             entry.model = preferred_model
+    elif code_default_model:
+        # code-session-model-params: unbound code session → code-mode
+        # default model on every chain entry (Strangler-Fig: caller
+        # passes None when the flag/knob is off → legacy behavior).
+        for entry in chain:
+            entry.model = code_default_model
+    _attach_code_params(chain, model_params)
     return chain
 
 
@@ -127,7 +169,7 @@ class _ChainEntry:
 
     __slots__ = (
         "id", "name", "base_url", "model", "api_key_ref",
-        "priority", "enabled",
+        "priority", "enabled", "code_params",
     )
 
     def __init__(
@@ -148,6 +190,8 @@ class _ChainEntry:
         self.api_key_ref = api_key_ref
         self.priority = priority
         self.enabled = enabled
+        # code-session-model-params: filled by _attach_code_params.
+        self.code_params: dict = {}
 
     @classmethod
     def from_dict(cls, d: dict) -> "_ChainEntry":

@@ -1,23 +1,23 @@
 ## 1. Persistence (SessionDB + migration)
 
-- [ ] 1.1 Add migration `008_p5s2_code_session_model_params.sql`: `ALTER TABLE code_session_provider ADD COLUMN model_params TEXT;` + bump `PRAGMA user_version`. (TDD: `test_deskpet_memory_migrator` covers idempotent apply / version bump)
-- [ ] 1.2 Extend `session_db.get_code_session_provider_binding` to also return `model_params` (parsed JSON or None); `set_code_session_provider_binding` to accept + persist `model_params` (JSON-serialized; None clears). Backward compatible with legacy rows.
-- [ ] 1.3 Write `backend/tests/test_p5s2_code_session_model_params.py` (RED→GREEN): round-trip set/get model+params; legacy row → params None; clear-binding removes row.
+- [x] 1.1 Add migration `008_p5s2_code_session_model_params.sql`: `ALTER TABLE code_session_provider ADD COLUMN model_params TEXT;` + bump `PRAGMA user_version`. (TDD: `test_deskpet_memory_migrator` covers idempotent apply / version bump)
+- [x] 1.2 Extend `session_db.get_code_session_provider_binding` to also return `model_params` (parsed JSON or None); `set_code_session_provider_binding` to accept + persist `model_params` (JSON-serialized; None clears). Backward compatible with legacy rows.
+- [x] 1.3 Write `backend/tests/test_p5s2_code_session_model_params.py` (RED→GREEN): round-trip set/get model+params; legacy row → params None; clear-binding removes row.
 
 ## 2. Param → request mapping (pure function)
 
-- [ ] 2.1 Add `_code_params_to_request(model_params: dict|None) -> dict` (pure) mapping `thinking`/`effort`→reasoning params, `context`→context hint, `fast`→speed hint for the chinzy OpenAI-compatible shape; unknown/legacy values omit/clamp (never raise).
-- [ ] 2.2 Unit-test the mapper exhaustively (all effort/context values + unknowns + None) — no network.
+- [x] 2.1 Add `_code_params_to_request(model_params: dict|None) -> dict` (pure) mapping `thinking`/`effort`→reasoning params, `context`→context hint, `fast`→speed hint for the chinzy OpenAI-compatible shape; unknown/legacy values omit/clamp (never raise).
+- [x] 2.2 Unit-test the mapper exhaustively (all effort/context values + unknowns + None) — no network.
 
 ## 3. Code-session resolution wiring
 
-- [ ] 3.1 In the code-session LLM-call assembly (`backend/llm/resolution.py` / provider resolution + `main.py` dispatch), for code sessions only: read binding, fall back to `[agent] code_model` (default `gpt-5.5`) when no `preferred_model`, merge mapped params into the request. Flag-gate (`[agent] code_model`, `code_session_params_enabled`).
-- [ ] 3.2 Regression test: `default`/companion sid resolution unchanged (pet path provably untouched); unbound code session → `gpt-5.5`; flag-off → legacy.
+- [x] 3.1 In the code-session LLM-call assembly (`backend/llm/resolution.py` / provider resolution + `main.py` dispatch), for code sessions only: read binding, fall back to `[agent] code_model` (default `gpt-5.5`) when no `preferred_model`, merge mapped params into the request. Flag-gate (`[agent] code_model`, `code_session_params_enabled`).
+- [x] 3.2 Regression test: `default`/companion sid resolution unchanged (pet path provably untouched); unbound code session → `gpt-5.5`; flag-off → legacy.
 
 ## 4. IPC + config
 
 - [ ] 4.1 Extend `code_session_set_model` IPC handler in `main.py` to accept optional `params` (back-compat: missing params ⇒ provider defaults); persist via 1.2.
-- [ ] 4.2 Add config knobs: `[agent] code_model = "gpt-5.5"`, `code_session_params_enabled = true`, and a `[code_models]` extensible model list (GPT-5.5/Codex 5.3/Sonnet 4.6/Opus 4.7/Gemini…). Apply to repo `config.toml` AND runtime `%APPDATA%/deskpet/config.toml`.
+- [x] 4.2 Add config knobs: `[agent] code_model = "gpt-5.5"`, `code_session_params_enabled = true`, and a `[code_models]` extensible model list (GPT-5.5/Codex 5.3/Sonnet 4.6/Opus 4.7/Gemini…). Apply to repo `config.toml` AND runtime `%APPDATA%/deskpet/config.toml`.
 
 ## 5. Frontend Cursor-style picker
 

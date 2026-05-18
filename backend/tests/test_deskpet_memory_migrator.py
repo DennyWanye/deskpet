@@ -72,8 +72,9 @@ async def test_fresh_db_initializes_v9(tmp_path: Path):
         "005_p4s25_code_sessions.sql",
         "006_p5s1_supervisor_hints.sql",
         "007_p5s2_code_session_provider.sql",
+        "008_p5s2_code_session_model_params.sql",
     ]
-    assert _user_version(db) == 15
+    assert _user_version(db) == 16
 
     tables = _list_objects(db, "table")
     # 不检查 messages_vec（那个由 SessionDB 在运行时按 sqlite-vec 可用性创建）
@@ -106,6 +107,7 @@ async def test_idempotent_rerun(tmp_path: Path):
         "005_p4s25_code_sessions.sql",
         "006_p5s1_supervisor_hints.sql",
         "007_p5s2_code_session_provider.sql",
+        "008_p5s2_code_session_model_params.sql",
     ]
     assert second == []
     assert third == []
@@ -117,7 +119,7 @@ async def test_idempotent_rerun(tmp_path: Path):
         ).fetchone()[0]
     finally:
         conn.close()
-    assert count == 7
+    assert count == 8  # +008_p5s2_code_session_model_params.sql
 
 
 # ---- 2.4.c 失败 → 回滚 .bak -----------------------------------------
@@ -222,7 +224,7 @@ async def test_ensure_v9_on_already_v9(tmp_path: Path):
     # (003 p4s22_code_todos). P4-S24: → 12 (004 reasoning_content).
     # P4-S25 B4: → 13 (005 code_sessions). P5-S1: → 14 (006 supervisor_hints).
     # P5-S2: → 15 (007 code_session_provider).
-    assert _user_version(db) == 15
+    assert _user_version(db) == 16
     # 再跑一次 ensure 不应抛
     applied = await ensure_v9(db)
     assert applied == []
