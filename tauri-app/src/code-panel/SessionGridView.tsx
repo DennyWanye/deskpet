@@ -12,7 +12,13 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { useSessionsStore, chatLimiter, severity_score } from "../stores/sessionsStore";
-import type { Message, SessionState, SessionStatus, Todo } from "../stores/sessionsStore";
+import type {
+  CodeModelParams,
+  Message,
+  SessionState,
+  SessionStatus,
+  Todo,
+} from "../stores/sessionsStore";
 import { codePanelWS } from "./ws";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ChangeModelModal } from "./ChangeModelModal";
@@ -44,15 +50,69 @@ export function buildSetProviderMessage(
 
 /** Build the outbound `code_session_set_model` ws message.
  * An empty string is normalised to `null` so the backend treats it as
- * "clear preferred_model" (no accidental empty-string model id). */
+ * "clear preferred_model" (no accidental empty-string model id).
+ *
+ * code-session-model-params S2: optional structured `params`. Back-compat
+ * is load-bearing — when `params` is omitted (legacy free-text callers /
+ * clear-binding) the payload keeps the old `{session_id, model}` shape and
+ * the backend falls back to provider defaults (no model_params row). Only
+ * when the Cursor-style picker passes an explicit dict do we attach it. */
 export function buildSetModelMessage(
   session_id: string,
   model: string | null,
+  params?: CodeModelParams | null,
 ): { type: string; payload: Record<string, unknown> } {
   const normalized = model && model.trim() !== "" ? model : null;
+  const payload: Record<string, unknown> = { session_id, model: normalized };
+  if (params != null) {
+    payload.params = params;
+  }
+  return { type: "code_session_set_model", payload };
+}
+
+/** code-session-model-params S2 — the Cursor reference model set. No
+ * `[code_models]` config exists yet (deferred), so the picker hardcodes
+ * this list; `buildModelOptions` injects any non-preset current model so
+ * legacy free-text bindings still pre-select correctly. */
+export const CODE_MODEL_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "gpt-5.5", label: "GPT-5.5" },
+  { value: "codex-5.3", label: "Codex 5.3" },
+  { value: "sonnet-4.6", label: "Claude Sonnet 4.6" },
+  { value: "opus-4.7", label: "Claude Opus 4.7" },
+  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+];
+
+/** Dropdown options for the picker: a "follow provider default" sentinel
+ * ("" ⇒ clear preferred_model) + presets, plus the session's current
+ * model if it isn't already a preset (so custom ids round-trip). */
+export function buildModelOptions(
+  current_model: string | null | undefined,
+): Array<{ value: string; label: string }> {
+  const opts: Array<{ value: string; label: string }> = [
+    { value: "", label: "跟随 provider 默认" },
+    ...CODE_MODEL_PRESETS,
+  ];
+  const cur = (current_model ?? "").trim();
+  if (cur && !opts.some((o) => o.value === cur)) {
+    opts.push({ value: cur, label: `${cur}（自定义）` });
+  }
+  return opts;
+}
+
+/** Pure: fold the picker's UI state into the IPC `params` dict (the exact
+ * shape the backend's `code_params_to_request` mapper consumes). Kept
+ * outside the component so vitest (node env, no DOM) can assert it. */
+export function buildModelParams(state: {
+  thinking: boolean;
+  fast: boolean;
+  context: "300k" | "1m";
+  effort: "low" | "medium" | "high" | "extra_high" | "max";
+}): CodeModelParams {
   return {
-    type: "code_session_set_model",
-    payload: { session_id, model: normalized },
+    thinking: state.thinking,
+    fast: state.fast,
+    context: state.context,
+    effort: state.effort,
   };
 }
 
@@ -692,6 +752,7 @@ function Tile({
         <ChangeModelModal
           session_id={session_id}
           current_model={session.preferred_model}
+          current_params={session.model_params}
           onClose={() => set_show_model_modal(false)}
         />
       )}

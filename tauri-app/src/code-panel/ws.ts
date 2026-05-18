@@ -356,6 +356,12 @@ function dispatch(msg: any) {
           project_name: it.project_name ?? "(untitled)",
           provider_id: next_provider_id,
           preferred_model: next_preferred_model,
+          // code-session-model-params S2: only when the backend item
+          // actually carries it — the list response omits model_params,
+          // so a refresh must not clobber an optimistic picker write.
+          ...(it.model_params !== undefined
+            ? { model_params: it.model_params }
+            : {}),
         });
         if (!was_present) newly_added.push(bsid);
       }
@@ -614,13 +620,17 @@ function dispatch(msg: any) {
         provider_id: p.provider_id === undefined ? null : p.provider_id,
         preferred_model:
           p.preferred_model === undefined ? null : p.preferred_model,
+        // Backend's set_provider path preserves + echoes model_params.
+        ...(p.model_params !== undefined
+          ? { model_params: p.model_params }
+          : {}),
       });
       break;
     }
     case "code_session_model_set": {
       // Ack from backend for code_session_set_model. Same merge as above —
-      // backend echoes both fields so we keep them in sync even if the user
-      // only changed the model.
+      // backend echoes provider_id + preferred_model + model_params so we
+      // keep all three in sync even if the user only changed the model.
       const p = msg.payload || {};
       const target = p.session_id || sid;
       store.ensure(target);
@@ -628,6 +638,11 @@ function dispatch(msg: any) {
         provider_id: p.provider_id === undefined ? null : p.provider_id,
         preferred_model:
           p.preferred_model === undefined ? null : p.preferred_model,
+        // code-session-model-params S2: dict ⇒ active params; null ⇒
+        // binding cleared. undefined (legacy backend) ⇒ leave untouched.
+        ...(p.model_params !== undefined
+          ? { model_params: p.model_params }
+          : {}),
       });
       break;
     }

@@ -21,9 +21,9 @@
 
 ## 5. Frontend Cursor-style picker
 
-- [ ] 5.1 Replace `tauri-app/src/code-panel/ChangeModelModal.tsx` free-text input with a structured picker: model dropdown (from config list), Thinking + Fast toggles, Context segmented (300K/1M), Effort segmented (Low/Medium/High/Extra High/Max); pre-fill from current binding.
-- [ ] 5.2 Wire `code-panel/ws.ts` + `CodePanelRoot.tsx` session-card entrypoint to send `code_session_set_model {session_id, model, params}`; keep clear-binding semantics (empty model + default params).
-- [ ] 5.3 vitest: picker state + IPC payload (new shape AND legacy back-compat); `tsc --noEmit` EXIT=0.
+- [x] 5.1 Replace `tauri-app/src/code-panel/ChangeModelModal.tsx` free-text input with a structured picker: model dropdown (hardcoded Cursor reference set via `buildModelOptions`, `[code_models]` config deferred), Thinking + Fast toggles, Context segmented (300K/1M), Effort segmented (Low/Medium/High/Extra High/Max); pre-fill from current binding (`current_model` + `current_params`).
+- [x] 5.2 Wire `code-panel/ws.ts` (`code_session_model_set`/`code_session_provider_set`/`code_sessions_list_response` propagate `model_params`, presence-gated so list refresh can't clobber optimistic state) + `CodePanelRoot.tsx`→`SessionGridView` Tile entrypoint to send `code_session_set_model {session_id, model, params}`; clear-binding ("清空 回全局链") keeps legacy `{session_id, model:null}` shape (no `params`).
+- [x] 5.3 vitest: picker state (`buildModelParams`/`buildModelOptions`) + IPC payload (new structured shape AND legacy back-compat) + ws ack round-trip; full suite 147/147, `tsc --noEmit` EXIT=0.
 
 ## 6. Verify + live visual test + archive
 

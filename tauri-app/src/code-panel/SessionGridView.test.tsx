@@ -17,6 +17,9 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   buildSetProviderMessage,
   buildSetModelMessage,
+  buildModelOptions,
+  buildModelParams,
+  CODE_MODEL_PRESETS,
   resolveCardDropdownDisplay,
   pickProviderRemovedFallback,
 } from "./SessionGridView";
@@ -313,5 +316,209 @@ describe("test_code_sessions_list_response_populates_binding_fields", () => {
     });
     const s = useSessionsStore.getState().sessions["sid-mdl"]!;
     expect(s.preferred_model).toBe("claude-4.7");
+  });
+});
+
+// ===========================================================================
+// code-session-model-params S2 — Cursor-style picker (model + params)
+// ===========================================================================
+
+// ----- 5.1 picker payload: new structured shape + legacy back-compat ------
+
+describe("test_set_model_message_carries_structured_params", () => {
+  beforeEach(resetStores);
+
+  it("attaches params dict when the picker passes one (new shape)", () => {
+    const params = {
+      thinking: true,
+      fast: false,
+      context: "1m" as const,
+      effort: "high" as const,
+    };
+    const msg = buildSetModelMessage("sess-a", "gpt-5.5", params);
+    expect(msg).toEqual({
+      type: "code_session_set_model",
+      payload: { session_id: "sess-a", model: "gpt-5.5", params },
+    });
+  });
+
+  it("omits params entirely when not supplied (legacy {session_id,model})", () => {
+    const msg = buildSetModelMessage("sess-a", "gpt-5.5");
+    expect(msg.payload).not.toHaveProperty("params");
+    expect(msg).toEqual({
+      type: "code_session_set_model",
+      payload: { session_id: "sess-a", model: "gpt-5.5" },
+    });
+  });
+
+  it("clear-binding shape (null model, no params) is preserved", () => {
+    const msg = buildSetModelMessage("sess-a", null);
+    expect(msg.payload).not.toHaveProperty("params");
+    expect(msg).toEqual({
+      type: "code_session_set_model",
+      payload: { session_id: "sess-a", model: null },
+    });
+  });
+
+  it("explicit null params is treated as 'omit' (clear semantics)", () => {
+    const msg = buildSetModelMessage("sess-a", "gpt-5.5", null);
+    expect(msg.payload).not.toHaveProperty("params");
+  });
+});
+
+// ----- 5.2 model dropdown options (presets + custom injection) ------------
+
+describe("test_build_model_options", () => {
+  it("default + presets when no current model", () => {
+    const opts = buildModelOptions(null);
+    expect(opts[0]).toEqual({ value: "", label: "跟随 provider 默认" });
+    expect(opts.map((o) => o.value)).toEqual([
+      "",
+      ...CODE_MODEL_PRESETS.map((p) => p.value),
+    ]);
+  });
+
+  it("does not duplicate a current model that is already a preset", () => {
+    const opts = buildModelOptions("gpt-5.5");
+    const count = opts.filter((o) => o.value === "gpt-5.5").length;
+    expect(count).toBe(1);
+  });
+
+  it("injects a non-preset current model so it can pre-select", () => {
+    const opts = buildModelOptions("claude-4.7-legacy");
+    const injected = opts.find((o) => o.value === "claude-4.7-legacy");
+    expect(injected).toBeDefined();
+    expect(injected?.label).toContain("自定义");
+  });
+});
+
+// ----- 5.3 picker state → params dict (pure fold) -------------------------
+
+describe("test_build_model_params", () => {
+  it("folds picker state into the exact backend contract shape", () => {
+    expect(
+      buildModelParams({
+        thinking: true,
+        fast: true,
+        context: "1m",
+        effort: "max",
+      }),
+    ).toEqual({ thinking: true, fast: true, context: "1m", effort: "max" });
+  });
+
+  it("defaults fold cleanly (thinking/fast off, 300k, medium)", () => {
+    expect(
+      buildModelParams({
+        thinking: false,
+        fast: false,
+        context: "300k",
+        effort: "medium",
+      }),
+    ).toEqual({
+      thinking: false,
+      fast: false,
+      context: "300k",
+      effort: "medium",
+    });
+  });
+});
+
+// ----- 5.4 ws acks round-trip model_params -------------------------------
+
+describe("test_model_params_round_trip_via_ws", () => {
+  beforeEach(resetStores);
+
+  it("code_session_model_set ack writes model_params dict", () => {
+    useSessionsStore.getState().ensure("sid-mp");
+    __test_dispatch({
+      type: "code_session_model_set",
+      payload: {
+        session_id: "sid-mp",
+        provider_id: null,
+        preferred_model: "gpt-5.5",
+        model_params: { thinking: true, effort: "high", context: "1m", fast: false },
+      },
+    });
+    const s = useSessionsStore.getState().sessions["sid-mp"]!;
+    expect(s.preferred_model).toBe("gpt-5.5");
+    expect(s.model_params).toEqual({
+      thinking: true,
+      effort: "high",
+      context: "1m",
+      fast: false,
+    });
+  });
+
+  it("code_session_model_set ack with model_params null clears it", () => {
+    useSessionsStore.getState().ensure("sid-mp2", {
+      model_params: { effort: "max" },
+    });
+    __test_dispatch({
+      type: "code_session_model_set",
+      payload: {
+        session_id: "sid-mp2",
+        provider_id: null,
+        preferred_model: null,
+        model_params: null,
+      },
+    });
+    expect(
+      useSessionsStore.getState().sessions["sid-mp2"]?.model_params,
+    ).toBeNull();
+  });
+
+  it("code_sessions_list_response (omits model_params) does NOT clobber it", () => {
+    useSessionsStore.getState().ensure("vpn-tunnel", {
+      model_params: { effort: "high", thinking: true },
+    });
+    __test_dispatch({
+      type: "code_sessions_list_response",
+      payload: {
+        items: [
+          {
+            base_session_id: "vpn-tunnel",
+            code_session_id: "code-vpn",
+            project_root: "/tmp/vpn",
+            project_name: "vpn-tunnel",
+            provider_id: "chinzy",
+            preferred_model: null,
+            // NOTE: backend list response does NOT include model_params
+          },
+        ],
+      },
+    });
+    const s = useSessionsStore.getState().sessions["vpn-tunnel"]!;
+    expect(s.provider_id).toBe("chinzy");
+    // optimistic picker write survives the list refresh
+    expect(s.model_params).toEqual({ effort: "high", thinking: true });
+  });
+
+  it("code_session_provider_set ack preserves echoed model_params", () => {
+    useSessionsStore.getState().ensure("sid-pp");
+    __test_dispatch({
+      type: "code_session_provider_set",
+      payload: {
+        session_id: "sid-pp",
+        provider_id: "openrouter-claude",
+        preferred_model: "opus-4.7",
+        model_params: { effort: "medium" },
+      },
+    });
+    const s = useSessionsStore.getState().sessions["sid-pp"]!;
+    expect(s.provider_id).toBe("openrouter-claude");
+    expect(s.model_params).toEqual({ effort: "medium" });
+  });
+});
+
+// ----- 5.5 session state includes model_params field ---------------------
+
+describe("test_session_state_includes_model_params", () => {
+  beforeEach(resetStores);
+
+  it("blank session has model_params field defaulting to null", () => {
+    useSessionsStore.getState().ensure("sid-blank-mp");
+    const s = useSessionsStore.getState().sessions["sid-blank-mp"]!;
+    expect(s).toHaveProperty("model_params");
+    expect(s.model_params).toBeNull();
   });
 });

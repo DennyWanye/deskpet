@@ -112,6 +112,22 @@ export interface SessionState {
   // code_session_model_set 时写入这两个字段。
   provider_id?: string | null;
   preferred_model?: string | null;
+  // code-session-model-params S2: Cursor 风格的 per-session 模型参数。
+  // null/undefined = 走 provider 默认（未显式配置）。后端 echo 回的
+  // `model_params` 原样写入这里，ChangeModelModal 据此预填。
+  model_params?: CodeModelParams | null;
+}
+
+/** code-session-model-params — the structured picker params persisted
+ * per code session. Mirrors the backend IPC contract exactly:
+ *   { thinking, fast, context, effort }
+ * Effort `extra_high`/`max` clamp to `high` server-side (OpenAI only
+ * exposes low/medium/high) — the UI still shows all 5 rungs. */
+export interface CodeModelParams {
+  thinking?: boolean;
+  fast?: boolean;
+  context?: "300k" | "1m";
+  effort?: "low" | "medium" | "high" | "extra_high" | "max";
 }
 
 interface SessionsStore {
@@ -168,6 +184,8 @@ const blank_session = (sid: string): SessionState => ({
   // multi-provider-management Phase 5: default = no binding ⇒ "Global Chain".
   provider_id: null,
   preferred_model: null,
+  // code-session-model-params S2: no params ⇒ provider defaults.
+  model_params: null,
 });
 
 export const useSessionsStore = create<SessionsStore>((set) => ({
