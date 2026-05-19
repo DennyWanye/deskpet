@@ -46,9 +46,27 @@ def _attach_code_params(entries: list[Any], model_params: Any) -> None:
     ``code-session-model-params``: callers read ``entry.code_params``
     and merge it into the OpenAI-compatible request. Empty/None params →
     ``{}`` (provider defaults). Pure + total (never raises).
+
+    Model-aware: ``code_params_to_request`` derives ``reasoning_effort``
+    from ``thinking`` (an OpenAI-ism). For a model whose family does NOT
+    expose reasoning_effort (Anthropic / Gemini / DeepSeek …) we strip
+    that key per-entry so a Claude request never carries a meaningless
+    ``reasoning_effort`` field. Capability source = the same family map
+    the picker uses, so UI and wire stay consistent.
     """
-    frag = code_params_to_request(model_params)
+    base = code_params_to_request(model_params)
+    try:
+        from llm.model_catalog import model_param_caps as _caps
+    except Exception:  # noqa: BLE001 — never let an import break resolution
+        _caps = None
     for e in entries:
+        frag = dict(base)
+        if _caps is not None and "reasoning_effort" in frag:
+            try:
+                if not _caps(str(getattr(e, "model", "")))["effort"]:
+                    frag.pop("reasoning_effort", None)
+            except Exception:  # noqa: BLE001 — non-fatal, keep frag as-is
+                pass
         try:
             e.code_params = frag
         except Exception:  # noqa: BLE001 — namespace may be slotted; non-fatal

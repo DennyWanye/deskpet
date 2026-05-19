@@ -31,6 +31,7 @@ import { useSessionsStore, type CodeModelParams } from "../stores/sessionsStore"
 
 type EffortValue = "low" | "medium" | "high" | "extra_high" | "max";
 type ContextValue = "300k" | "1m";
+type ReasonMode = "default" | "thinking" | "fast";
 
 const EFFORT_OPTIONS: ReadonlyArray<{ value: EffortValue; label: string }> = [
   { value: "low", label: "Low" },
@@ -63,10 +64,16 @@ export function ChangeModelModal({
   const catalog = useCodeModelsStore((s) => s.models);
   const model_opts = buildModelOptionsFromCatalog(current_model, catalog);
   const [model, set_model] = useState<string>(current_model ?? "");
-  const [thinking, set_thinking] = useState<boolean>(
-    current_params?.thinking ?? false,
+  // Thinking (重推理/慢) and Fast (低延迟/快) are mutually exclusive —
+  // a single-select "推理模式" instead of two independent toggles.
+  // "默认" = neither (provider default).
+  const [reason_mode, set_reason_mode] = useState<ReasonMode>(
+    current_params?.thinking
+      ? "thinking"
+      : current_params?.fast
+        ? "fast"
+        : "default",
   );
-  const [fast, set_fast] = useState<boolean>(current_params?.fast ?? false);
   const [context, set_context] = useState<ContextValue>(
     current_params?.context ?? "300k",
   );
@@ -92,8 +99,10 @@ export function ChangeModelModal({
     // model) is meaningless. Backend mapper also clamps, but a clean
     // payload keeps the binding honest per-model.
     const params: CodeModelParams = {};
-    if (caps.thinking) params.thinking = thinking;
-    if (caps.fast) params.fast = fast;
+    // Single-select reasoning mode → the two backend booleans. They are
+    // never both true (mutually exclusive by construction).
+    if (caps.thinking) params.thinking = reason_mode === "thinking";
+    if (caps.fast) params.fast = reason_mode === "fast";
     if (caps.context) params.context = context;
     if (caps.effort) params.effort = effort;
     codePanelWS.send(buildSetModelMessage(session_id, model, params));
@@ -145,26 +154,27 @@ export function ChangeModelModal({
             ))}
           </select>
 
-          {/* Thinking + Fast toggles — only those the model supports */}
+          {/* Reasoning mode — single-select (Thinking ⟺ Fast are
+              mutually exclusive: high reasoning/slow vs low latency).
+              Only the modes the model supports are offered. */}
           {(caps.thinking || caps.fast) && (
-            <div style={toggleRowStyle}>
-              {caps.thinking && (
-                <Toggle
-                  label="Thinking"
-                  hint="启用推理（reasoning）"
-                  checked={thinking}
-                  onChange={set_thinking}
-                />
-              )}
-              {caps.fast && (
-                <Toggle
-                  label="Fast"
-                  hint="低延迟优先"
-                  checked={fast}
-                  onChange={set_fast}
-                />
-              )}
-            </div>
+            <>
+              <label style={labelStyle}>推理模式</label>
+              <Segmented
+                ariaLabel="推理模式"
+                options={[
+                  { value: "default" as ReasonMode, label: "默认" },
+                  ...(caps.thinking
+                    ? [{ value: "thinking" as ReasonMode, label: "Thinking" }]
+                    : []),
+                  ...(caps.fast
+                    ? [{ value: "fast" as ReasonMode, label: "Fast" }]
+                    : []),
+                ]}
+                value={reason_mode}
+                onChange={set_reason_mode}
+              />
+            </>
           )}
 
           {/* Context segmented */}
@@ -220,50 +230,6 @@ export function ChangeModelModal({
         </footer>
       </div>
     </div>
-  );
-}
-
-function Toggle({
-  label,
-  hint,
-  checked,
-  onChange,
-}: {
-  label: string;
-  hint: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      title={hint}
-      onClick={() => onChange(!checked)}
-      style={{
-        ...toggleBtnStyle,
-        background: checked
-          ? "rgba(37, 99, 235, 0.35)"
-          : "rgba(148, 163, 184, 0.14)",
-        borderColor: checked
-          ? "rgba(96, 165, 250, 0.65)"
-          : "rgba(148, 163, 184, 0.30)",
-        color: checked ? "#bfdbfe" : "#cbd5e1",
-      }}
-    >
-      <span
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: checked ? "#60a5fa" : "rgba(148,163,184,0.55)",
-          display: "inline-block",
-        }}
-      />
-      {label}
-    </button>
   );
 }
 
@@ -359,25 +325,6 @@ const selectStyle: React.CSSProperties = {
   cursor: "pointer",
 };
 
-const toggleRowStyle: React.CSSProperties = {
-  display: "flex",
-  gap: 8,
-  marginTop: 4,
-};
-
-const toggleBtnStyle: React.CSSProperties = {
-  flex: 1,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: 7,
-  border: "1px solid",
-  borderRadius: 6,
-  padding: "6px 9px",
-  fontSize: 12,
-  cursor: "pointer",
-  fontWeight: 600,
-};
 
 const segmentedWrapStyle: React.CSSProperties = {
   display: "flex",
