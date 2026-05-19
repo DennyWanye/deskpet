@@ -14,7 +14,7 @@
  *    the current session, exactly like Code mode.
  *  · header is a drag region; ⛶ maximizes / restores the window.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import {
@@ -30,6 +30,9 @@ import {
 import { InputBar } from "../code-panel/InputBar";
 import { ChangeModelModal } from "../code-panel/ChangeModelModal";
 import { codePanelWS } from "../code-panel/ws";
+import { useAudioChannel } from "../hooks/useAudioChannel";
+import { useAudioRecorder } from "../hooks/useAudioRecorder";
+import { useAudioPlayer } from "../hooks/useAudioPlayer";
 
 const SID = "default"; // the pet's companion main thread
 
@@ -45,6 +48,82 @@ export function MessagePanelRoot() {
   const model_params = useSessionsStore(
     (s) => s.sessions[SID]?.model_params ?? null,
   );
+
+  // ── Voice pipeline (parity with the pet's main mic) ──────────────
+  // The panel is its own window, so it runs its own audio channel +
+  // recorder + player. It connects with the default session_id, so the
+  // backend persists voice turns to the SAME "default" session the
+  // pet main + panel text use. transcript/TTS come back over THIS
+  // window's audio_ws → we echo transcripts into the store so the
+  // voice exchange shows in the panel, consistent with text.
+  const [secret, setSecret] = useState("");
+  useEffect(() => {
+    let alive = true;
+    let tries = 0;
+    const poll = async () => {
+      try {
+        const s = await invoke<string>("get_shared_secret");
+        if (alive && s) {
+          setSecret(s);
+          return;
+        }
+      } catch {
+        /* backend not up yet */
+      }
+      if (alive && tries++ < 40) setTimeout(poll, 500);
+    };
+    void poll();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const {
+    state: audioState,
+    lastMessage: audioMessage,
+    sendAudio,
+    getChannel,
+  } = useAudioChannel(8100, secret);
+  const { isRecording, startRecording, stopRecording } =
+    useAudioRecorder(sendAudio);
+  const {
+    isPlaying,
+    reset: resetPlaybackBuffer,
+    primeContext,
+    bargeIn,
+  } = useAudioPlayer(getChannel());
+
+  const toggleRecording = useCallback(async () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      await primeContext(); // unlock AudioContext inside the gesture
+      startRecording();
+    }
+  }, [isRecording, startRecording, stopRecording, primeContext]);
+
+  // Mirror App.tsx's audio-message handling, but echo transcripts into
+  // the shared store so MessageStreamPanel renders the voice turns.
+  useEffect(() => {
+    if (!audioMessage) return;
+    switch (audioMessage.type) {
+      case "vad_event":
+        if (audioMessage.payload.status === "speech_start") {
+          if (isPlaying) bargeIn();
+          resetPlaybackBuffer();
+        }
+        break;
+      case "transcript":
+        useSessionsStore.getState().push_message(SID, {
+          role: audioMessage.payload.role,
+          text: audioMessage.payload.text,
+        });
+        break;
+      case "tts_barge_in":
+        bargeIn();
+        break;
+    }
+  }, [audioMessage, isPlaying, resetPlaybackBuffer, bargeIn]);
 
   // Same companion-stream derivation as App.tsx (strip <think>/tool
   // trace via forPet; synth ts since the store has none).
@@ -197,8 +276,49 @@ export function MessagePanelRoot() {
 
         {/* Same companion chat_v2 path as the pet's main input —
             sessionId="default" pins send/echo/stop to the SAME session
-            the pet main uses and MessageStreamPanel renders. */}
-        <InputBar placeholder="和桌宠说点什么…" sessionId={SID} />
+            the pet main uses and MessageStreamPanel renders.
+            leftAccessory = the mic button, parity with the pet bar. */}
+        <InputBar
+          placeholder="和桌宠说点什么…"
+          sessionId={SID}
+          leftAccessory={
+            <button
+              type="button"
+              onClick={() => void toggleRecording()}
+              disabled={audioState !== "connected"}
+              title={
+                audioState !== "connected"
+                  ? "语音通道连接中…"
+                  : isRecording
+                    ? "停止录音"
+                    : "按住说话"
+              }
+              aria-label={isRecording ? "停止录音" : "语音输入"}
+              style={{
+                width: 36,
+                height: 36,
+                flexShrink: 0,
+                borderRadius: 18,
+                border: "none",
+                background: isRecording
+                  ? "#ef4444"
+                  : audioState === "connected"
+                    ? "rgba(99,102,241,0.30)"
+                    : "rgba(148,163,184,0.20)",
+                color: "#fff",
+                fontSize: 15,
+                cursor:
+                  audioState === "connected" ? "pointer" : "not-allowed",
+                animation: isRecording ? "pulse 1.5s infinite" : "none",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              {isRecording ? "⏹" : "🎤"}
+            </button>
+          }
+        />
       </div>
 
       {showModelModal && (
@@ -209,6 +329,15 @@ export function MessagePanelRoot() {
           onClose={() => setShowModelModal(false)}
         />
       )}
+
+      {/* Recording-button pulse — this window has its own DOM, so it
+          needs its own copy of the keyframes (App's is pet-window only). */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.7; transform: scale(1.1); }
+        }
+      `}</style>
     </div>
   );
 }

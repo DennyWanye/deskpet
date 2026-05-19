@@ -14,7 +14,14 @@ import { codePanelWS } from "./ws";
 export function InputBar({
   placeholder,
   sessionId,
-}: { placeholder?: string; sessionId?: string } = {}) {
+  leftAccessory,
+}: {
+  placeholder?: string;
+  sessionId?: string;
+  /** Optional control rendered at the start of the input row (e.g. the
+   *  message panel's mic button). code-panel passes none → unchanged. */
+  leftAccessory?: React.ReactNode;
+} = {}) {
   const [text, set_text] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -105,6 +112,7 @@ export function InputBar({
       }}
     >
       <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+        {leftAccessory}
         <textarea
           ref={taRef}
           value={text}
