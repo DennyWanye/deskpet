@@ -1045,6 +1045,9 @@ function App() {
       {/* 用户消息 2s 小气泡 */}
       <UserBubble text={latestUserInput} visibleMs={2000} />
 
+      {/* 独立消息面板打开时，桌宠底部输入条（mic+输入框+发送）一并隐藏
+          —— 面板已自带同等输入能力，避免双输入入口并存。 */}
+      {!leftPanelOpen && (
       <div
         style={{
           position: "absolute",
@@ -1176,6 +1179,7 @@ function App() {
           发送
         </button>
       </div>
+      )}
 
       {/* Toolbar — P4-S20-UI revamp: token-based, grouped, hover/focus states.
           P4-S21 #7: now includes a Quit (⏻) button so users don't need
