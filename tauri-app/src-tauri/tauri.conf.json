@@ -15,9 +15,9 @@
       {
         "label": "main",
         "title": "Desktop Pet",
-        "width": 888,
+        "width": 626,
         "height": 600,
-        "x": 1612,
+        "x": 1874,
         "y": 640,
         "decorations": false,
         "transparent": true,

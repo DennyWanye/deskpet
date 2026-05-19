@@ -256,28 +256,30 @@ function App() {
   // 2026-05-18: 左侧大消息面板可显示/隐藏。打开时隐藏底部小 DialogBar
   // （二者职责重叠，避免冗余）；关闭时回到桌宠+DialogBar 形态。
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
-  // 2026-05-18 抖动/位移根因修复：
-  //  ① 桌宠改为 webview 内 absolute right:0（见 render）→ 不再随 flex
-  //     重排，切面板时 React 不会把桌宠瞬移到左边（旧版「剧烈抖动」根因）。
-  //  ② 预解析 Tauri window 句柄并缓存 → 切换时无 dynamic-import 延迟，
-  //     setSize/setPosition 背靠背近原子，几乎单帧完成。
-  //  ③ 首帧(config open)冻结 openW/petW 物理基线 → 每次都用同一组尺寸，
-  //     杜绝按比例反复换算的累积舍入漂移（旧版「桌宠位置会移动」根因）。
-  //  ④ 锁定窗口**右缘**屏幕 X（newX = 当前右缘 - newW）。桌宠贴右缘，
-  //     右缘恒定 → 开/关前后乃至异步间隙桌宠屏幕位置完全一致，零跳。
+  // 2026-05-19 面板几何重做（修 留白 / 跳位 / 闪烁）：
+  //  ① 窗口宽度**精确等于内容**：开 = 面板 344 + 桌宠 282 = 626；
+  //     关 = 桌宠 282。不再读 Rust 配的 888（多出的 262 透明区就是
+  //     用户说的「留白」），也不再按 282/626 比例反推（旧版关闭后
+  //     ~400 宽 → 桌宠左侧一截透明留白）。
+  //  ② 锚点用**实时当前右缘**而非首帧冻结点 → 用户拖到哪，开/关就
+  //     在哪原地展开/收起，绝不吸附回固定角落（旧「冻结锚点」是
+  //     用户说的「先跳回右下角再打开」的根因）；拖动自由。
+  //  ③ 命令式 togglePanel：开 = 先把窗口扩好再挂面板（面板挂进已
+  //     正确尺寸的窗口，无错位帧）；关 = 先卸面板再缩窗口。配合精确
+  //     尺寸，open/close 闪烁基本消除。
+  const PANEL_LOGICAL_W = 344;
+  const PET_LOGICAL_W = 282;
+  const OPEN_LOGICAL_W = PANEL_LOGICAL_W + PET_LOGICAL_W; // 626 = 面板+桌宠，精确无留白
+  // 收起态：桌宠列 282 装不下顶部工具栏（6 图标 + 开机启动 + 状态徽章，
+  // 锚右、宽于 282 会把「记忆/轨迹」按钮裁到窗外点不到）。给工具栏留够
+  // 宽度（非玻璃面板，不是用户说的那种「留白」）。桌宠仍 282 贴右。
+  const CLOSED_LOGICAL_W = 360;
   const winApiRef = useRef<{
     win: any;
     PhysicalSize: any;
     PhysicalPosition: any;
+    scale: number;
   } | null>(null);
-  const geomRef = useRef<{
-    openW: number;
-    petW: number;
-    h: number;
-    anchorRightX: number;
-    anchorY: number;
-  } | null>(null);
-  const geomToggleMounted = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -286,28 +288,25 @@ function App() {
         const mod = await import("@tauri-apps/api/window");
         const win = mod.getCurrentWindow?.();
         if (!win || cancelled) return;
+        const scale = await win.scaleFactor();
+        if (cancelled) return;
         winApiRef.current = {
           win,
           PhysicalSize: mod.PhysicalSize,
           PhysicalPosition: mod.PhysicalPosition,
+          scale: scale || 1,
         };
-        const size = await win.outerSize();
+        // 启动即把窗口正规化到「开」态精确尺寸（右缘保持当前位置），
+        // 这样首帧就没有 888-626 的留白。
         const pos = await win.outerPosition();
+        const size = await win.outerSize();
         if (cancelled) return;
-        const openW = size.width;
-        const h = size.height;
-        const petW = Math.round(openW * (282 / 626));
-        // 冻结屏幕右缘锚点（首帧 config-open 几何）。此后每次切换都
-        // 目标这同一个 rightX/Y，绝不按当前几何反推 → 零累积漂移、
-        // 桌宠位置确定不动。代价：用户拖窗后下次切换会吸附回此锚点
-        // （桌宠"不许动"优先级高于跟随拖动，符合用户明确诉求）。
-        geomRef.current = {
-          openW,
-          petW,
-          h,
-          anchorRightX: pos.x + openW,
-          anchorY: pos.y,
-        };
+        const rightX = pos.x + size.width;
+        const wPhys = Math.round(OPEN_LOGICAL_W * (scale || 1));
+        await Promise.all([
+          win.setSize(new mod.PhysicalSize(wPhys, size.height)),
+          win.setPosition(new mod.PhysicalPosition(rightX - wPhys, pos.y)),
+        ]);
       } catch (e) {
         console.warn("[Pet] window api preload failed:", e);
       }
@@ -315,41 +314,45 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [OPEN_LOGICAL_W]);
 
-  useEffect(() => {
-    if (!geomToggleMounted.current) {
-      geomToggleMounted.current = true;
-      return; // 首帧即 config open，几何已对，跳过
-    }
+  // 命令式面板开关：实时读当前几何 → 以**当前右缘**为锚把窗口扩/缩
+  // 到精确内容宽度。桌宠原地不动、可自由拖动、不吸附固定点。
+  const applyPanelGeom = useCallback(async (open: boolean) => {
     const api = winApiRef.current;
-    const geom = geomRef.current;
-    if (!api || !geom) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { win, PhysicalSize, PhysicalPosition } = api;
-        // 用冻结锚点，不再 re-read 当前几何 → 确定性、零漂移、更少
-        // await（切换更接近单帧、更顺）。
-        const newW = leftPanelOpen ? geom.openW : geom.petW;
-        const newX = geom.anchorRightX - newW;
-        const newY = geom.anchorY;
-        if (cancelled) return;
-        // 两个 IPC 背靠背派发（不在中间 await）→ 窗口管理器尽量在
-        // 同一帧应用 size+position，把 2-call 残留瞬变压到最小。最终
-        // 态与顺序无关（size、position 都是绝对值）。
-        await Promise.all([
-          win.setSize(new PhysicalSize(newW, geom.h)),
-          win.setPosition(new PhysicalPosition(newX, newY)),
-        ]);
-      } catch (e) {
-        console.warn("[Pet] panel toggle window geom failed:", e);
+    if (!api) return;
+    const { win, PhysicalSize, PhysicalPosition, scale } = api;
+    try {
+      const pos = await win.outerPosition();
+      const size = await win.outerSize();
+      const rightX = pos.x + size.width; // 当前屏幕右缘（实时锚点）
+      const wPhys = Math.round(
+        (open ? OPEN_LOGICAL_W : CLOSED_LOGICAL_W) * scale,
+      );
+      await Promise.all([
+        win.setSize(new PhysicalSize(wPhys, size.height)),
+        win.setPosition(new PhysicalPosition(rightX - wPhys, pos.y)),
+      ]);
+    } catch (e) {
+      console.warn("[Pet] panel geom failed:", e);
+    }
+  }, [OPEN_LOGICAL_W, CLOSED_LOGICAL_W]);
+
+  const togglePanel = useCallback(
+    (next: boolean) => {
+      if (next) {
+        // 开：先把窗口扩到位，再挂面板 → 面板进入已正确尺寸的窗口，
+        // 无「窄窗里挂宽面板」的错位闪烁帧。
+        void applyPanelGeom(true).then(() => setLeftPanelOpen(true));
+      } else {
+        // 关：先卸面板，下一帧再缩窗口 → 不出现「宽窗只剩桌宠」的
+        // 透明留白闪烁。
+        setLeftPanelOpen(false);
+        requestAnimationFrame(() => void applyPanelGeom(false));
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [leftPanelOpen]);
+    },
+    [applyPanelGeom],
+  );
   // Recompute pet state on session change OR every 5s so age_penalty
   // grows even without new events.
   useEffect(() => {
@@ -836,7 +839,7 @@ function App() {
   // 桌宠是单主线程：跳转 = 打开完整历史面板兜底。
   // 桌宠单主线程：原"历史按钮"弹窗已撤，历史信息即在本消息面板内
   // 展示。jump = 确保面板可见（而非再开独立弹窗）。
-  const handlePanelJump = useCallback(() => setLeftPanelOpen(true), []);
+  const handlePanelJump = useCallback(() => togglePanel(true), [togglePanel]);
   const handlePanelChoice = useCallback(
     (
       sid: string,
@@ -943,30 +946,10 @@ function App() {
                 <span style={{ fontSize: 14 }}>💬</span>
                 <span>消息 · 主线程</span>
               </span>
-              <button
-                type="button"
-                onClick={() => setLeftPanelOpen(false)}
-                onMouseDown={(e) => e.stopPropagation()}
-                title="隐藏消息面板"
-                aria-label="隐藏消息面板"
-                style={{
-                  width: 24,
-                  height: 24,
-                  flexShrink: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  background: "rgba(148,163,184,0.14)",
-                  color: "#c7d2fe",
-                  border: "1px solid rgba(148,163,184,0.22)",
-                  borderRadius: 6,
-                  fontSize: 13,
-                  cursor: "pointer",
-                  padding: 0,
-                }}
-              >
-                ◀
-              </button>
+              {/* 2026-05-19: 收起按钮移到左缘悬浮 tab（见 leftPanelOpen
+                  的 ◀ 收起 tab）。原 header 右侧 ◀ 会被顶部工具栏
+                  （窗口收窄到 626 后，工具栏锚右、宽于 282 桌宠列）
+                  盖住点不到，故移出 header。 */}
             </div>
             <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
               <MessageStreamPanel
@@ -1063,7 +1046,7 @@ function App() {
       {!leftPanelOpen && (
         <button
           type="button"
-          onClick={() => setLeftPanelOpen(true)}
+          onClick={() => togglePanel(true)}
           onMouseDown={(e) => e.stopPropagation()}
           title="显示消息面板"
           aria-label="显示消息面板"
@@ -1093,6 +1076,41 @@ function App() {
           }}
         >
           ▶ 消息
+        </button>
+      )}
+      {/* 面板打开时：左缘悬浮「◀ 收起」tab（与 ▶ 对称，永远不被
+          顶部工具栏遮挡，原 header ◀ 被工具栏盖住的问题就此解决）。 */}
+      {leftPanelOpen && (
+        <button
+          type="button"
+          onClick={() => togglePanel(false)}
+          onMouseDown={(e) => e.stopPropagation()}
+          title="收起消息面板"
+          aria-label="收起消息面板"
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: 0,
+            transform: "translateY(-50%)",
+            zIndex: 30,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            height: 30,
+            padding: "0 8px 0 6px",
+            background: "rgba(17,21,34,0.82)",
+            color: "#c7d2fe",
+            border: "1px solid rgba(99,102,241,0.34)",
+            borderLeft: "none",
+            borderTopRightRadius: 9,
+            borderBottomRightRadius: 9,
+            fontSize: 11,
+            cursor: "pointer",
+            backdropFilter: "blur(8px)",
+            boxShadow: "2px 2px 10px rgba(0,0,0,0.4)",
+          }}
+        >
+          ◀ 收起
         </button>
       )}
       <Live2DCanvas
