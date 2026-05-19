@@ -11,12 +11,20 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useSessionsStore, chatLimiter } from "../stores/sessionsStore";
 import { codePanelWS } from "./ws";
 
-export function InputBar({ placeholder }: { placeholder?: string } = {}) {
+export function InputBar({
+  placeholder,
+  sessionId,
+}: { placeholder?: string; sessionId?: string } = {}) {
   const [text, set_text] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   const active_sid = useSessionsStore((s) => s.active_sid);
-  const session = useSessionsStore((s) => s.sessions[s.active_sid]);
+  // When `sessionId` is passed (message-panel → "default"), this bar
+  // sends/echoes/stops on THAT session — exactly the one the pet's
+  // main thread uses. Unset (code-panel) → falls back to active_sid =
+  // zero behavior change for code-panel.
+  const sid = sessionId ?? active_sid;
+  const session = useSessionsStore((s) => s.sessions[sessionId ?? s.active_sid]);
   const inflight_count = useSessionsStore((s) => s.inflight_count);
   const inflight_max = useSessionsStore((s) => s.inflight_max);
 
@@ -30,13 +38,13 @@ export function InputBar({ placeholder }: { placeholder?: string } = {}) {
   const send = useCallback(async () => {
     const t = text.trim();
     if (!t) return;
-    if (!active_sid) return;
+    if (!sid) return;
     set_text("");
-    useSessionsStore.getState().push_message(active_sid, {
+    useSessionsStore.getState().push_message(sid, {
       role: "user",
       text: t,
     });
-    useSessionsStore.getState().upsert(active_sid, {
+    useSessionsStore.getState().upsert(sid, {
       status: "thinking",
       inflight: true,
     });
@@ -48,23 +56,23 @@ export function InputBar({ placeholder }: { placeholder?: string } = {}) {
     void chatLimiter.run(async () => {
       codePanelWS.send({
         type: "chat_v2",
-        payload: { text: t, session_id: active_sid },
+        payload: { text: t, session_id: sid },
       });
     });
-  }, [text, active_sid]);
+  }, [text, sid]);
 
   // P4-S25 B3: stop the in-flight chat for the active session.
   const stop = useCallback(() => {
-    if (!active_sid) return;
+    if (!sid) return;
     codePanelWS.send({
       type: "chat_v2_interrupt",
-      payload: { session_id: active_sid },
+      payload: { session_id: sid },
     });
     // Optimistic clear; ws dispatch's chat_v2_interrupted echo will
     // confirm. If the cancel raced and the task already finished
     // emitting final, inflight already cleared — no harm.
-    useSessionsStore.getState().upsert(active_sid, { inflight: false, status: "idle" });
-  }, [active_sid]);
+    useSessionsStore.getState().upsert(sid, { inflight: false, status: "idle" });
+  }, [sid]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // `isComposing` lives on the underlying KeyboardEvent (IME state)

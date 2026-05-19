@@ -83,11 +83,32 @@ export function MessagePanelRoot() {
     useSessionsStore.getState().dismiss_alert(sid, alert_id);
   };
 
+  // Drag the frameless window. The ACTUAL bug behind "拖动不行" was a
+  // missing Tauri capability: `message-panel` was absent from
+  // capabilities/default.json's `windows` list, so EVERY core:window
+  // IPC (start-dragging, set-position, …) from this window was denied
+  // and silently swallowed. With the window now in the capability,
+  // startDragging() — the idiomatic Windows move-loop API, robust to
+  // the cursor leaving the moving window, multi-monitor and DPI — works
+  // for a real mouse. (data-tauri-drag-region kept as a harmless extra
+  // hint.) Left button only; header buttons stopPropagation so their
+  // own clicks never start a drag.
+  const startDrag = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().startDragging())
+      .catch((err) => console.warn("[msg-panel] startDragging failed:", err));
+  };
+
   const toggleMaximize = async () => {
     try {
       const mod = await import("@tauri-apps/api/window");
       const w = mod.getCurrentWindow?.();
-      if (w) await w.toggleMaximize();
+      if (!w) return;
+      // toggleMaximize() no-ops on this window type — drive size
+      // explicitly: fullscreen toggle, falling back gracefully.
+      const isFs = await w.isFullscreen();
+      await w.setFullscreen(!isFs);
     } catch (e) {
       console.warn("[msg-panel] toggleMaximize failed:", e);
     }
@@ -98,7 +119,11 @@ export function MessagePanelRoot() {
       <div style={cardStyle}>
         {/* Header = drag region (move the window). Buttons stop the
             drag so clicks register. */}
-        <header style={headerStyle} data-tauri-drag-region>
+        <header
+          style={headerStyle}
+          data-tauri-drag-region
+          onMouseDown={startDrag}
+        >
           <button
             type="button"
             onMouseDown={(e) => e.stopPropagation()}
@@ -170,8 +195,10 @@ export function MessagePanelRoot() {
           />
         </div>
 
-        {/* Same companion chat_v2 path as the pet's main input. */}
-        <InputBar placeholder="和桌宠说点什么…" />
+        {/* Same companion chat_v2 path as the pet's main input —
+            sessionId="default" pins send/echo/stop to the SAME session
+            the pet main uses and MessageStreamPanel renders. */}
+        <InputBar placeholder="和桌宠说点什么…" sessionId={SID} />
       </div>
 
       {showModelModal && (

@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main pet window + the code-panel side window",
-  "windows": ["main", "code-panel"],
+  "description": "Capability for the main pet window + the code-panel side window + the slim message panel window",
+  "windows": ["main", "code-panel", "message-panel"],
   "permissions": [
     "core:default",
     "opener:default",
@@ -17,6 +17,8 @@
     "core:window:allow-set-position",
     "core:window:allow-outer-position",
     "core:window:allow-outer-size",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-fullscreen",
     "core:webview:allow-create-webview-window",
     "dialog:allow-open"
   ]
