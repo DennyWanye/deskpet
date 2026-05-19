@@ -153,6 +153,67 @@ pub fn close_code_panel(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 2026-05-19 — slim message panel is its OWN window (separate from the
+/// pet) so the pet window can stay exactly pet-sized & transparent (no
+/// click-blocking dead area). This docks the message-panel flush to the
+/// LEFT of the pet (`main`) window and keeps it glued there.
+fn dock_message_panel_impl(app: &AppHandle) -> Result<(), String> {
+    let panel = app
+        .get_webview_window("message-panel")
+        .ok_or("message-panel window missing")?;
+    let main = app
+        .get_webview_window("main")
+        .ok_or("main window missing")?;
+    let mpos = main.outer_position().map_err(|e| e.to_string())?;
+    let psize = panel.outer_size().map_err(|e| e.to_string())?;
+    // Panel's right edge == pet window's left edge; same Y as the pet.
+    panel
+        .set_position(tauri::PhysicalPosition::new(
+            mpos.x - psize.width as i32,
+            mpos.y,
+        ))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Reposition the message panel to stay attached to the pet. Called by
+/// the pet window on every move (drag-follow). No-op if panel hidden.
+#[tauri::command]
+pub fn dock_message_panel(app: AppHandle) -> Result<(), String> {
+    if let Some(p) = app.get_webview_window("message-panel") {
+        if p.is_visible().unwrap_or(false) {
+            dock_message_panel_impl(&app)?;
+        }
+    }
+    Ok(())
+}
+
+/// Show the message panel docked to the pet's left, fronted above the
+/// alwaysOnTop pet (same alwaysOnTop-pulse trick as open_code_panel).
+#[tauri::command]
+pub fn open_message_panel(app: AppHandle) -> Result<(), String> {
+    let panel = app
+        .get_webview_window("message-panel")
+        .ok_or("message-panel window missing")?;
+    dock_message_panel_impl(&app)?;
+    panel.show().map_err(|e| e.to_string())?;
+    let _ = panel.unminimize();
+    // Pulse alwaysOnTop so it sits ABOVE the alwaysOnTop pet rather than
+    // behind it. Don't steal focus (the pet keeps interaction).
+    let _ = panel.set_always_on_top(true);
+    Ok(())
+}
+
+/// Hide the message panel without destroying it (state/scrollback +
+/// hash routing survive — reopen is a cheap show()).
+#[tauri::command]
+pub fn close_message_panel(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("message-panel") {
+        w.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// P4-S22: open a native folder picker; returns the absolute path the
 /// user chose, or None if they cancelled. Used by the Code-mode entry
 /// flow — the user picks "where my project lives" and we hand the path

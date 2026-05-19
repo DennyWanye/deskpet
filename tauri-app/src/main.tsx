@@ -7,14 +7,17 @@ import './index.css'
 // there. We keep ONE bundle for both windows (saves ~80 KB of
 // duplicate ship cost) and just pick the root component by hash.
 const isCodePanel = window.location.hash.startsWith('#/code-panel');
+// 2026-05-19: slim message panel is its own transparent docked window.
+const isMessagePanel = window.location.hash.startsWith('#/message-panel');
 
 if (isCodePanel) {
   // Code panel: opaque dark background, normal scrollbars.
   document.body.style.backgroundColor = '#0f1218';
   document.documentElement.style.backgroundColor = '#0f1218';
 } else {
-  // Pet shell stays fully transparent so the alpha channel reaches
-  // the Live2D canvas.
+  // Pet shell AND message panel stay fully transparent — the panel
+  // paints its own dark glass card so its rounded corners / margins
+  // show the desktop (and the window captures no dead area).
   document.body.style.backgroundColor = 'transparent';
   document.documentElement.style.backgroundColor = 'transparent';
 }
@@ -36,6 +39,17 @@ if (isCodePanel) {
       root.render(
         <div style={{ padding: 20, color: '#f87171', fontFamily: 'sans-serif' }}>
           Failed to load code panel: {String(e)}
+        </div>
+      );
+    });
+} else if (isMessagePanel) {
+  import('./message-panel/MessagePanelRoot')
+    .then(({ MessagePanelRoot }) => root.render(<MessagePanelRoot />))
+    .catch((e) => {
+      console.error('[main] message-panel load failed:', e);
+      root.render(
+        <div style={{ padding: 20, color: '#f87171', fontFamily: 'sans-serif' }}>
+          Failed to load message panel: {String(e)}
         </div>
       );
     });

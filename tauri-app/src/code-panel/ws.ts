@@ -79,15 +79,21 @@ async function open_socket() {
     schedule_reconnect();
     return;
   }
-  // Use a distinct session_id from the pet's main WS ("default"). The
-  // backend stores _control_connections keyed by session_id, and a
-  // second connection on the same key kicks the first one out — that
-  // produced the 1-second reconnect loop visible in early P4-S23 dev
-  // runs. "code-panel-main" is harmless: every chat_v2 message we
-  // send carries `payload.session_id` explicitly anyway.
+  // Use a distinct control session_id per window. The backend keys
+  // _control_connections by session_id; two connections on the same key
+  // kick each other out (1-second reconnect storm). The code-panel and
+  // the slim message-panel are SEPARATE windows that both import this
+  // module — derive the id from the route hash so they coexist. Every
+  // chat_v2 we send still stamps payload.session_id explicitly, so this
+  // control id only matters for connection identity.
+  const _ctrlSid =
+    typeof window !== "undefined" &&
+    window.location?.hash?.startsWith("#/message-panel")
+      ? "message-panel-main"
+      : "code-panel-main";
   const url = `ws://127.0.0.1:8100/ws/control?secret=${encodeURIComponent(
     secret,
-  )}&session_id=code-panel-main`;
+  )}&session_id=${_ctrlSid}`;
   try {
     ws = new WebSocket(url);
     G.__deskpet_panel_ws__ = ws;

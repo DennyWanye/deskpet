@@ -488,7 +488,9 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           height: `${size.h}px`,
           position: "absolute",
           top: 0,
-          left: 0,
+          // 2026-05-19: 角色贴**壳右缘**（桌宠通常停在屏幕右侧）；壳已
+          // 铺满整窗，左侧多出的透明边距正好放 ▶ tab / 留给独立面板侧。
+          right: 0,
           pointerEvents: "none",
         }}
       />

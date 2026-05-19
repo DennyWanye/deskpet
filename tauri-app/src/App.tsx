@@ -13,6 +13,7 @@ import { DialogBar } from "./components/DialogBar";
 import { UserBubble } from "./components/UserBubble";
 import { StartupOverlay, type BootState } from "./components/StartupOverlay";
 import { useBudgetToast } from "./hooks/useBudgetToast";
+import { invoke } from "@tauri-apps/api/core";
 import { useControlChannel } from "./hooks/useWebSocket";
 import { usePermissionRequests } from "./hooks/usePermissionRequests";
 import { PermissionPopup } from "./components/PermissionPopup";
@@ -253,31 +254,45 @@ function App() {
   const dismissAlert = useSessionsStore((s) => s.dismiss_alert);
   const dismissAllAlerts = useSessionsStore((s) => s.dismiss_all_alerts);
   const [streamFilter, setStreamFilter] = useState<StreamFilter>("all");
-  // 2026-05-18: 左侧大消息面板可显示/隐藏。打开时隐藏底部小 DialogBar
-  // （二者职责重叠，避免冗余）；关闭时回到桌宠+DialogBar 形态。
-  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
-  // 2026-05-19 面板架构重做（从专业交互角度彻底修「很差很奇怪」）：
-  //
-  // 放弃「开关面板时 resize 原生窗口」——这是留白 / 跳位 / 闪烁 / 暗色
-  // 空洞 / 工具栏裁切的**总根因**：绝对定位、右锚、固定宽的子元素
-  // （工具栏 / DialogBar / 输入条 / 桌宠列）在两套窗口几何之间永远对
-  // 不齐，每选一个宽度就崩一处（888→留白；626→工具栏压面板；360→
-  // 死区；282→工具栏+DialogBar 裁切）。
-  //
-  // 改为：**窗口尺寸恒定 = 626（面板 344 + 桌宠 282，见
-  // tauri.conf.json），永不 resize**。面板纯 CSS 显隐：
-  //   · 桌宠固定在右 282 列、窗口不动 → 桌宠**绝对不动**（最强抗抖，
-  //     比之前任何「锚点」方案都稳）。
-  //   · 工具栏始终有完整 626 可用 → **永不裁切**。
-  //   · 收起时左 344 区域无内容、root 透明 → 桌面透出，桌宠像「漂浮
-  //     的角色」而非「暗色卡片 + 空白」。
-  //   · 无 OS resize → **无跳位、无闪烁、无空洞**；开关是纯 React/CSS
-  //     状态切换，瞬时、可预测。
-  // togglePanel 只切状态，无任何窗口副作用。
-  const togglePanel = useCallback(
-    (next: boolean) => setLeftPanelOpen(next),
-    [],
-  );
+  // 2026-05-19 终极方案：消息面板是**独立窗口**（message-panel），不再
+  // 内嵌于桌宠窗。桌宠窗因此恒定 = 仅桌宠列、全透明，**零死区**（不再
+  // 拦截桌面点击）。本地 leftPanelOpen 仅用于 ▶/◀ tab 文案；真正显隐
+  // 由 Rust open/close_message_panel 控制那个独立窗口，并把它吸附在
+  // 桌宠左侧；桌宠拖动时 onMoved 跟随（dock_message_panel）。
+  const [leftPanelOpen, setLeftPanelOpen] = useState(false);
+  const togglePanel = useCallback((next: boolean) => {
+    setLeftPanelOpen(next);
+    invoke(next ? "open_message_panel" : "close_message_panel").catch(
+      (e: unknown) => console.warn("[Pet] message-panel toggle failed:", e),
+    );
+  }, []);
+
+  // Drag-follow: when the pet window moves, keep the docked message
+  // panel glued to its left edge. Rust dock_message_panel no-ops while
+  // the panel is hidden, so this is cheap to fire on every move.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const mod = await import("@tauri-apps/api/window");
+        const w = mod.getCurrentWindow?.();
+        if (!w || cancelled) return;
+        unlisten = await w.onMoved(() => {
+          invoke("dock_message_panel").catch(() => {
+            /* no-op if panel/window not ready */
+          });
+        });
+        if (cancelled && unlisten) unlisten();
+      } catch (e) {
+        console.warn("[Pet] onMoved wire failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
   // Recompute pet state on session change OR every 5s so age_penalty
   // grows even without new events.
   useEffect(() => {
@@ -824,97 +839,9 @@ function App() {
         overflow: "hidden",
       }}
     >
-      {/* 2026-05-18 左侧消息面板：仅 leftPanelOpen 时渲染（不再保留
-          透明占位列）。关闭时窗口本身缩小到仅桌宠（见 leftPanelOpen
-          的 window-resize effect），透明玻璃块随窗口一起消失；桌宠
-          屏幕位置由窗口反向平移保持恒定。data-bp-selectable 放开选区。 */}
-      {leftPanelOpen && (
-        <aside
-          data-bp-selectable=""
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: 344,
-            height: "100vh",
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            background:
-              "linear-gradient(160deg, rgba(17,21,34,0.93) 0%, rgba(13,16,26,0.9) 55%, rgba(15,23,42,0.92) 100%)",
-            borderRight: "1px solid rgba(99,102,241,0.30)",
-            boxShadow:
-              "10px 0 30px -14px rgba(0,0,0,0.6), inset -1px 0 0 rgba(148,163,184,0.10)",
-            backdropFilter: "blur(14px)",
-          }}
-        >
-            <div
-              style={{
-                flexShrink: 0,
-                padding: "9px 12px",
-                fontSize: 12.5,
-                fontWeight: 600,
-                letterSpacing: 0.3,
-                color: "#c7d2fe",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "flex-start",
-                gap: 8,
-                borderBottom: "1px solid rgba(148,163,184,0.12)",
-                background:
-                  "linear-gradient(180deg, rgba(79,70,229,0.18), rgba(79,70,229,0))",
-              }}
-            >
-              {/* 收起按钮在 header **最左**：顶部工具栏锚右，左侧绝不被
-                  遮挡，这是最稳定可预测的位置（专业交互：开关控件应在
-                  清晰固定的边缘，而非内容中缝悬浮）。 */}
-              <button
-                type="button"
-                onClick={() => togglePanel(false)}
-                onMouseDown={(e) => e.stopPropagation()}
-                title="收起消息面板"
-                aria-label="收起消息面板"
-                style={{
-                  width: 26,
-                  height: 26,
-                  flexShrink: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  background: "rgba(99,102,241,0.20)",
-                  color: "#c7d2fe",
-                  border: "1px solid rgba(99,102,241,0.34)",
-                  borderRadius: 7,
-                  fontSize: 13,
-                  cursor: "pointer",
-                  padding: 0,
-                }}
-              >
-                ◀
-              </button>
-              <span
-                style={{ display: "flex", alignItems: "center", gap: 7 }}
-              >
-                <span style={{ fontSize: 14 }}>💬</span>
-                <span>消息 · 主线程</span>
-              </span>
-            </div>
-            <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-              <MessageStreamPanel
-                embedded
-                filter={streamFilter}
-                chatMessages={streamChat}
-                warnings={streamWarnings}
-                errors={streamErrors}
-                onSetFilter={setStreamFilter}
-                onDismiss={dismissAlert}
-                onDismissAll={dismissAllAlerts}
-                onJumpToSession={handlePanelJump}
-                onChoice={handlePanelChoice}
-              />
-            </div>
-        </aside>
-      )}
+      {/* 2026-05-19: 消息面板已抽成**独立窗口**（message-panel），不再
+          内嵌于桌宠窗。这里不再渲染 aside —— 桌宠窗保持「仅桌宠、全
+          透明、零死区」。面板的开关 = Rust open/close_message_panel。 */}
 
       {/* 右侧 = 原桌宠壳：透明 + `data-tauri-drag-region`。所有现有
           absolute 覆盖层(DialogBar / 输入条 / 气泡 / 弹窗)相对此壳
@@ -922,15 +849,14 @@ function App() {
       <div
         data-tauri-drag-region
         style={{
-          // 桌宠壳**绝对贴 webview 右缘**，宽 282，与面板是否渲染、
-          // 窗口宽度无关 → 切面板时 React 永不重排桌宠（消除「剧烈
-          // 抖动」根因）；配合窗口右缘锁定，桌宠屏幕位置恒定不动。
-          // 所有内部 absolute 覆盖层仍以本壳为定位上下文，行为不变。
+          // 2026-05-19: 消息面板已是独立窗口，桌宠窗尺寸恒定（见
+          // tauri.conf.json，永不 resize）。因此桌宠壳直接**铺满整个
+          // 窗口**——不再 right:0+width:282 的「贴右固定宽」（那是旧的
+          // resize 抗抖 hack，留下 18px 死区还让工具栏溢出被裁）。所有
+          // absolute 覆盖层以本壳为定位上下文，宽度=整窗 → 工具栏/
+          // DialogBar 不再裁切，▶ tab 在真正的窗口左缘。
           position: "absolute",
-          top: 0,
-          right: 0,
-          width: 282,
-          height: "100vh",
+          inset: 0,
           backgroundColor: "transparent",
           overflow: "hidden",
         }}
@@ -989,9 +915,11 @@ function App() {
           </button>
         </div>
       )}
-      {/* 面板隐藏时：左上角悬浮「显示消息面板」按钮（始终可点，
-          drag-region 内的 button 是交互元素会吞掉拖动）。 */}
-      {!leftPanelOpen && (
+      {/* 桌宠左缘常驻「▶ 消息」贴标：打开独立消息面板窗口（幂等——
+          已开就是再吸附一次）。面板关闭由它自己的 ◀ 负责，故这里不做
+          开/关切换，避免跨窗状态不同步。drag-region 内 button 会吞拖动
+          所以 stopPropagation。 */}
+      {(
         <button
           type="button"
           onClick={() => togglePanel(true)}
@@ -1102,15 +1030,13 @@ function App() {
         onClose={() => setSkillStoreOpen(false)}
       />
 
-      {/* VN 底栏：只展示最新一条助手回复。左侧大消息面板打开时隐藏
-          （二者职责重叠）；面板关闭时回到桌宠+底栏形态。 */}
-      {!leftPanelOpen && (
-        <DialogBar
-          latestAssistant={
-            latestAssistant ? stripMarkdown(latestAssistant) : null
-          }
-        />
-      )}
+      {/* VN 底栏：桌宠自带的「最新一句」快览。消息面板已是独立窗口、
+          可移到别处，不再与底栏抢位 → 底栏常驻（桌宠窗永远有它）。 */}
+      <DialogBar
+        latestAssistant={
+          latestAssistant ? stripMarkdown(latestAssistant) : null
+        }
+      />
 
       {/* 用户消息 2s 小气泡 */}
       <UserBubble text={latestUserInput} visibleMs={2000} />

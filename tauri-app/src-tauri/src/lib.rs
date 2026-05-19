@@ -67,6 +67,10 @@ pub fn run() {
             // P4-S23: second-window (code panel) open/close commands.
             commands::open_code_panel,
             commands::close_code_panel,
+            // 2026-05-19: slim message panel as its own docked window.
+            commands::open_message_panel,
+            commands::close_message_panel,
+            commands::dock_message_panel,
         ])
         .setup(|app| {
             // P3-S2: NVIDIA precheck. Phase-3 contract is CUDA-only, so

@@ -15,15 +15,30 @@
       {
         "label": "main",
         "title": "Desktop Pet",
-        "width": 626,
+        "width": 360,
         "height": 600,
-        "x": 1874,
+        "x": 2140,
         "y": 640,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "resizable": false,
         "skipTaskbar": true
+      },
+      {
+        "label": "message-panel",
+        "title": "DeskPet · 消息",
+        "width": 360,
+        "height": 600,
+        "x": 1780,
+        "y": 640,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "visible": false,
+        "url": "index.html#/message-panel"
       },
       {
         "label": "code-panel",
