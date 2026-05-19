@@ -456,6 +456,15 @@ function App() {
   // P2-1-S3 — settings panel toggle (cloud account / strategy / daily budget).
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // 2026-05-19 — pet-window error banner. chat_v2_error used to be
+  // pushed as a "⚠ ..." assistant bubble, which then dominated the
+  // bottom DialogBar and visually blocked the pet until the next
+  // message. Now errors surface in a dedicated dismissible banner
+  // pinned to the TOP of the pet column, ABOVE the toolbar — never
+  // over the character. User-dismissed only (no auto-clear: an error
+  // shouldn't silently vanish before the user notices it).
+  const [petError, setPetError] = useState<string | null>(null);
+
   // P2-1-S8 — budget-exceeded toast. Auto-clears after 6s.
   const [budgetToast, setBudgetToast] = useState<string | null>(null);
   const showBudgetToast = useCallback((msg: string) => {
@@ -583,13 +592,10 @@ function App() {
         const p: any = (lastMessage as any).payload || {};
         const parts = [p.error, p.detail, p.reason].filter(Boolean);
         const msg = parts.length > 0 ? parts.join(" — ") : "unknown";
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            text: `⚠ ${msg}`,
-          },
-        ]);
+        // Surface in the top error banner instead of injecting a
+        // "⚠ ..." assistant bubble that the bottom DialogBar would
+        // then render over the pet persistently.
+        setPetError(msg);
         break;
       }
       case "supervisor_alert": {
@@ -998,6 +1004,60 @@ function App() {
           overflow: "hidden",
         }}
       >
+      {/* 2026-05-19 — 错误提示条：钉在桌宠列最顶端、工具栏之上，整列
+          通宽，绝不遮挡桌宠人物。用户手动 ✕ 关闭（不自动消失，避免
+          没注意到就没了）。错误同时不再灌进底部 DialogBar。 */}
+      {petError && (
+        <div
+          role="alert"
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 40,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6,
+            padding: "6px 8px",
+            maxHeight: 60,
+            overflowY: "auto",
+            background: "rgba(127, 29, 29, 0.94)",
+            color: "#fecaca",
+            borderBottom: "1px solid rgba(239, 68, 68, 0.55)",
+            backdropFilter: "blur(8px)",
+            fontSize: 11,
+            lineHeight: 1.4,
+          }}
+        >
+          <span style={{ flexShrink: 0 }}>⚠</span>
+          <span
+            data-bp-selectable=""
+            style={{ flex: 1, wordBreak: "break-word", whiteSpace: "pre-wrap" }}
+          >
+            {petError}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPetError(null)}
+            title="关闭"
+            aria-label="关闭错误提示"
+            style={{
+              flexShrink: 0,
+              background: "transparent",
+              border: "none",
+              color: "#fecaca",
+              cursor: "pointer",
+              fontSize: 13,
+              lineHeight: 1,
+              padding: "0 2px",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {/* 面板隐藏时：左上角悬浮「显示消息面板」按钮（始终可点，
           drag-region 内的 button 是交互元素会吞掉拖动）。 */}
       {!leftPanelOpen && (
@@ -1290,6 +1350,7 @@ function App() {
         fps={fps}
         connectionState={state}
         routeKind={routeKind}
+        topOffset={petError ? 66 : undefined}
       />
 
       {/* S14 memory management overlay */}

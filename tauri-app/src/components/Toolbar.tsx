@@ -38,6 +38,9 @@ interface Props {
   fps: number;
   connectionState: "disconnected" | "connecting" | "connected";
   routeKind: "cloud" | "local" | null;
+  /** Push the toolbar down (px) when a top error banner is shown above
+   * it, so the banner sits ABOVE the toolbar instead of overlapping. */
+  topOffset?: number;
 }
 
 export const Toolbar: React.FC<Props> = ({
@@ -57,12 +60,13 @@ export const Toolbar: React.FC<Props> = ({
   fps,
   connectionState,
   routeKind,
+  topOffset,
 }) => {
   return (
     <div
       style={{
         position: "absolute",
-        top: tokens.space.xs,
+        top: topOffset != null ? topOffset : tokens.space.xs,
         right: tokens.space.xs,
         // 桌宠窗口很窄（~282px）— 允许多行换行避免溢出
         maxWidth: "calc(100% - 8px)",

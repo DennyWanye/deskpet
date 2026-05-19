@@ -54,6 +54,9 @@ export const CodeModePanel: React.FC<Props> = ({
   const todosOpen = false;
   void todos;
   void todosOpen;
+  // 2026-05-19: green in-face Code-mode banner removed; prop kept for
+  // the parent's wiring and possible future re-surfacing elsewhere.
+  void onExitCodeMode;
 
   useEffect(() => {
     registerEnterHandler(async () => {
@@ -102,30 +105,14 @@ export const CodeModePanel: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Active banner — when code mode is on. Shows project root + exit.
-          P4-S23 UX: removed the inline 📋 N todo-count chip — todos
-          live in the dedicated Code Panel sidebar now, where users can
-          actually read them at a glance. Showing them twice was noisy
-          and the count fights for space when users have many tasks. */}
-      {state.enabled && (
-        <div style={activeBannerStyle}>
-          <span style={{ marginRight: 6 }}>🔧</span>
-          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>
-            <strong>Code 模式</strong> · {state.project_name || "(未知项目)"}
-          </span>
-          <button
-            onClick={onExitCodeMode}
-            style={bannerBtnStyle("danger")}
-            title="退出 Code 模式"
-          >
-            退出
-          </button>
-        </div>
-      )}
+      {/* 2026-05-19 UX: the green "Code 模式 · (未知项目) 退出" banner
+          was removed — it sat at top:84 directly over the pet's head
+          and the user found it intrusive. Code-mode lifecycle is fully
+          managed inside the dedicated Code Mode window (the 🔧 panel);
+          the pet no longer needs a redundant in-face indicator. */}
 
       {/* P4-S23: in-pet todo slide-out removed (replaced by Code
-          Panel sidebar's "Todos" section). Kept the conditional
-          guard so future re-introduction is a one-line revert. */}
+          Panel sidebar's "Todos" section). */}
     </>
   );
 };
@@ -137,26 +124,6 @@ export const CodeModePanel: React.FC<Props> = ({
 // to clear both rows + give some breathing room. Use `flexWrap: wrap`
 // inside so the action buttons drop to a second line on narrow widths
 // instead of getting clipped off-screen.
-const activeBannerStyle: React.CSSProperties = {
-  position: "absolute",
-  top: 84,
-  left: 8,
-  right: 8,
-  zIndex: 19,
-  display: "flex",
-  alignItems: "center",
-  flexWrap: "wrap",
-  gap: 6,
-  rowGap: 4,
-  padding: "5px 8px",
-  borderRadius: 6,
-  background: "rgba(20, 60, 30, 0.88)",
-  color: "#a7f3d0",
-  border: "1px solid rgba(34, 197, 94, 0.5)",
-  backdropFilter: "blur(8px)",
-  fontSize: 11,
-};
-
 const suggestBannerStyle: React.CSSProperties = {
   position: "absolute",
   top: 84,
@@ -185,25 +152,6 @@ function suggestActionStyle(variant: "primary" | "secondary"): React.CSSProperti
     border: "1px solid rgba(255,255,255,0.2)",
     background: variant === "primary" ? "#f59e0b" : "rgba(255,255,255,0.1)",
     color: variant === "primary" ? "#000" : "#fff",
-    cursor: "pointer",
-  };
-}
-
-function bannerBtnStyle(variant: "info" | "danger" | "ghost"): React.CSSProperties {
-  const colors: Record<string, { bg: string; fg: string }> = {
-    info: { bg: "rgba(6, 182, 212, 0.30)", fg: "#67e8f9" },
-    danger: { bg: "rgba(239, 68, 68, 0.30)", fg: "#fca5a5" },
-    ghost: { bg: "transparent", fg: "rgba(255,255,255,0.7)" },
-  };
-  const c = colors[variant];
-  return {
-    fontSize: 10,
-    fontWeight: 600,
-    padding: "2px 8px",
-    borderRadius: 4,
-    border: "1px solid transparent",
-    background: c.bg,
-    color: c.fg,
     cursor: "pointer",
   };
 }
