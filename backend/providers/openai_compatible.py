@@ -663,6 +663,13 @@ class OpenAICompatibleProvider:
             "max_tokens": max_tokens,
         }
         payload = _merge_code_params(payload, self.code_params)
+        logger.info(
+            "openai_compat_outbound fn=chat_stream_with_tools model=%s "
+            "reasoning_effort=%s extra_body=%s",
+            payload.get("model"),
+            payload.get("reasoning_effort"),
+            payload.get("extra_body"),
+        )
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"

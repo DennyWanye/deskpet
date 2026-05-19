@@ -2556,6 +2556,21 @@ async def control_channel(ws: WebSocket):
                                 todo_count = len(todos)
                             except Exception:
                                 pass
+                        # code-session-model-params: carry the per-session
+                        # binding so the picker pre-fills + the tile's
+                        # model badge survives a restart (the list was the
+                        # only sync path that dropped it → "badge gone, did
+                        # the switch even work?" confusion).
+                        _pid = _pref = None
+                        _mparams = None
+                        if sdb is not None:
+                            try:
+                                _b = await sdb.get_code_session_provider_binding(base_sid)
+                                _pid = _b.get("provider_id")
+                                _pref = _b.get("preferred_model")
+                                _mparams = _b.get("model_params")
+                            except Exception:
+                                pass
                         items_list.append({
                             "base_session_id": base_sid,
                             "code_session_id": st.code_session_id,
@@ -2563,10 +2578,61 @@ async def control_channel(ws: WebSocket):
                             "project_name": st.project_name,
                             "todo_count": todo_count,
                             "enabled": st.enabled,
+                            "provider_id": _pid,
+                            "preferred_model": _pref,
+                            "model_params": _mparams,
                         })
                 await ws.send_json({
                     "type": "code_sessions_list_response",
                     "payload": {"items": items_list},
+                })
+
+            elif msg_type == "code_models_list":
+                # code-session-model-params: the picker's model dropdown
+                # is data-driven, NOT a hardcoded preset list. Pull the
+                # relay's live catalog (chinzy 中转站 GET /models); fall
+                # back to the registry endpoint's configured `models`
+                # array if the live fetch fails. Each model carries a
+                # per-family capability map so the picker only shows the
+                # params that model actually supports (gpt-5.x exposes
+                # reasoning_effort; claude opus/sonnet exposes thinking;
+                # they differ).
+                _reg = service_context.get("provider_registry")
+                _model_ids: list[str] = []
+                _source = "none"
+                _base_url = ""
+                if _reg is not None:
+                    try:
+                        _chain = _reg.get_chain()
+                    except Exception:
+                        _chain = []
+                    if _chain:
+                        _first = _chain[0]
+                        _pid0 = _first.get("id") if isinstance(_first, dict) else None
+                        _entry0 = _reg.get_entry(_pid0) if _pid0 else None
+                        if _entry0 is not None:
+                            _base_url = str(getattr(_entry0, "base_url", "") or "")
+                            _cfg_models = list(getattr(_entry0, "models", []) or [])
+                            _api_key = _reg.resolve_api_key(_pid0)
+                            try:
+                                from llm.model_catalog import fetch_models as _fm
+                                _live = await _fm(_base_url, _api_key, timeout=8.0)
+                            except Exception:
+                                _live = []
+                            if _live:
+                                _model_ids = _live
+                                _source = "live"
+                            elif _cfg_models:
+                                _model_ids = _cfg_models
+                                _source = "config"
+                from llm.model_catalog import build_catalog as _bc
+                await ws.send_json({
+                    "type": "code_models_list_response",
+                    "payload": {
+                        "models": _bc(_model_ids),
+                        "source": _source,
+                        "base_url": _base_url,
+                    },
                 })
 
             elif msg_type in (
@@ -3067,6 +3133,15 @@ async def control_channel(ws: WebSocket):
                             # assistant template + project root.
                             _cmm_for_assembler = service_context.get("code_mode")
                             _code_cfg = {"enabled": False, "project_root": ""}
+                            # code-session-model-params: the persona's
+                            # "你跑在底层模型 X 上" must reflect the model
+                            # this code session will ACTUALLY call (binding
+                            # preferred_model → [agent].code_model → legacy),
+                            # not the static [llm] config model — otherwise a
+                            # gpt-5.5-bound session truthfully reads its prompt
+                            # and (wrongly) tells the user "deepseek-v4-pro".
+                            _persona_model = getattr(local_llm, "model", "unknown")
+                            _persona_base = getattr(local_llm, "base_url", "")
                             if _cmm_for_assembler and _cmm_for_assembler.is_enabled(_sid):
                                 _state = _cmm_for_assembler.get(_sid)
                                 if _state and _state.project_root:
@@ -3074,6 +3149,31 @@ async def control_channel(ws: WebSocket):
                                         "enabled": True,
                                         "project_root": str(_state.project_root),
                                     }
+                                try:
+                                    _sdb_p = service_context.get("session_db")
+                                    _bind_p = (
+                                        await _sdb_p.get_code_session_provider_binding(_sid)
+                                        if _sdb_p is not None else {}
+                                    ) or {}
+                                    _pm = _bind_p.get("preferred_model")
+                                    if _pm:
+                                        _persona_model = _pm
+                                    else:
+                                        _acfg = (
+                                            config.raw.get("agent")
+                                            if hasattr(config, "raw") else None
+                                        ) or {}
+                                        _cdm = (
+                                            str(_acfg.get("code_model") or "").strip()
+                                            or None
+                                        )
+                                        if _cdm:
+                                            _persona_model = _cdm
+                                except Exception as _pm_exc:  # noqa: BLE001
+                                    logger.debug(
+                                        "persona_model_resolve_skipped sid=%s err=%s",
+                                        _sid, _pm_exc,
+                                    )
                             _bundle = await _assembler.assemble(
                                 user_message=_text,
                                 memory_manager=service_context.get("memory_manager"),
@@ -3083,8 +3183,8 @@ async def control_channel(ws: WebSocket):
                                 session_id=_sid,
                                 config={
                                     "llm": {
-                                        "model": getattr(local_llm, "model", "unknown"),
-                                        "base_url": getattr(local_llm, "base_url", ""),
+                                        "model": _persona_model,
+                                        "base_url": _persona_base,
                                     },
                                     "code_mode": _code_cfg,
                                 },
@@ -3331,6 +3431,15 @@ async def control_channel(ws: WebSocket):
                                             code_params=getattr(_entry, "code_params", None),
                                         ))
                                     _provider_chain = _chain
+                                logger.info(
+                                    "p5s2_chain_resolved sid=%s in_code_mode=%s "
+                                    "code_default_model=%s n_entries=%d "
+                                    "models=%s code_params=%s",
+                                    _sid, _in_code_mode, _code_default_model,
+                                    len(_entries or []),
+                                    [getattr(e, "model", "?") for e in (_entries or [])],
+                                    [getattr(e, "code_params", {}) for e in (_entries or [])],
+                                )
                         except Exception as _resolve_exc:  # noqa: BLE001
                             logger.warning(
                                 "p5s2_provider_chain_resolve_failed sid=%s err=%s — falling back to legacy single-provider path",

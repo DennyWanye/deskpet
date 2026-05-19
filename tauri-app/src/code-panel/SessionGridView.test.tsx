@@ -17,12 +17,15 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   buildSetProviderMessage,
   buildSetModelMessage,
-  buildModelOptions,
-  buildModelParams,
-  CODE_MODEL_PRESETS,
   resolveCardDropdownDisplay,
   pickProviderRemovedFallback,
 } from "./SessionGridView";
+import {
+  useCodeModelsStore,
+  capsForModel,
+  buildModelOptionsFromCatalog,
+  type CatalogModel,
+} from "./codeModelsStore";
 import {
   build_provider_dropdown_options,
   format_provider_label,
@@ -366,60 +369,125 @@ describe("test_set_model_message_carries_structured_params", () => {
   });
 });
 
-// ----- 5.2 model dropdown options (presets + custom injection) ------------
+// ----- 5.2 model dropdown options are catalog-driven (NOT hardcoded) ------
 
-describe("test_build_model_options", () => {
-  it("default + presets when no current model", () => {
-    const opts = buildModelOptions(null);
+const sample_catalog: CatalogModel[] = [
+  {
+    id: "gpt-5.5",
+    label: "gpt-5.5 · OpenAI",
+    caps: { thinking: true, fast: true, context: true, effort: true },
+  },
+  {
+    id: "claude-opus-4.5",
+    label: "claude-opus-4.5 · Anthropic",
+    caps: { thinking: true, fast: false, context: true, effort: false },
+  },
+  {
+    id: "text-embedding-3-small",
+    label: "text-embedding-3-small",
+    caps: { thinking: false, fast: false, context: false, effort: false },
+  },
+];
+
+describe("test_build_model_options_from_catalog", () => {
+  it("default sentinel + the live catalog (no hardcoded presets)", () => {
+    const opts = buildModelOptionsFromCatalog(null, sample_catalog);
     expect(opts[0]).toEqual({ value: "", label: "跟随 provider 默认" });
     expect(opts.map((o) => o.value)).toEqual([
       "",
-      ...CODE_MODEL_PRESETS.map((p) => p.value),
+      "gpt-5.5",
+      "claude-opus-4.5",
+      "text-embedding-3-small",
     ]);
   });
 
-  it("does not duplicate a current model that is already a preset", () => {
-    const opts = buildModelOptions("gpt-5.5");
-    const count = opts.filter((o) => o.value === "gpt-5.5").length;
-    expect(count).toBe(1);
+  it("empty catalog → just the follow-default sentinel", () => {
+    const opts = buildModelOptionsFromCatalog(null, []);
+    expect(opts).toEqual([{ value: "", label: "跟随 provider 默认" }]);
   });
 
-  it("injects a non-preset current model so it can pre-select", () => {
-    const opts = buildModelOptions("claude-4.7-legacy");
-    const injected = opts.find((o) => o.value === "claude-4.7-legacy");
+  it("injects a non-catalog current model so legacy bindings pre-select", () => {
+    const opts = buildModelOptionsFromCatalog("custom-legacy-x", sample_catalog);
+    const injected = opts.find((o) => o.value === "custom-legacy-x");
     expect(injected).toBeDefined();
     expect(injected?.label).toContain("自定义");
   });
+
+  it("does not duplicate a current model already in the catalog", () => {
+    const opts = buildModelOptionsFromCatalog("gpt-5.5", sample_catalog);
+    expect(opts.filter((o) => o.value === "gpt-5.5").length).toBe(1);
+  });
 });
 
-// ----- 5.3 picker state → params dict (pure fold) -------------------------
+// ----- 5.3 per-model capability map (gpt vs claude differ) ----------------
 
-describe("test_build_model_params", () => {
-  it("folds picker state into the exact backend contract shape", () => {
-    expect(
-      buildModelParams({
-        thinking: true,
-        fast: true,
-        context: "1m",
-        effort: "max",
-      }),
-    ).toEqual({ thinking: true, fast: true, context: "1m", effort: "max" });
+describe("test_caps_for_model", () => {
+  it("gpt-5.5 supports effort (OpenAI reasoning_effort family)", () => {
+    expect(capsForModel("gpt-5.5", sample_catalog)).toEqual({
+      thinking: true,
+      fast: true,
+      context: true,
+      effort: true,
+    });
   });
 
-  it("defaults fold cleanly (thinking/fast off, 300k, medium)", () => {
-    expect(
-      buildModelParams({
-        thinking: false,
-        fast: false,
-        context: "300k",
-        effort: "medium",
-      }),
-    ).toEqual({
+  it("claude-opus-4.5 supports thinking but NOT effort", () => {
+    const c = capsForModel("claude-opus-4.5", sample_catalog);
+    expect(c.thinking).toBe(true);
+    expect(c.effort).toBe(false);
+  });
+
+  it("embedding model exposes no tunable params", () => {
+    expect(capsForModel("text-embedding-3-small", sample_catalog)).toEqual({
       thinking: false,
       fast: false,
-      context: "300k",
-      effort: "medium",
+      context: false,
+      effort: false,
     });
+  });
+
+  it("unknown/custom model id → permissive (show everything)", () => {
+    expect(capsForModel("totally-unknown", sample_catalog)).toEqual({
+      thinking: true,
+      fast: true,
+      context: true,
+      effort: true,
+    });
+  });
+
+  it("null model id (follow default) → permissive", () => {
+    expect(capsForModel(null, sample_catalog).thinking).toBe(true);
+  });
+});
+
+// ----- 5.3b code_models_list_response populates the catalog store --------
+
+describe("test_code_models_list_response_populates_store", () => {
+  beforeEach(() => {
+    useCodeModelsStore.setState({ models: [], source: "none", loaded: false });
+  });
+
+  it("ws dispatch writes the catalog + source", () => {
+    __test_dispatch({
+      type: "code_models_list_response",
+      payload: { models: sample_catalog, source: "live" },
+    });
+    const st = useCodeModelsStore.getState();
+    expect(st.loaded).toBe(true);
+    expect(st.source).toBe("live");
+    expect(st.models.map((m) => m.id)).toEqual([
+      "gpt-5.5",
+      "claude-opus-4.5",
+      "text-embedding-3-small",
+    ]);
+  });
+
+  it("non-array payload degrades to empty (never throws)", () => {
+    __test_dispatch({
+      type: "code_models_list_response",
+      payload: { models: null, source: undefined },
+    });
+    expect(useCodeModelsStore.getState().models).toEqual([]);
   });
 });
 

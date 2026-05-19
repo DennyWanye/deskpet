@@ -70,51 +70,11 @@ export function buildSetModelMessage(
   return { type: "code_session_set_model", payload };
 }
 
-/** code-session-model-params S2 — the Cursor reference model set. No
- * `[code_models]` config exists yet (deferred), so the picker hardcodes
- * this list; `buildModelOptions` injects any non-preset current model so
- * legacy free-text bindings still pre-select correctly. */
-export const CODE_MODEL_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: "gpt-5.5", label: "GPT-5.5" },
-  { value: "codex-5.3", label: "Codex 5.3" },
-  { value: "sonnet-4.6", label: "Claude Sonnet 4.6" },
-  { value: "opus-4.7", label: "Claude Opus 4.7" },
-  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-];
-
-/** Dropdown options for the picker: a "follow provider default" sentinel
- * ("" ⇒ clear preferred_model) + presets, plus the session's current
- * model if it isn't already a preset (so custom ids round-trip). */
-export function buildModelOptions(
-  current_model: string | null | undefined,
-): Array<{ value: string; label: string }> {
-  const opts: Array<{ value: string; label: string }> = [
-    { value: "", label: "跟随 provider 默认" },
-    ...CODE_MODEL_PRESETS,
-  ];
-  const cur = (current_model ?? "").trim();
-  if (cur && !opts.some((o) => o.value === cur)) {
-    opts.push({ value: cur, label: `${cur}（自定义）` });
-  }
-  return opts;
-}
-
-/** Pure: fold the picker's UI state into the IPC `params` dict (the exact
- * shape the backend's `code_params_to_request` mapper consumes). Kept
- * outside the component so vitest (node env, no DOM) can assert it. */
-export function buildModelParams(state: {
-  thinking: boolean;
-  fast: boolean;
-  context: "300k" | "1m";
-  effort: "low" | "medium" | "high" | "extra_high" | "max";
-}): CodeModelParams {
-  return {
-    thinking: state.thinking,
-    fast: state.fast,
-    context: state.context,
-    effort: state.effort,
-  };
-}
+// code-session-model-params: the model dropdown is data-driven from the
+// relay's live /models catalog (see codeModelsStore +
+// buildModelOptionsFromCatalog / capsForModel). The old hardcoded
+// CODE_MODEL_PRESETS / buildModelOptions / buildModelParams were removed —
+// a static preset list was exactly the "mock data" problem.
 
 export interface CardDropdownDisplay {
   label: string;

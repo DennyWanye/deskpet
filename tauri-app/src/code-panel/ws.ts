@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSessionsStore } from "../stores/sessionsStore";
 // P5-S2 Phase 5 — code session binding events
 import { useProvidersStore } from "./providersStore";
+import { useCodeModelsStore } from "./codeModelsStore";
 import { pickProviderRemovedFallback } from "./SessionGridView";
 // P5-S2 Phase 4 — settings panel provider mutation events
 import { dispatchProviderEvent } from "../components/SettingsProviders";
@@ -100,6 +101,9 @@ async function open_socket() {
     current_state = "connected";
     // Pull current sessions list on (re)connect so the dashboard hydrates.
     ws?.send(JSON.stringify({ type: "code_sessions_list" }));
+    // code-session-model-params: pull the live model catalog so the
+    // picker's dropdown is data-driven (chinzy /models), not hardcoded.
+    ws?.send(JSON.stringify({ type: "code_models_list" }));
     // Also pull current todos for the active session in case they
     // changed since last connect.
     const store = useSessionsStore.getState();
@@ -625,6 +629,17 @@ function dispatch(msg: any) {
           ? { model_params: p.model_params }
           : {}),
       });
+      break;
+    }
+    case "code_models_list_response": {
+      // code-session-model-params: live model catalog + per-model caps.
+      const p = msg.payload || {};
+      useCodeModelsStore
+        .getState()
+        .set_catalog(
+          Array.isArray(p.models) ? p.models : [],
+          typeof p.source === "string" ? p.source : "none",
+        );
       break;
     }
     case "code_session_model_set": {

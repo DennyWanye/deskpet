@@ -2,12 +2,14 @@
  * code-session-model-params S2 — Cursor-style per-code-session model +
  * params picker (replaces the old free-text model `<input>`).
  *
- * Layout mirrors Cursor's model switcher: a model dropdown + a row of
- * controls — Thinking / Fast toggles, Context (300K · 1M) segmented,
- * Effort (Low … Max) segmented. On 保存 we emit
+ * Layout mirrors Cursor's model switcher. The model dropdown is
+ * data-driven from the relay's live /models catalog (codeModelsStore),
+ * NOT a hardcoded preset list. Each model carries a capability map, so
+ * the picker only renders the controls that model supports — gpt-5.x
+ * shows Effort (reasoning_effort); claude opus/sonnet shows Thinking
+ * (no Effort); an embedding model shows nothing. On 保存 we emit
  *   code_session_set_model { session_id, model, params }
- * where `params` matches the backend IPC contract exactly:
- *   { thinking, fast, context, effort }
+ * with only the caps-supported keys of { thinking, fast, context, effort }.
  *
  * Back-compat: 清空 sends the legacy `{ session_id, model:null }` shape
  * (no `params` key) so the backend clears the binding and falls back to
@@ -19,7 +21,12 @@
 import { useState, useEffect } from "react";
 
 import { codePanelWS } from "./ws";
-import { buildSetModelMessage, buildModelOptions, buildModelParams } from "./SessionGridView";
+import { buildSetModelMessage } from "./SessionGridView";
+import {
+  useCodeModelsStore,
+  capsForModel,
+  buildModelOptionsFromCatalog,
+} from "./codeModelsStore";
 import { useSessionsStore, type CodeModelParams } from "../stores/sessionsStore";
 
 type EffortValue = "low" | "medium" | "high" | "extra_high" | "max";
@@ -53,7 +60,8 @@ export function ChangeModelModal({
   current_params,
   onClose,
 }: ChangeModelModalProps) {
-  const model_opts = buildModelOptions(current_model);
+  const catalog = useCodeModelsStore((s) => s.models);
+  const model_opts = buildModelOptionsFromCatalog(current_model, catalog);
   const [model, set_model] = useState<string>(current_model ?? "");
   const [thinking, set_thinking] = useState<boolean>(
     current_params?.thinking ?? false,
@@ -65,6 +73,10 @@ export function ChangeModelModal({
   const [effort, set_effort] = useState<EffortValue>(
     current_params?.effort ?? "medium",
   );
+  // Per-model capability map — gpt-5.x exposes reasoning_effort, claude
+  // opus/sonnet exposes thinking; the picker only renders the controls
+  // the chosen model actually supports. Unknown/custom id → permissive.
+  const caps = capsForModel(model || current_model, catalog);
 
   useEffect(() => {
     const onEsc = (e: KeyboardEvent) => {
@@ -75,7 +87,15 @@ export function ChangeModelModal({
   }, [onClose]);
 
   const submit = () => {
-    const params = buildModelParams({ thinking, fast, context, effort });
+    // Only emit the params the selected model supports — sending
+    // reasoning_effort to a claude model (or thinking to an embedding
+    // model) is meaningless. Backend mapper also clamps, but a clean
+    // payload keeps the binding honest per-model.
+    const params: CodeModelParams = {};
+    if (caps.thinking) params.thinking = thinking;
+    if (caps.fast) params.fast = fast;
+    if (caps.context) params.context = context;
+    if (caps.effort) params.effort = effort;
     codePanelWS.send(buildSetModelMessage(session_id, model, params));
     // Optimistic write — backend's code_session_model_set ack reconciles
     // (same pattern as the provider dropdown).
@@ -125,42 +145,62 @@ export function ChangeModelModal({
             ))}
           </select>
 
-          {/* Thinking + Fast toggles */}
-          <div style={toggleRowStyle}>
-            <Toggle
-              label="Thinking"
-              hint="启用推理（reasoning）"
-              checked={thinking}
-              onChange={set_thinking}
-            />
-            <Toggle
-              label="Fast"
-              hint="低延迟优先"
-              checked={fast}
-              onChange={set_fast}
-            />
-          </div>
+          {/* Thinking + Fast toggles — only those the model supports */}
+          {(caps.thinking || caps.fast) && (
+            <div style={toggleRowStyle}>
+              {caps.thinking && (
+                <Toggle
+                  label="Thinking"
+                  hint="启用推理（reasoning）"
+                  checked={thinking}
+                  onChange={set_thinking}
+                />
+              )}
+              {caps.fast && (
+                <Toggle
+                  label="Fast"
+                  hint="低延迟优先"
+                  checked={fast}
+                  onChange={set_fast}
+                />
+              )}
+            </div>
+          )}
 
           {/* Context segmented */}
-          <label style={labelStyle}>上下文窗口</label>
-          <Segmented
-            ariaLabel="上下文窗口"
-            options={CONTEXT_OPTIONS}
-            value={context}
-            onChange={set_context}
-          />
+          {caps.context && (
+            <>
+              <label style={labelStyle}>上下文窗口</label>
+              <Segmented
+                ariaLabel="上下文窗口"
+                options={CONTEXT_OPTIONS}
+                value={context}
+                onChange={set_context}
+              />
+            </>
+          )}
 
-          {/* Effort segmented */}
-          <label style={labelStyle}>推理强度（Effort）</label>
-          <Segmented
-            ariaLabel="推理强度"
-            options={EFFORT_OPTIONS}
-            value={effort}
-            onChange={set_effort}
-          />
-          <span style={hintStyle}>
-            Extra High / Max 在仅支持 low/medium/high 的后端会收敛到 High
-          </span>
+          {/* Effort segmented — gpt-5.x / OpenAI family only */}
+          {caps.effort && (
+            <>
+              <label style={labelStyle}>推理强度（Effort）</label>
+              <Segmented
+                ariaLabel="推理强度"
+                options={EFFORT_OPTIONS}
+                value={effort}
+                onChange={set_effort}
+              />
+              <span style={hintStyle}>
+                Extra High / Max 在仅支持 low/medium/high 的后端会收敛到 High
+              </span>
+            </>
+          )}
+
+          {!caps.thinking && !caps.fast && !caps.context && !caps.effort && (
+            <span style={hintStyle}>
+              该模型无可调参数（仅切换模型本身）
+            </span>
+          )}
         </div>
 
         <footer style={footerStyle}>
