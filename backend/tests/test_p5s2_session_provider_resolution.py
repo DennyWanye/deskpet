@@ -210,8 +210,11 @@ async def test_pinned_to_deleted_provider_falls_back_to_chain() -> None:
 
 
 @pytest.mark.asyncio
-async def test_companion_session_skips_db_lookup() -> None:
-    """3.12: companion sids never query SessionDB; global chain directly."""
+async def test_companion_session_honors_binding_2026_05_19() -> None:
+    """Contract change 2026-05-19: companion ("default") sessions NOW
+    read the per-session binding too (user wants the slim message panel
+    to switch model like Code mode). A stale provider_id still falls
+    back to the global chain — same recovery as code sessions."""
     from llm.resolution import resolve_provider_for_session
 
     registry = _StubRegistry([
@@ -219,7 +222,6 @@ async def test_companion_session_skips_db_lookup() -> None:
          "model": "m1", "api_key": "k1", "enabled": True},
     ])
     sdb = _StubSessionDB({
-        # If lookup happened, this would force a single-provider chain.
         "default": {"provider_id": "imaginary", "preferred_model": None},
     })
 
@@ -230,8 +232,33 @@ async def test_companion_session_skips_db_lookup() -> None:
         session_db=sdb,
     )
 
-    # Global chain returned. SessionDB MUST NOT have been queried.
+    # DB WAS queried (new behavior); imaginary provider → global fallback.
     assert [p.id for p in chain] == ["chinzy"]
-    assert sdb.get_calls == [], (
-        f"companion mode queried SessionDB: {sdb.get_calls}"
+    assert sdb.get_calls == ["default"]
+
+
+@pytest.mark.asyncio
+async def test_companion_session_preferred_model_applies() -> None:
+    """Companion with a preferred_model binding overrides the model on
+    the global chain (the message-panel model switcher path)."""
+    from llm.resolution import resolve_provider_for_session
+
+    registry = _StubRegistry([
+        {"id": "chinzy", "base_url": "https://a.example/v1",
+         "model": "deepseek-v4-pro", "api_key": "k1", "enabled": True},
+    ])
+    sdb = _StubSessionDB({
+        "default": {"provider_id": None, "preferred_model": "gpt-5.5",
+                    "model_params": {"effort": "high"}},
+    })
+
+    chain = await resolve_provider_for_session(
+        "default",
+        is_code_session=False,
+        registry=registry,
+        session_db=sdb,
     )
+
+    assert [p.id for p in chain] == ["chinzy"]
+    assert chain[0].model == "gpt-5.5"  # binding overrides companion model
+    assert chain[0].code_params.get("reasoning_effort") == "high"

@@ -71,6 +71,7 @@ pub fn run() {
             commands::open_message_panel,
             commands::close_message_panel,
             commands::dock_message_panel,
+            commands::toggle_message_panel,
         ])
         .setup(|app| {
             // P3-S2: NVIDIA precheck. Phase-3 contract is CUDA-only, so

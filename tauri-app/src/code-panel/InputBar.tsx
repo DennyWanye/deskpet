@@ -11,7 +11,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useSessionsStore, chatLimiter } from "../stores/sessionsStore";
 import { codePanelWS } from "./ws";
 
-export function InputBar() {
+export function InputBar({ placeholder }: { placeholder?: string } = {}) {
   const [text, set_text] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -103,9 +103,10 @@ export function InputBar() {
           onChange={(e) => set_text(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder={
-            session?.project_root
+            placeholder ??
+            (session?.project_root
               ? `跟 LLM 说点什么 — 当前项目: ${session.project_name}`
-              : "输入消息开始 Code 模式聊天..."
+              : "输入消息开始 Code 模式聊天...")
           }
           rows={1}
           style={{

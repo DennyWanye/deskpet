@@ -254,38 +254,39 @@ function App() {
   const dismissAlert = useSessionsStore((s) => s.dismiss_alert);
   const dismissAllAlerts = useSessionsStore((s) => s.dismiss_all_alerts);
   const [streamFilter, setStreamFilter] = useState<StreamFilter>("all");
-  // 2026-05-19 终极方案：消息面板是**独立窗口**（message-panel），不再
-  // 内嵌于桌宠窗。桌宠窗因此恒定 = 仅桌宠列、全透明，**零死区**（不再
-  // 拦截桌面点击）。本地 leftPanelOpen 仅用于 ▶/◀ tab 文案；真正显隐
-  // 由 Rust open/close_message_panel 控制那个独立窗口，并把它吸附在
-  // 桌宠左侧；桌宠拖动时 onMoved 跟随（dock_message_panel）。
+  // 消息面板是**独立窗口**。点 ▶消息 = Rust toggle_message_panel
+  // （显↔隐，权威返回新可见态）。`leftPanelOpen` 由 Rust 发的
+  // `message-panel-visibility` 事件驱动（同时覆盖「面板自己的 ◀」），
+  // 用来在面板打开时隐藏桌宠底部 DialogBar（#1/#2）。面板首次打开
+  // 吸附在桌宠左侧；之后可自由拖动/缩放/全屏，桌宠移动不再强拽它
+  // 回来（#4：用户的手动摆放优先于自动吸附）。
   const [leftPanelOpen, setLeftPanelOpen] = useState(false);
   const togglePanel = useCallback((next: boolean) => {
-    setLeftPanelOpen(next);
-    invoke(next ? "open_message_panel" : "close_message_panel").catch(
-      (e: unknown) => console.warn("[Pet] message-panel toggle failed:", e),
+    // next is advisory; Rust is authoritative (it checks is_visible).
+    // The visibility event below syncs leftPanelOpen either way.
+    void next;
+    invoke("toggle_message_panel").catch((e: unknown) =>
+      console.warn("[Pet] message-panel toggle failed:", e),
     );
   }, []);
 
-  // Drag-follow: when the pet window moves, keep the docked message
-  // panel glued to its left edge. Rust dock_message_panel no-ops while
-  // the panel is hidden, so this is cheap to fire on every move.
+  // Sync leftPanelOpen from the Rust visibility event — fires for the
+  // pet's ▶消息 toggle AND the panel window's own ◀ collapse, so the
+  // DialogBar hide/show is always correct.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     void (async () => {
       try {
-        const mod = await import("@tauri-apps/api/window");
-        const w = mod.getCurrentWindow?.();
-        if (!w || cancelled) return;
-        unlisten = await w.onMoved(() => {
-          invoke("dock_message_panel").catch(() => {
-            /* no-op if panel/window not ready */
-          });
-        });
-        if (cancelled && unlisten) unlisten();
+        const ev = await import("@tauri-apps/api/event");
+        const off = await ev.listen<boolean>(
+          "message-panel-visibility",
+          (e) => setLeftPanelOpen(!!e.payload),
+        );
+        if (cancelled) off();
+        else unlisten = off;
       } catch (e) {
-        console.warn("[Pet] onMoved wire failed:", e);
+        console.warn("[Pet] visibility listen failed:", e);
       }
     })();
     return () => {
@@ -1030,13 +1031,16 @@ function App() {
         onClose={() => setSkillStoreOpen(false)}
       />
 
-      {/* VN 底栏：桌宠自带的「最新一句」快览。消息面板已是独立窗口、
-          可移到别处，不再与底栏抢位 → 底栏常驻（桌宠窗永远有它）。 */}
-      <DialogBar
-        latestAssistant={
-          latestAssistant ? stripMarkdown(latestAssistant) : null
-        }
-      />
+      {/* #2: 独立消息面板打开时，底部 DialogBar 隐藏（二者职责重叠，
+          避免双重显示）；面板关闭时回到桌宠+底栏形态。leftPanelOpen
+          由 Rust 可见性事件驱动，面板自己的 ◀ 也会同步。 */}
+      {!leftPanelOpen && (
+        <DialogBar
+          latestAssistant={
+            latestAssistant ? stripMarkdown(latestAssistant) : null
+          }
+        />
+      )}
 
       {/* 用户消息 2s 小气泡 */}
       <UserBubble text={latestUserInput} visibleMs={2000} />

@@ -84,13 +84,14 @@ async def resolve_provider_for_session(
     """Return the list of ProviderEntry-like objects this session should walk.
 
     :param base_sid: session id (sid base, no role suffix).
-    :param is_code_session: True for code panel sessions (have bindings);
-        False for companion sessions (no binding lookup, ever).
+    :param is_code_session: True for code panel sessions. As of
+        2026-05-19 companion ("default") sessions ALSO honor a binding
+        if one exists; this flag now only gates the code-mode
+        ``code_default_model`` fallback.
     :param registry: an ``LLMProviderRegistry`` instance (or stub with
         the same surface — ``get_chain()``, ``get_entry(id)``).
     :param session_db: a ``SessionDB`` instance (or stub with
-        ``async get_code_session_provider_binding(sid)``). Unused when
-        ``is_code_session`` is False.
+        ``async get_code_session_provider_binding(sid)``).
 
     :return: list of provider entries (shallow copies of the registry's
         ProviderEntry dataclasses). May have their ``model`` field
@@ -99,11 +100,18 @@ async def resolve_provider_for_session(
         actionable error event so we don't have to import the error
         class.
     """
-    # Step 1: companion sessions skip DB lookup entirely.
-    if not is_code_session:
+    # Step 1: read the per-session binding for ANY session.
+    #
+    # 2026-05-19: companion ("default") sessions now ALSO honor a
+    # per-session model/params binding — the user wants the slim
+    # message panel to switch model exactly like Code mode. A session
+    # with NO binding row gets {None,None,None} → plain global chain →
+    # zero behavior change for anyone who never sets a model (so the
+    # earlier "companion untouched" guarantee still holds whenever no
+    # binding exists). ``code_default_model`` stays code-mode-only.
+    if session_db is None:
         return _global_chain_entries(registry)
 
-    # Step 2: read binding for code session.
     binding = await session_db.get_code_session_provider_binding(base_sid)
     provider_id = binding.get("provider_id")
     preferred_model = binding.get("preferred_model")
@@ -126,9 +134,10 @@ async def resolve_provider_for_session(
             )
             if preferred_model:
                 pinned.model = preferred_model
-            elif code_default_model:
-                # code-session-model-params: no explicit model → code-mode
-                # default (e.g. gpt-5.5). Pet/companion never reach here.
+            elif is_code_session and code_default_model:
+                # code-mode default (e.g. gpt-5.5) — code sessions only.
+                # Companion honors an explicit preferred_model binding
+                # but never the code-mode default.
                 pinned.model = code_default_model
             out = [pinned]
             _attach_code_params(out, model_params)
@@ -145,10 +154,10 @@ async def resolve_provider_for_session(
     if preferred_model:
         for entry in chain:
             entry.model = preferred_model
-    elif code_default_model:
-        # code-session-model-params: unbound code session → code-mode
-        # default model on every chain entry (Strangler-Fig: caller
-        # passes None when the flag/knob is off → legacy behavior).
+    elif is_code_session and code_default_model:
+        # Unbound CODE session → code-mode default model on every chain
+        # entry (Strangler-Fig: caller passes None when knob off →
+        # legacy). Companion never takes the code default.
         for entry in chain:
             entry.model = code_default_model
     _attach_code_params(chain, model_params)

@@ -201,6 +201,7 @@ pub fn open_message_panel(app: AppHandle) -> Result<(), String> {
     // Pulse alwaysOnTop so it sits ABOVE the alwaysOnTop pet rather than
     // behind it. Don't steal focus (the pet keeps interaction).
     let _ = panel.set_always_on_top(true);
+    emit_panel_visibility(&app, true);
     Ok(())
 }
 
@@ -211,7 +212,40 @@ pub fn close_message_panel(app: AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("message-panel") {
         w.hide().map_err(|e| e.to_string())?;
     }
+    emit_panel_visibility(&app, false);
     Ok(())
+}
+
+/// Notify the pet (`main`) window whenever the panel's visibility
+/// changes — from the pet's ▶消息 toggle OR the panel's own ◀ — so the
+/// pet can hide its bottom DialogBar while the panel is open (no
+/// redundant double surface).
+fn emit_panel_visibility(app: &AppHandle, visible: bool) {
+    use tauri::Emitter;
+    let _ = app.emit_to("main", "message-panel-visibility", visible);
+}
+
+/// #1 — single source of truth for the pet's ▶消息 button: show+dock if
+/// hidden, hide if visible. Returns the NEW visibility so the pet can
+/// update its tab label/DialogBar without guessing.
+#[tauri::command]
+pub fn toggle_message_panel(app: AppHandle) -> Result<bool, String> {
+    let panel = app
+        .get_webview_window("message-panel")
+        .ok_or("message-panel window missing")?;
+    let now_visible = panel.is_visible().unwrap_or(false);
+    if now_visible {
+        panel.hide().map_err(|e| e.to_string())?;
+        emit_panel_visibility(&app, false);
+        Ok(false)
+    } else {
+        dock_message_panel_impl(&app)?;
+        panel.show().map_err(|e| e.to_string())?;
+        let _ = panel.unminimize();
+        let _ = panel.set_always_on_top(true);
+        emit_panel_visibility(&app, true);
+        Ok(true)
+    }
 }
 
 /// P4-S22: open a native folder picker; returns the absolute path the
