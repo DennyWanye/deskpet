@@ -62,15 +62,18 @@ const sample_providers: ProviderEntry[] = [
 describe("test_card_renders_provider_dropdown", () => {
   beforeEach(resetStores);
 
-  it("builds dropdown options with Global Chain first then enabled providers", () => {
+  it("null option shows the real chain-head provider name, then enabled providers", () => {
     const opts = build_provider_dropdown_options(sample_providers);
-    expect(opts[0]).toEqual({ value: null, label: "Global Chain" });
+    // value=null still = unpinned, but labelled with the real Settings
+    // provider name ("Chinzy（默认）") instead of "Global Chain".
+    expect(opts[0].value).toBeNull();
+    expect(opts[0].label).toBe("Chinzy（默认）");
     expect(opts.map((o) => o.value)).toEqual([null, "chinzy", "openrouter-claude"]);
     // disabled provider is dropped
     expect(opts.find((o) => o.value === "ollama-disabled")).toBeUndefined();
   });
 
-  it("returns just Global Chain when providers list is empty", () => {
+  it("falls back to generic label only when no providers exist", () => {
     const opts = build_provider_dropdown_options([]);
     expect(opts).toEqual([{ value: null, label: "Global Chain" }]);
   });
@@ -81,14 +84,20 @@ describe("test_card_renders_provider_dropdown", () => {
 describe("test_default_dropdown_value_is_global_chain", () => {
   beforeEach(resetStores);
 
-  it("unbound session (provider_id == null) → display label = Global Chain", () => {
+  it("unbound session (provider_id == null) → label = real chain-head name", () => {
     const display = resolveCardDropdownDisplay(null, sample_providers);
-    expect(display.label).toBe("Global Chain");
+    expect(display.label).toBe("Chinzy"); // not "Global Chain"
     expect(display.locked).toBe(false);
   });
 
-  it("unbound session (provider_id == undefined) → display label = Global Chain", () => {
+  it("unbound session (provider_id == undefined) → label = real chain-head name", () => {
     const display = resolveCardDropdownDisplay(undefined, sample_providers);
+    expect(display.label).toBe("Chinzy");
+    expect(display.locked).toBe(false);
+  });
+
+  it("no providers loaded yet → generic 'Global Chain' fallback", () => {
+    const display = resolveCardDropdownDisplay(null, []);
     expect(display.label).toBe("Global Chain");
     expect(display.locked).toBe(false);
   });

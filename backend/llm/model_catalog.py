@@ -127,6 +127,54 @@ def model_param_caps(model_id: str) -> dict[str, bool]:
             "context": True, "effort": False}
 
 
+# Real published context windows by family (tokens). NOT the picker's
+# old fake "300K/1M" — these are the models' actual nominal windows.
+# Project overrides (model_info BUILTIN / TOML) win over this; anything
+# we genuinely don't know returns None → UI shows "由 provider 决定"
+# instead of a made-up number. Extend as new families appear.
+_FAMILY_CTX: tuple[tuple[tuple[str, ...], int], ...] = (
+    (("gpt-4.1",), 1_000_000),
+    (("gpt-5", "gpt-4", "o1", "o3", "o4-", "codex"), 400_000),
+    (("grok-4", "grok-code"), 256_000),
+    (("claude-opus-4", "claude-sonnet-4", "claude-haiku-4",
+      "claude-3", "opus-", "sonnet-", "haiku-"), 200_000),
+    (("gemini-3", "gemini-2.5", "gemini-"), 1_000_000),
+    (("deepseek-v4", "deepseek-reasoner", "deepseek-v3.2"), 1_000_000),
+    (("deepseek-v3", "deepseek-chat"), 128_000),
+    (("glm-4",), 200_000),
+    (("qwen3",), 256_000),
+    (("kimi-k2",), 256_000),
+    (("minimax-m2", "ernie-x1", "ernie-5", "step-3"), 256_000),
+)
+
+
+def model_context_window(model_id: str) -> int | None:
+    """Real nominal context window (tokens) for a model, or None when
+    genuinely unknown. The project's own model_info (BUILTIN + user TOML
+    overrides) is authoritative when it has a real entry; otherwise a
+    family heuristic; otherwise None (caller shows "由 provider 决定")."""
+    mid = (model_id or "").strip()
+    if not mid:
+        return None
+    # Authoritative project source first — but only when it's a real
+    # match, not the 32K "_default" fallback (which would be wrong for
+    # most relay models).
+    try:
+        from llm import model_info as _mi
+        if mid in _mi.BUILTIN:
+            return _mi.resolve(mid).context_window
+        ov = _mi._model_section(_mi.load_global_overrides(), mid)
+        if ov and "context_window" in ov:
+            return int(ov["context_window"])
+    except Exception:  # noqa: BLE001 — never let model_info break the catalog
+        pass
+    m = mid.lower()
+    for needles, win in _FAMILY_CTX:
+        if any(n in m for n in needles):
+            return win
+    return None
+
+
 def _label_for(model_id: str) -> str:
     """Human-ish label. Keep the id verbatim (users recognise it) but
     add a family tag so the long dropdown scans fast."""
@@ -167,8 +215,14 @@ def build_catalog(model_ids: list[str]) -> list[dict[str, Any]]:
             "id": mid,
             "label": _label_for(mid),
             "caps": model_param_caps(mid),
+            "context_window": model_context_window(mid),
         })
     return out
 
 
-__all__ = ["fetch_models", "model_param_caps", "build_catalog"]
+__all__ = [
+    "fetch_models",
+    "model_param_caps",
+    "model_context_window",
+    "build_catalog",
+]

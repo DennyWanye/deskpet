@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import asyncio
 
-from llm.model_catalog import build_catalog, fetch_models, model_param_caps
+from llm.model_catalog import (
+    build_catalog,
+    fetch_models,
+    model_context_window,
+    model_param_caps,
+)
 
 
 def test_openai_family_supports_effort() -> None:
@@ -57,6 +62,30 @@ def test_build_catalog_dedupes_and_keeps_order() -> None:
     assert cat[0]["caps"]["effort"] is True
     assert cat[1]["caps"]["effort"] is False
     assert "id" in cat[0] and "label" in cat[0] and "caps" in cat[0]
+
+
+def test_model_context_window_is_per_model_not_uniform() -> None:
+    # Not every model is 300K/1M — windows differ by family.
+    assert model_context_window("gpt-5.5") == 400_000
+    assert model_context_window("claude-opus-4.5") == 200_000
+    assert model_context_window("gemini-3-pro-preview") == 1_000_000
+    assert model_context_window("deepseek-v4-pro") == 1_000_000
+    assert model_context_window("glm-4.7") == 200_000
+
+
+def test_model_context_window_unknown_is_none_not_fabricated() -> None:
+    # Genuinely unknown → None (UI shows "由 provider 决定"), never a
+    # made-up number or the 32K _default fallback.
+    assert model_context_window("totally-unknown-model-xyz") is None
+    assert model_context_window("") is None
+
+
+def test_build_catalog_carries_context_window() -> None:
+    cat = build_catalog(["gpt-5.5", "claude-opus-4.5", "weird-x"])
+    by_id = {m["id"]: m for m in cat}
+    assert by_id["gpt-5.5"]["context_window"] == 400_000
+    assert by_id["claude-opus-4.5"]["context_window"] == 200_000
+    assert by_id["weird-x"]["context_window"] is None
 
 
 def test_fetch_models_unreachable_returns_empty_never_raises() -> None:

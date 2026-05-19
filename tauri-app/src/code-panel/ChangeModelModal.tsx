@@ -26,11 +26,11 @@ import {
   useCodeModelsStore,
   capsForModel,
   buildModelOptionsFromCatalog,
+  contextWindowForModel,
 } from "./codeModelsStore";
 import { useSessionsStore, type CodeModelParams } from "../stores/sessionsStore";
 
 type EffortValue = "low" | "medium" | "high" | "extra_high" | "max";
-type ContextValue = "300k" | "1m";
 type ReasonMode = "default" | "thinking" | "fast";
 
 const EFFORT_OPTIONS: ReadonlyArray<{ value: EffortValue; label: string }> = [
@@ -39,11 +39,6 @@ const EFFORT_OPTIONS: ReadonlyArray<{ value: EffortValue; label: string }> = [
   { value: "high", label: "High" },
   { value: "extra_high", label: "Extra High" },
   { value: "max", label: "Max" },
-];
-
-const CONTEXT_OPTIONS: ReadonlyArray<{ value: ContextValue; label: string }> = [
-  { value: "300k", label: "300K" },
-  { value: "1m", label: "1M" },
 ];
 
 export interface ChangeModelModalProps {
@@ -74,9 +69,6 @@ export function ChangeModelModal({
         ? "fast"
         : "default",
   );
-  const [context, set_context] = useState<ContextValue>(
-    current_params?.context ?? "300k",
-  );
   const [effort, set_effort] = useState<EffortValue>(
     current_params?.effort ?? "medium",
   );
@@ -84,6 +76,9 @@ export function ChangeModelModal({
   // opus/sonnet exposes thinking; the picker only renders the controls
   // the chosen model actually supports. Unknown/custom id → permissive.
   const caps = capsForModel(model || current_model, catalog);
+  // Context window is a model property, NOT a user choice — show the
+  // model's real nominal window read-only (null → "由 provider 决定").
+  const ctx_window = contextWindowForModel(model || current_model, catalog);
 
   useEffect(() => {
     const onEsc = (e: KeyboardEvent) => {
@@ -103,7 +98,7 @@ export function ChangeModelModal({
     // never both true (mutually exclusive by construction).
     if (caps.thinking) params.thinking = reason_mode === "thinking";
     if (caps.fast) params.fast = reason_mode === "fast";
-    if (caps.context) params.context = context;
+    // context window is model-defined & read-only — not sent as a param.
     if (caps.effort) params.effort = effort;
     codePanelWS.send(buildSetModelMessage(session_id, model, params));
     // Optimistic write — backend's code_session_model_set ack reconciles
@@ -177,16 +172,21 @@ export function ChangeModelModal({
             </>
           )}
 
-          {/* Context segmented */}
+          {/* Context window — model-defined, READ-ONLY (not all models
+              support the same window; we show the model's real one). */}
           {caps.context && (
             <>
-              <label style={labelStyle}>上下文窗口</label>
-              <Segmented
-                ariaLabel="上下文窗口"
-                options={CONTEXT_OPTIONS}
-                value={context}
-                onChange={set_context}
-              />
+              <label style={labelStyle}>上下文窗口（模型决定）</label>
+              <div style={ctxChipStyle} aria-label="上下文窗口">
+                {ctx_window != null
+                  ? `${ctx_window.toLocaleString()} tokens` +
+                    (ctx_window >= 1_000_000
+                      ? "  (≈1M)"
+                      : ctx_window >= 1000
+                        ? `  (≈${Math.round(ctx_window / 1000)}K)`
+                        : "")
+                  : "由 provider 决定"}
+              </div>
             </>
           )}
 
@@ -312,6 +312,16 @@ const hintStyle: React.CSSProperties = {
   fontSize: 10,
   color: "rgba(148,163,184,0.7)",
   fontStyle: "italic",
+};
+
+const ctxChipStyle: React.CSSProperties = {
+  background: "rgba(30, 35, 48, 0.85)",
+  color: "#cbd5e1",
+  border: "1px solid rgba(148, 163, 184, 0.22)",
+  borderRadius: 6,
+  padding: "6px 9px",
+  fontSize: 12,
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
 };
 
 const selectStyle: React.CSSProperties = {

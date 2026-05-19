@@ -25,6 +25,20 @@ export interface CatalogModel {
   id: string;
   label: string;
   caps: ModelCaps;
+  /** Real nominal context window (tokens), or null when genuinely
+   * unknown → UI shows "由 provider 决定" instead of a fake number.
+   * Read-only (the model defines it; not user-selectable). */
+  context_window?: number | null;
+}
+
+/** Look up a model's real context window from the catalog. */
+export function contextWindowForModel(
+  model_id: string | null | undefined,
+  catalog: CatalogModel[],
+): number | null {
+  if (!model_id) return null;
+  const hit = catalog.find((m) => m.id === model_id);
+  return hit?.context_window ?? null;
 }
 
 interface CodeModelsStore {
