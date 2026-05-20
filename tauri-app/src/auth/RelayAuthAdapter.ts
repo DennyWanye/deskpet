@@ -75,10 +75,13 @@ import * as relayBindings from "../bindings/relay";
 export interface RelayBindings {
   setRelayAccessToken(token: string): Promise<void>;
   getRelayAccessToken(): Promise<string | null>;
+  deleteRelayAccessToken(): Promise<void>;
   setRelayRefreshToken(token: string): Promise<void>;
   getRelayRefreshToken(): Promise<string | null>;
+  deleteRelayRefreshToken(): Promise<void>;
   setRelayDeviceKey(key: string): Promise<void>;
   getRelayDeviceKey(): Promise<string | null>;
+  deleteRelayDeviceKey(): Promise<void>;
   clearAllRelaySecrets(): Promise<void>;
   getOrCreateDeviceId(): Promise<string>;
   getDefaultDeviceName(): Promise<string>;
@@ -214,15 +217,14 @@ export class RelayAuthAdapter implements AuthAdapter {
   }
 
   /**
-   * Register + auto-activate in a single call. Per integration guide
-   * §3.1, the relay currently returns `activation.token` directly in
-   * the register response (email infra not live). When the email
-   * pipeline ships, that field disappears and the user has to click
-   * a link — we'll branch on its presence here:
+   * Register. v1.3 contract: server returns an ACTIVE user + valid
+   * tokens immediately — no activation roundtrip needed.
    *
-   *   - activation.token present → call /v1/auth/activate immediately
-   *   - activation absent        → throw a special error so UI can
-   *                                show "check your inbox"
+   * Backwards-compat: if the relay is ever rolled back to v1.0/1.1
+   * (which DID require activation), we still detect the `activation`
+   * field and fall through `activateAccount()` which knows both the
+   * canonical and the legacy `/api-direct/*` endpoint shape. Once we
+   * fully trust v1.3 in production we can drop the fallback.
    */
   async register(credentials: RegisterCredentials): Promise<User> {
     await this.ensureDeviceIdentity();
@@ -244,25 +246,62 @@ export class RelayAuthAdapter implements AuthAdapter {
     const data = (await res.json()) as AuthTokenResponse;
     await this.persistTokens(data);
 
-    if (data.activation?.token) {
-      // Auto-activate path. Try /v1/auth/activate first (PR #16
-      // post-merge); fall back to the legacy /api-direct path which
-      // is still live until the v1 mirror ships.
+    // v1.3 happy path: register includes the User inline.
+    if (data.user) {
+      this.user = data.user;
+    } else if (data.activation?.token) {
+      // Legacy v1.0/v1.1 path: server returned an activation token
+      // because email infra wasn't wired yet. Try /v1/auth/activate
+      // (v1.1 canonical) then /api-direct/auth/activate (pre-#16).
       const activated = await this.activateAccount(data.activation.token);
       this.user = activated ?? (await this.fetchMe());
     } else {
-      // Email-verification path (post-PR-#16, email infra live). The
-      // server has issued tokens but /v1/me will refuse them until
-      // the user clicks the email link. We return what info we have
-      // and let the UI display the "check email" state.
-      this.user = data.user ?? {
-        id: "pending",
-        email: credentials.email,
-        plan: "prepaid",
-      };
+      // Defensive: server didn't return user AND didn't return
+      // activation. Pull from /v1/me — slower but always correct.
+      this.user = await this.fetchMe();
     }
     this.emit({ type: "login", user: this.user });
     return this.user;
+  }
+
+  /**
+   * v1.3+: change the current user's password.
+   *
+   * Side effects on the server:
+   *   - All refresh_tokens for this user are revoked (other devices
+   *     are kicked at their next /refresh).
+   *   - Our own access_token stays valid until natural expiry (≤1h).
+   *   - Our own refresh_token is also revoked, so the next time we
+   *     hit a 401 the auto-refresh will fail and force a re-login.
+   *     To keep this session usable, we proactively clear our local
+   *     refresh_token after a successful change — re-login becomes
+   *     mandatory but predictable rather than "works until access
+   *     expires, then mystery 401".
+   *
+   * Throws RelayApiError on failure (INVALID_CREDENTIALS for wrong
+   * current password, VALIDATION for bad new password).
+   */
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await this.authedJson<{ refresh_tokens_revoked: number }>(
+      "POST",
+      "/v1/auth/password",
+      { current_password: currentPassword, new_password: newPassword },
+    );
+    // Our refresh_token was just revoked — wipe it locally so the
+    // next 401 doesn't loop on a known-bad refresh. The access_token
+    // stays alive for ≤1h so the current page keeps working.
+    this.refreshToken = null;
+    try {
+      await this.bindings.deleteRelayRefreshToken();
+    } catch (e) {
+      // Local in-memory state is already correct; keyring residue is
+      // recoverable at next clearAllRelaySecrets call.
+      console.warn(
+        "[RelayAuthAdapter] failed to clear refresh from keyring:",
+        e,
+      );
+    }
+    this.emit({ type: "tokens-refreshed" });
   }
 
   async logout(): Promise<void> {
@@ -286,17 +325,73 @@ export class RelayAuthAdapter implements AuthAdapter {
     await this.localLogout();
   }
 
+  /**
+   * Fetch + rotate the device key. Every call to this method invalidates
+   * the previous tsk_* — use sparingly. Recommended call sites:
+   *   - Cold start when `listProvidersUsingCache()` returned DEVICE_KEY_MISSING
+   *   - 401 from an LLM endpoint (device key expired)
+   *   - User clicked "Reset device key" in Settings
+   * NEVER schedule this on a timer.
+   */
   async listProviders(): Promise<Provider[]> {
+    return this.fetchProvidersInternal({ rotate: true });
+  }
+
+  /**
+   * v1.1+ cold-start path: hit `GET /v1/providers?rotate=false` to
+   * refresh the model list WITHOUT rotating the device key. Useful
+   * when keyring already has a valid tsk_* from a previous session.
+   *
+   * Semantics:
+   *   - 200 → providers returned, every `api_key` is null. Caller uses
+   *           the cached `this.deviceKey`.
+   *   - 404 DEVICE_KEY_MISSING → no active key; throws RelayApiError
+   *           so caller can decide whether to fall back to `listProviders()`.
+   *
+   * For convenience this method automatically falls back to a rotating
+   * `listProviders()` call when it sees DEVICE_KEY_MISSING. Set
+   * `failOnMissing: true` to disable that and surface the error instead
+   * (lets the Settings UI display a "device key was revoked" hint).
+   */
+  async listProvidersUsingCache(
+    opts: { failOnMissing?: boolean } = {},
+  ): Promise<Provider[]> {
+    try {
+      return await this.fetchProvidersInternal({ rotate: false });
+    } catch (err) {
+      if (
+        err instanceof RelayApiError &&
+        err.code === "DEVICE_KEY_MISSING" &&
+        !opts.failOnMissing
+      ) {
+        // Fall back to the rotating call so the user isn't stuck in
+        // a "no key, but we won't mint one" purgatory.
+        return await this.fetchProvidersInternal({ rotate: true });
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Single source of truth for the providers endpoint. Both modes
+   * share the dedup + headers logic; only the URL query string and
+   * the "rotate the cached key on response" step differ.
+   */
+  private async fetchProvidersInternal(
+    opts: { rotate: boolean },
+  ): Promise<Provider[]> {
     if (!this.accessToken) return [];
-    // Coalesce concurrent calls — every call rotates the device key,
-    // so two concurrent calls means the first invocation's key is
-    // dead before its caller can use it.
+    // Coalesce concurrent calls — when rotating, two concurrent calls
+    // means the first invocation's key is dead before its caller
+    // can use it. We dedup non-rotating calls too because there's
+    // no value in two parallel "fetch the same data" requests.
     if (this.inflightProviders) return this.inflightProviders;
     this.inflightProviders = (async () => {
       try {
+        const path = opts.rotate ? "/v1/providers" : "/v1/providers?rotate=false";
         const data = await this.authedJson<ProvidersResponse>(
           "GET",
-          "/v1/providers",
+          path,
           undefined,
           {
             "X-Device-Id": this.deviceId ?? "",
@@ -304,14 +399,17 @@ export class RelayAuthAdapter implements AuthAdapter {
           },
         );
         const providers = data.providers ?? [];
-        // Cache the freshly-rotated device key — every provider entry
-        // currently shares the same `api_key` per §3.7 "重要语义", so
-        // grabbing the first one is sufficient.
-        const key = providers.find((p) => p.api_key)?.api_key ?? null;
-        if (key) {
-          this.deviceKey = key;
-          await this.bindings.setRelayDeviceKey(key);
+        if (opts.rotate) {
+          // Rotate mode: response carries a fresh tsk_*. Cache it.
+          const key = providers.find((p) => p.api_key)?.api_key ?? null;
+          if (key) {
+            this.deviceKey = key;
+            await this.bindings.setRelayDeviceKey(key);
+          }
         }
+        // In non-rotate mode every api_key is null per §3.7. We do
+        // NOT overwrite the cached `this.deviceKey` — that's the
+        // whole point of asking for the non-rotating endpoint.
         this.emit({ type: "providers-updated", providers });
         return providers;
       } finally {

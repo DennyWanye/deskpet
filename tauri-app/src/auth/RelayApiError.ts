@@ -39,6 +39,10 @@ export type RelayErrorCode =
   | "UPSTREAM_ERROR"
   | "UPSTREAM_UNAVAILABLE"
   | "INTERNAL"
+  // v1.1+: returned by GET /v1/providers?rotate=false when the current
+  // deviceId has no active device key. Client must retry the same call
+  // without the query param to mint a fresh key.
+  | "DEVICE_KEY_MISSING"
   // Synthetic codes the client invents when the body is missing/malformed.
   // Tagged so UI can tell "server told us X" from "we made this up locally".
   | "NETWORK_ERROR"
@@ -194,6 +198,7 @@ const KNOWN_CODES: ReadonlySet<string> = new Set([
   "UPSTREAM_ERROR",
   "UPSTREAM_UNAVAILABLE",
   "INTERNAL",
+  "DEVICE_KEY_MISSING",
 ]);
 
 /**

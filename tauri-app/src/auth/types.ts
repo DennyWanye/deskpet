@@ -38,6 +38,21 @@ export interface ProviderModel {
    *  reasoning_effort / embeddings / image_generation / video_generation
    */
   capabilities?: string[];
+  /** USD-denominated pricing (minor unit = cents per 1M tokens). */
+  pricing?: {
+    inputPer1MMinor?: number;
+    outputPer1MMinor?: number;
+  };
+  /** v1.1+ CN¥ pricing, pre-converted server-side via `source_rate`. UI
+   *  should prefer this over `pricing` when present; falls back to the
+   *  USD figure only for legacy responses that haven't been re-serialised
+   *  since the v1.1 schema bump. */
+  pricing_cny?: {
+    inputPer1MMinor?: number;
+    outputPer1MMinor?: number;
+    currency?: string;
+    source_rate?: number;
+  };
 }
 
 /** A single LLM endpoint the user can call. */
