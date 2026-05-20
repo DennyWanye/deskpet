@@ -18,6 +18,8 @@
  */
 export { NullAuthAdapter } from "./NullAuthAdapter";
 export { ManualAuthAdapter } from "./ManualAuthAdapter";
+export { RelayAuthAdapter } from "./RelayAuthAdapter";
+export { RelayApiError, type RelayErrorCode } from "./RelayApiError";
 export {
   type AuthAdapter,
   type AuthEdition,
@@ -34,6 +36,7 @@ export {
 import { type AuthAdapter, type AuthEdition } from "./types";
 import { ManualAuthAdapter } from "./ManualAuthAdapter";
 import { NullAuthAdapter } from "./NullAuthAdapter";
+import { RelayAuthAdapter } from "./RelayAuthAdapter";
 
 let _instance: AuthAdapter | null = null;
 
@@ -56,14 +59,10 @@ export function buildAdapter(edition: AuthEdition): AuthAdapter {
     case "manual":
       return new ManualAuthAdapter();
     case "relay":
-      // OSS 仓库不含 Relay 实现；闭源仓库会用同名 export 替换本文件
-      // 或 monkey-patch 这里。fall through to manual so the OSS build
-      // doesn't crash if VITE_AUTH_EDITION="relay" is set by accident.
-      console.warn(
-        "[auth] VITE_AUTH_EDITION=relay set but no RelayAuthAdapter " +
-          "bundled in this build; falling back to Manual.",
-      );
-      return new ManualAuthAdapter();
+      // W2: Relay 实现已并入主线（Week 2 of relay integration plan）。
+      // 后续分仓时这一行会从 paid 仓库的 monkey-patch 接管；目前
+      // OSS 仓也带，方便在主仓里写测试 + 联调。
+      return new RelayAuthAdapter();
     default: {
       const _exhaust: never = edition;
       throw new Error(`Unknown AuthEdition: ${String(_exhaust)}`);
