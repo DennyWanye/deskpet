@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 DEFAULT_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # v9 是 P4 的起手目标版本。spec "Schema Migration v8 → v9" 定义。
-TARGET_SCHEMA_VERSION = 17  # memory-v2: 009_memory_v2_tables.sql
+TARGET_SCHEMA_VERSION = 17  # memory-v2 (Phase A-E): tables created at runtime via memory_v2_schema
 
 
 class MigrationError(RuntimeError):
