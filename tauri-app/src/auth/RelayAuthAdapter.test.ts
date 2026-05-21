@@ -637,6 +637,91 @@ describe("RelayAuthAdapter.restoreSession", () => {
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer persisted_access");
   });
+
+  it("transparently refreshes when persisted access is expired", async () => {
+    // Persisted access has expired but refresh is still valid (the
+    // common case on app restart >1h after last activity). authedJson
+    // catches the 401, calls /refresh, retries /v1/me with the new
+    // access. restoreSession sees a successful user fetch and returns
+    // true — the user never sees the re-login dialog.
+    const bindings = makeBindings({
+      getRelayAccessToken: vi.fn(async () => "stale_access"),
+      getRelayRefreshToken: vi.fn(async () => "valid_refresh"),
+    });
+    const fetchImpl = vi.fn(
+      queueFetch([
+        // 1) /v1/me with stale_access → 401 EXPIRED_TOKEN
+        mkResponse({
+          status: 401,
+          body: {
+            code: "EXPIRED_TOKEN",
+            message: "stale",
+            request_id: "r",
+          },
+        }),
+        // 2) /v1/auth/refresh with valid_refresh → fresh pair
+        mkResponse({
+          body: {
+            access_token: "fresh_access",
+            refresh_token: "fresh_refresh",
+            token_type: "Bearer",
+            expires_in: 3600,
+          },
+        }),
+        // 3) /v1/me retry with fresh_access → SAMPLE_USER
+        mkResponse({ body: SAMPLE_USER }),
+      ]),
+    );
+    const adapter = new RelayAuthAdapter({ fetchImpl, bindings });
+
+    expect(await adapter.restoreSession()).toBe(true);
+    expect(adapter.isAuthenticated()).toBe(true);
+    expect(adapter._testGetState().accessToken).toBe("fresh_access");
+    // Keyring was rewritten with the fresh tokens — important so the
+    // next launch doesn't try a stale access again.
+    expect(bindings.setRelayAccessToken).toHaveBeenCalledWith("fresh_access");
+    expect(bindings.setRelayRefreshToken).toHaveBeenCalledWith("fresh_refresh");
+  });
+
+  it("clears keyring + returns false when both access and refresh are dead", async () => {
+    // Worst case: user was logged out server-side (logout from web
+    // console, password change from another device, account suspended).
+    // restoreSession must NOT leave stale tokens in keyring — they
+    // would just cause the same 401 cascade on the next launch.
+    const bindings = makeBindings({
+      getRelayAccessToken: vi.fn(async () => "dead_access"),
+      getRelayRefreshToken: vi.fn(async () => "dead_refresh"),
+    });
+    const fetchImpl = vi.fn(
+      queueFetch([
+        // 1) /v1/me → 401
+        mkResponse({
+          status: 401,
+          body: {
+            code: "INVALID_TOKEN",
+            message: "bad",
+            request_id: "r",
+          },
+        }),
+        // 2) /v1/auth/refresh → 401 too
+        mkResponse({
+          status: 401,
+          body: {
+            code: "INVALID_TOKEN",
+            message: "bad refresh",
+            request_id: "r",
+          },
+        }),
+      ]),
+    );
+    const adapter = new RelayAuthAdapter({ fetchImpl, bindings });
+
+    expect(await adapter.restoreSession()).toBe(false);
+    expect(adapter.isAuthenticated()).toBe(false);
+    // localLogout was triggered — keyring slots cleared so the next
+    // launch starts clean.
+    expect(bindings.clearAllRelaySecrets).toHaveBeenCalled();
+  });
 });
 
 // ── 7. error envelope mapping ───────────────────────────────────

@@ -31,6 +31,13 @@ import { useBackendLifecycle } from "./hooks/useBackendLifecycle";
 import { useSessionsStore } from "./stores/sessionsStore";
 import { PetStateMachine } from "./pet-state/PetStateMachine";
 import type { AudioMessage, LipSyncMessage } from "./types/messages";
+// W3.3 (relay integration): lazy-mount the relay edition UI only when
+// the active adapter is RelayAuthAdapter. OSS default (`manual` /
+// `null` editions) never instantiates this component, so its presence
+// here is a zero-cost import at build time and a no-op at runtime.
+import { getAuthAdapter } from "./auth";
+import { RelayAuthAdapter } from "./auth/RelayAuthAdapter";
+import { RelayEdition } from "./auth/RelayEdition";
 
 function stripMarkdown(text: string): string {
   return text
@@ -830,6 +837,16 @@ function App() {
     [],
   );
 
+  // W3.3 (relay integration): identify the active adapter once. Memoised
+  // by the auth/index.ts singleton, so re-renders are free. We only
+  // mount the relay UI when the adapter is concrete RelayAuthAdapter —
+  // OSS default returns a ManualAuthAdapter and `relayAdapter` is null,
+  // so the JSX guard below is dead code in that build.
+  const relayAdapter = useMemo(() => {
+    const a = getAuthAdapter();
+    return a instanceof RelayAuthAdapter ? a : null;
+  }, []);
+
   return (
     <div
       style={{
@@ -840,6 +857,11 @@ function App() {
         overflow: "hidden",
       }}
     >
+      {/* W3.3: relay-edition UI lives entirely under this single
+          conditional. Manual / null editions render zero relay nodes
+          and pay zero runtime cost beyond one instanceof check above. */}
+      {relayAdapter && <RelayEdition adapter={relayAdapter} />}
+
       {/* 2026-05-19: 消息面板已抽成**独立窗口**（message-panel），不再
           内嵌于桌宠窗。这里不再渲染 aside —— 桌宠窗保持「仅桌宠、全
           透明、零死区」。面板的开关 = Rust open/close_message_panel。 */}
