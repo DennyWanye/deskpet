@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSessionsStore } from "../stores/sessionsStore";
 // P5-S2 Phase 5 — code session binding events
 import { useProvidersStore } from "./providersStore";
+import { useCodeModelsStore } from "./codeModelsStore";
 import { pickProviderRemovedFallback } from "./SessionGridView";
 // P5-S2 Phase 4 — settings panel provider mutation events
 import { dispatchProviderEvent } from "../components/SettingsProviders";
@@ -78,15 +79,21 @@ async function open_socket() {
     schedule_reconnect();
     return;
   }
-  // Use a distinct session_id from the pet's main WS ("default"). The
-  // backend stores _control_connections keyed by session_id, and a
-  // second connection on the same key kicks the first one out — that
-  // produced the 1-second reconnect loop visible in early P4-S23 dev
-  // runs. "code-panel-main" is harmless: every chat_v2 message we
-  // send carries `payload.session_id` explicitly anyway.
+  // Use a distinct control session_id per window. The backend keys
+  // _control_connections by session_id; two connections on the same key
+  // kick each other out (1-second reconnect storm). The code-panel and
+  // the slim message-panel are SEPARATE windows that both import this
+  // module — derive the id from the route hash so they coexist. Every
+  // chat_v2 we send still stamps payload.session_id explicitly, so this
+  // control id only matters for connection identity.
+  const _ctrlSid =
+    typeof window !== "undefined" &&
+    window.location?.hash?.startsWith("#/message-panel")
+      ? "message-panel-main"
+      : "code-panel-main";
   const url = `ws://127.0.0.1:8100/ws/control?secret=${encodeURIComponent(
     secret,
-  )}&session_id=code-panel-main`;
+  )}&session_id=${_ctrlSid}`;
   try {
     ws = new WebSocket(url);
     G.__deskpet_panel_ws__ = ws;
@@ -100,6 +107,13 @@ async function open_socket() {
     current_state = "connected";
     // Pull current sessions list on (re)connect so the dashboard hydrates.
     ws?.send(JSON.stringify({ type: "code_sessions_list" }));
+    // code-session-model-params: pull the live model catalog so the
+    // picker's dropdown is data-driven (chinzy /models), not hardcoded.
+    ws?.send(JSON.stringify({ type: "code_models_list" }));
+    // Pull the provider list so the per-session provider dropdown shows
+    // the REAL provider names from Settings → LLM Providers (e.g.
+    // "chinzy"), not just the generic "Global Chain" placeholder.
+    ws?.send(JSON.stringify({ type: "settings_providers_list_request" }));
     // Also pull current todos for the active session in case they
     // changed since last connect.
     const store = useSessionsStore.getState();
@@ -356,6 +370,12 @@ function dispatch(msg: any) {
           project_name: it.project_name ?? "(untitled)",
           provider_id: next_provider_id,
           preferred_model: next_preferred_model,
+          // code-session-model-params S2: only when the backend item
+          // actually carries it — the list response omits model_params,
+          // so a refresh must not clobber an optimistic picker write.
+          ...(it.model_params !== undefined
+            ? { model_params: it.model_params }
+            : {}),
         });
         if (!was_present) newly_added.push(bsid);
       }
@@ -614,13 +634,28 @@ function dispatch(msg: any) {
         provider_id: p.provider_id === undefined ? null : p.provider_id,
         preferred_model:
           p.preferred_model === undefined ? null : p.preferred_model,
+        // Backend's set_provider path preserves + echoes model_params.
+        ...(p.model_params !== undefined
+          ? { model_params: p.model_params }
+          : {}),
       });
+      break;
+    }
+    case "code_models_list_response": {
+      // code-session-model-params: live model catalog + per-model caps.
+      const p = msg.payload || {};
+      useCodeModelsStore
+        .getState()
+        .set_catalog(
+          Array.isArray(p.models) ? p.models : [],
+          typeof p.source === "string" ? p.source : "none",
+        );
       break;
     }
     case "code_session_model_set": {
       // Ack from backend for code_session_set_model. Same merge as above —
-      // backend echoes both fields so we keep them in sync even if the user
-      // only changed the model.
+      // backend echoes provider_id + preferred_model + model_params so we
+      // keep all three in sync even if the user only changed the model.
       const p = msg.payload || {};
       const target = p.session_id || sid;
       store.ensure(target);
@@ -628,6 +663,11 @@ function dispatch(msg: any) {
         provider_id: p.provider_id === undefined ? null : p.provider_id,
         preferred_model:
           p.preferred_model === undefined ? null : p.preferred_model,
+        // code-session-model-params S2: dict ⇒ active params; null ⇒
+        // binding cleared. undefined (legacy backend) ⇒ leave untouched.
+        ...(p.model_params !== undefined
+          ? { model_params: p.model_params }
+          : {}),
       });
       break;
     }

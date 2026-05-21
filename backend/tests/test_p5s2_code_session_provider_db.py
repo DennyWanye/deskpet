@@ -48,6 +48,7 @@ async def test_set_then_get_binding(db: SessionDB):
     assert binding == {
         "provider_id": "openrouter-claude",
         "preferred_model": None,
+        "model_params": None,
     }
 
     # 再设一次（含 model）覆盖
@@ -58,6 +59,7 @@ async def test_set_then_get_binding(db: SessionDB):
     assert binding2 == {
         "provider_id": "openrouter-claude",
         "preferred_model": "anthropic/claude-4.7-opus",
+        "model_params": None,
     }
 
 
@@ -67,7 +69,7 @@ async def test_set_then_get_binding(db: SessionDB):
 @pytest.mark.asyncio
 async def test_get_unbound_returns_null(db: SessionDB):
     binding = await db.get_code_session_provider_binding("never-bound-sid")
-    assert binding == {"provider_id": None, "preferred_model": None}
+    assert binding == {"provider_id": None, "preferred_model": None, "model_params": None}
 
 
 # ---- 0.4 set 全 None 删行 -----------------------------------------------
@@ -101,7 +103,7 @@ async def test_clear_binding_deletes_row(db: SessionDB, tmp_path: Path):
 
     # get 应该回 null pair（spec scenario "Set provider_id to null"）
     binding = await db.get_code_session_provider_binding(sid)
-    assert binding == {"provider_id": None, "preferred_model": None}
+    assert binding == {"provider_id": None, "preferred_model": None, "model_params": None}
 
 
 # ---- 0.5a fresh install 建表 + user_version=14 -------------------------
@@ -121,7 +123,7 @@ async def test_initialize_creates_v15_table_and_version(tmp_path: Path):
 
     async with aiosqlite.connect(db_path) as conn:
         cur = await conn.execute("PRAGMA user_version")
-        assert (await cur.fetchone())[0] == 15
+        assert (await cur.fetchone())[0] == 16
 
         cur = await conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' "
@@ -162,7 +164,7 @@ async def test_migration_idempotent(tmp_path: Path):
     async with aiosqlite.connect(db_path) as conn:
         cur = await conn.execute("PRAGMA user_version")
         ver = (await cur.fetchone())[0]
-    assert ver == 15
+    assert ver == 16
 
 
 # ---- 0.7 v13 → v14 升级保留老数据 --------------------------------------
@@ -198,8 +200,11 @@ async def test_migration_v14_to_v15_works(tmp_path: Path):
     try:
         conn.execute("DROP TABLE IF EXISTS code_session_provider")
         conn.execute(
-            "DELETE FROM schema_migrations WHERE version=?",
-            ("007_p5s2_code_session_provider.sql",),
+            "DELETE FROM schema_migrations WHERE version IN (?, ?)",
+            (
+                "007_p5s2_code_session_provider.sql",
+                "008_p5s2_code_session_model_params.sql",
+            ),
         )
         conn.execute("PRAGMA user_version = 14")
         conn.commit()
@@ -214,7 +219,7 @@ async def test_migration_v14_to_v15_works(tmp_path: Path):
     async with aiosqlite.connect(db_path) as conn:
         cur = await conn.execute("PRAGMA user_version")
         ver = (await cur.fetchone())[0]
-    assert ver == 15
+    assert ver == 16
 
     # 表已建
     async with aiosqlite.connect(db_path) as conn:

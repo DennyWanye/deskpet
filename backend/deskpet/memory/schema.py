@@ -24,8 +24,10 @@ from pathlib import Path
 
 from deskpet.memory.migrator import (
     MigrationError,
+    TARGET_SCHEMA_VERSION,
     backup_db,
     ensure_v9,
+    read_user_version,
 )
 
 log = logging.getLogger(__name__)
@@ -61,8 +63,35 @@ async def initialize_state_db(db_path: str | Path) -> None:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    bak_path: Path | None = None
+    # 2026-05-21 fix: only backup when a migration is actually pending.
+    # Previously we backed up on every initialize(), which combined with
+    # any caller that re-instantiates SessionDB per request produced
+    # 400+ backup files (~20 GB) under %AppData%\deskpet\data. Now we
+    # peek at PRAGMA user_version first; if the DB is already at the
+    # target version, ensure_v9 will short-circuit and there's nothing
+    # to roll back from — backup would just be cruft.
+    need_backup = False
     if db_path.exists():
+        try:
+            current_version = await read_user_version(db_path)
+        except Exception as exc:  # noqa: BLE001  # corrupt DB → conservative path
+            # Couldn't read the version → safest to take the backup
+            # before ensure_v9 touches anything.
+            log.warning(
+                "could not read state.db user_version (%s); will backup defensively",
+                exc,
+            )
+            need_backup = True
+        else:
+            need_backup = current_version < TARGET_SCHEMA_VERSION
+            if not need_backup:
+                log.debug(
+                    "state.db already at v%d, skipping backup",
+                    current_version,
+                )
+
+    bak_path: Path | None = None
+    if need_backup:
         try:
             bak_path = await backup_db(db_path)
             log.info("state.db backed up before migration: %s", bak_path)

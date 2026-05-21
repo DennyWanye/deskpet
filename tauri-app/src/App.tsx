@@ -1,13 +1,13 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { ContextTracePanel } from "./components/ContextTracePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { DialogBar } from "./components/DialogBar";
-import { ChatHistoryPanel } from "./components/ChatHistoryPanel";
 import { UserBubble } from "./components/UserBubble";
 import { StartupOverlay, type BootState } from "./components/StartupOverlay";
 import { useBudgetToast } from "./hooks/useBudgetToast";
+import { invoke } from "@tauri-apps/api/core";
 import { useControlChannel } from "./hooks/useWebSocket";
 import { usePermissionRequests } from "./hooks/usePermissionRequests";
 import { PermissionPopup } from "./components/PermissionPopup";
@@ -25,6 +25,13 @@ import { useBackendLifecycle } from "./hooks/useBackendLifecycle";
 import { useSessionsStore } from "./stores/sessionsStore";
 import { PetStateMachine } from "./pet-state/PetStateMachine";
 import type { AudioMessage, LipSyncMessage } from "./types/messages";
+// W3.3 (relay integration): lazy-mount the relay edition UI only when
+// the active adapter is RelayAuthAdapter. OSS default (`manual` /
+// `null` editions) never instantiates this component, so its presence
+// here is a zero-cost import at build time and a no-op at runtime.
+import { getAuthAdapter } from "./auth";
+import { RelayAuthAdapter } from "./auth/RelayAuthAdapter";
+import { RelayEdition } from "./auth/RelayEdition";
 
 function stripMarkdown(text: string): string {
   return text
@@ -244,6 +251,47 @@ function App() {
   const applySupervisorAlert = useSessionsStore((s) => s.apply_supervisor_alert);
   const clearSupervisorAlert = useSessionsStore((s) => s.clear_supervisor_alert);
   const ensureSession = useSessionsStore((s) => s.ensure);
+  // 2026-05-17 桌宠窗左侧常驻消息面板 —— 复用 MessageStreamPanel。
+  // 消息面板是**独立窗口**。点 ▶消息 = Rust toggle_message_panel
+  // （显↔隐，权威返回新可见态）。`leftPanelOpen` 由 Rust 发的
+  // `message-panel-visibility` 事件驱动（同时覆盖「面板自己的 ◀」），
+  // 用来在面板打开时隐藏桌宠底部 DialogBar（#1/#2）。面板首次打开
+  // 吸附在桌宠左侧；之后可自由拖动/缩放/全屏，桌宠移动不再强拽它
+  // 回来（#4：用户的手动摆放优先于自动吸附）。
+  const [leftPanelOpen, setLeftPanelOpen] = useState(false);
+  const togglePanel = useCallback((next: boolean) => {
+    // next is advisory; Rust is authoritative (it checks is_visible).
+    // The visibility event below syncs leftPanelOpen either way.
+    void next;
+    invoke("toggle_message_panel").catch((e: unknown) =>
+      console.warn("[Pet] message-panel toggle failed:", e),
+    );
+  }, []);
+
+  // Sync leftPanelOpen from the Rust visibility event — fires for the
+  // pet's ▶消息 toggle AND the panel window's own ◀ collapse, so the
+  // DialogBar hide/show is always correct.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const ev = await import("@tauri-apps/api/event");
+        const off = await ev.listen<boolean>(
+          "message-panel-visibility",
+          (e) => setLeftPanelOpen(!!e.payload),
+        );
+        if (cancelled) off();
+        else unlisten = off;
+      } catch (e) {
+        console.warn("[Pet] visibility listen failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
   // Recompute pet state on session change OR every 5s so age_penalty
   // grows even without new events.
   useEffect(() => {
@@ -254,6 +302,29 @@ function App() {
   // Control channel (text chat + interrupt + emotion/action events)
   const { state, lastMessage, sendChatV2, sendInterrupt, getChannel: getControlChannel } =
     useControlChannel(8100, secret);
+
+  // 2026-05-18: 连接(或重连)后从 SessionDB 回灌 default 会话历史，
+  // 使左侧消息面板重启后也显示历史记录（后端 session_messages_load
+  // → session_messages_response，已在上面 lastMessage switch 处理）。
+  const historyLoadedRef = useRef(false);
+  useEffect(() => {
+    if (state !== "connected") {
+      historyLoadedRef.current = false;
+      return;
+    }
+    if (historyLoadedRef.current) return;
+    const ch = getControlChannel();
+    if (!ch) return;
+    try {
+      ch.send({
+        type: "session_messages_load",
+        payload: { session_id: "default", limit: 200 },
+      });
+      historyLoadedRef.current = true;
+    } catch (e) {
+      console.warn("[Pet] session_messages_load send failed:", e);
+    }
+  }, [state, getControlChannel]);
 
   // P4-S20: toggle to route chat through the new tool_use loop
   // P4-S20-LLM-Unified: chat 路径已统一 — backend `chat` 和 `chat_v2`
@@ -327,6 +398,15 @@ function App() {
   // P2-1-S3 — settings panel toggle (cloud account / strategy / daily budget).
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // 2026-05-19 — pet-window error banner. chat_v2_error used to be
+  // pushed as a "⚠ ..." assistant bubble, which then dominated the
+  // bottom DialogBar and visually blocked the pet until the next
+  // message. Now errors surface in a dedicated dismissible banner
+  // pinned to the TOP of the pet column, ABOVE the toolbar — never
+  // over the character. User-dismissed only (no auto-clear: an error
+  // shouldn't silently vanish before the user notices it).
+  const [petError, setPetError] = useState<string | null>(null);
+
   // P2-1-S8 — budget-exceeded toast. Auto-clears after 6s.
   const [budgetToast, setBudgetToast] = useState<string | null>(null);
   const showBudgetToast = useCallback((msg: string) => {
@@ -352,7 +432,6 @@ function App() {
 
   // VN 底栏 —— 最新用户输入（驱动 UserBubble 淡出计时）+ 历史面板开关。
   const [latestUserInput, setLatestUserInput] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
 
   // Audio channel (voice pipeline)
   const {
@@ -431,6 +510,22 @@ function App() {
           },
         ]);
         break;
+      case "session_messages_response": {
+        // 2026-05-18: 重启/连接后从 SessionDB 回灌历史会话 → 左侧消息
+        // 面板显示历史记录（之前只有实时消息，重启即空）。只取
+        // user/assistant（tool 行非对话，streamChat 的 forPet 也会滤）；
+        // 这是权威近 200 条快照，直接替换 messages。
+        const p: any = (lastMessage as any).payload || {};
+        const rows: any[] = Array.isArray(p.messages) ? p.messages : [];
+        const hist = rows
+          .filter((r) => r && (r.role === "user" || r.role === "assistant"))
+          .map((r) => ({
+            role: r.role as "user" | "assistant",
+            text: String(r.text ?? ""),
+          }));
+        setMessages(hist);
+        break;
+      }
       case "chat_v2_error": {
         // P4-S22 fix: render whatever the backend sent — `error`
         // (catch-all path), `detail` (AgentLoop ErrorEvent), or
@@ -439,13 +534,10 @@ function App() {
         const p: any = (lastMessage as any).payload || {};
         const parts = [p.error, p.detail, p.reason].filter(Boolean);
         const msg = parts.length > 0 ? parts.join(" — ") : "unknown";
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            text: `⚠ ${msg}`,
-          },
-        ]);
+        // Surface in the top error banner instead of injecting a
+        // "⚠ ..." assistant bubble that the bottom DialogBar would
+        // then render over the pet persistently.
+        setPetError(msg);
         break;
       }
       case "supervisor_alert": {
@@ -587,20 +679,6 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isPlaying, handleInterrupt]);
 
-  // Escape 关闭对话历史面板 —— 只在 historyOpen 为真时绑定，和上面的
-  // isPlaying-Escape 处理器解耦。两者都只改 state，可以共存：即使同时
-  // 触发也只是关闭面板 + 打断 TTS，都是用户按 Esc 合理期待的"停止"语义。
-  useEffect(() => {
-    if (!historyOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setHistoryOpen(false);
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [historyOpen]);
-
   const toggleRecording = async () => {
     if (isRecording) {
       stopRecording();
@@ -673,6 +751,14 @@ function App() {
     [getControlChannel, clearSupervisorAlert],
   );
 
+  // ── 2026-05-17: streamChat / streamWarnings / streamErrors /
+  // handlePanelJump / handlePanelChoice derivations used to live here
+  // for the in-pet-window message panel. The panel was extracted to a
+  // separate window (commit 9ebd5ca), and the derivations stopped
+  // being consumed in this file. Removed 2026-05-21 to silence
+  // noUnusedLocals — see message-panel/MessagePanelRoot.tsx for the
+  // live versions.
+
   // Bubble background click → open code panel and request focus on this sid.
   const handleBubbleClickBackground = useCallback(
     (sid: string) => {
@@ -694,30 +780,157 @@ function App() {
     [],
   );
 
+  // W3.3 (relay integration): identify the active adapter once. Memoised
+  // by the auth/index.ts singleton, so re-renders are free. We only
+  // mount the relay UI when the adapter is concrete RelayAuthAdapter —
+  // OSS default returns a ManualAuthAdapter and `relayAdapter` is null,
+  // so the JSX guard below is dead code in that build.
+  const relayAdapter = useMemo(() => {
+    const a = getAuthAdapter();
+    return a instanceof RelayAuthAdapter ? a : null;
+  }, []);
+
   return (
     <div
-      // `data-tauri-drag-region` (Tauri 2) makes any mousedown on this
-      // element start a window drag. Children that are interactive
-      // (buttons, inputs, the Live2D canvas with its own pointer events,
-      // any panel with `pointer-events: auto`) automatically swallow the
-      // event before it bubbles up here, so the drag region only kicks
-      // in when the user grabs the truly empty (transparent) shell —
-      // which is exactly the gesture users expect for "move my pet
-      // around the desktop".
-      data-tauri-drag-region
       style={{
+        position: "relative",
         width: "100vw",
         height: "100vh",
         backgroundColor: "transparent",
-        position: "relative",
         overflow: "hidden",
       }}
     >
+      {/* W3.3: relay-edition UI lives entirely under this single
+          conditional. Manual / null editions render zero relay nodes
+          and pay zero runtime cost beyond one instanceof check above. */}
+      {relayAdapter && <RelayEdition adapter={relayAdapter} />}
+
+      {/* 2026-05-19: 消息面板已抽成**独立窗口**（message-panel），不再
+          内嵌于桌宠窗。这里不再渲染 aside —— 桌宠窗保持「仅桌宠、全
+          透明、零死区」。面板的开关 = Rust open/close_message_panel。 */}
+
+      {/* 右侧 = 原桌宠壳：透明 + `data-tauri-drag-region`。所有现有
+          absolute 覆盖层(DialogBar / 输入条 / 气泡 / 弹窗)相对此壳
+          定位，与改造前一致 → 行为零回归。空白透明区拖动 = 移动桌宠。 */}
+      <div
+        data-tauri-drag-region
+        style={{
+          // 2026-05-19: 消息面板已是独立窗口，桌宠窗尺寸恒定（见
+          // tauri.conf.json，永不 resize）。因此桌宠壳直接**铺满整个
+          // 窗口**——不再 right:0+width:282 的「贴右固定宽」（那是旧的
+          // resize 抗抖 hack，留下 18px 死区还让工具栏溢出被裁）。所有
+          // absolute 覆盖层以本壳为定位上下文，宽度=整窗 → 工具栏/
+          // DialogBar 不再裁切，▶ tab 在真正的窗口左缘。
+          position: "absolute",
+          inset: 0,
+          backgroundColor: "transparent",
+          overflow: "hidden",
+        }}
+      >
+      {/* 2026-05-19 — 错误提示条：钉在桌宠列最顶端、工具栏之上，整列
+          通宽，绝不遮挡桌宠人物。用户手动 ✕ 关闭（不自动消失，避免
+          没注意到就没了）。错误同时不再灌进底部 DialogBar。 */}
+      {petError && (
+        <div
+          role="alert"
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 40,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6,
+            padding: "6px 8px",
+            maxHeight: 60,
+            overflowY: "auto",
+            background: "rgba(127, 29, 29, 0.94)",
+            color: "#fecaca",
+            borderBottom: "1px solid rgba(239, 68, 68, 0.55)",
+            backdropFilter: "blur(8px)",
+            fontSize: 11,
+            lineHeight: 1.4,
+          }}
+        >
+          <span style={{ flexShrink: 0 }}>⚠</span>
+          <span
+            data-bp-selectable=""
+            style={{ flex: 1, wordBreak: "break-word", whiteSpace: "pre-wrap" }}
+          >
+            {petError}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPetError(null)}
+            title="关闭"
+            aria-label="关闭错误提示"
+            style={{
+              flexShrink: 0,
+              background: "transparent",
+              border: "none",
+              color: "#fecaca",
+              cursor: "pointer",
+              fontSize: 13,
+              lineHeight: 1,
+              padding: "0 2px",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      {/* 桌宠左缘常驻「▶ 消息」贴标：打开独立消息面板窗口（幂等——
+          已开就是再吸附一次）。面板关闭由它自己的 ◀ 负责，故这里不做
+          开/关切换，避免跨窗状态不同步。drag-region 内 button 会吞拖动
+          所以 stopPropagation。 */}
+      {(
+        <button
+          type="button"
+          onClick={() => togglePanel(true)}
+          onMouseDown={(e) => e.stopPropagation()}
+          title="显示消息面板"
+          aria-label="显示消息面板"
+          // 左边缘垂直居中的小贴标 —— 避开顶部工具栏(记忆/设置等)
+          // 与底部 DialogBar/输入条，不再遮挡「记忆」按钮。
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: 0,
+            transform: "translateY(-50%)",
+            zIndex: 30,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            height: 30,
+            padding: "0 8px 0 6px",
+            background: "rgba(17,21,34,0.82)",
+            color: "#c7d2fe",
+            border: "1px solid rgba(99,102,241,0.34)",
+            borderLeft: "none",
+            borderTopRightRadius: 9,
+            borderBottomRightRadius: 9,
+            fontSize: 11,
+            cursor: "pointer",
+            backdropFilter: "blur(8px)",
+            boxShadow: "2px 2px 10px rgba(0,0,0,0.4)",
+          }}
+        >
+          ▶ 消息
+        </button>
+      )}
+      {/* 收起控件已回归 panel header 最左（清晰固定边缘）。中缝悬浮
+          tab 是糟糕交互（漂在消息内容上、还被裁），已移除。 */}
       <Live2DCanvas
         ref={liveRef}
         modelPath="/assets/live2d/hiyori/Hiyori.model3.json"
         onFpsUpdate={handleFpsUpdate}
         mouthOpenY={mouthOpenY}
+        // pet 区恒为 282 CSS px（= 改造前小窗宽度）。面板开/关时窗口
+        // 物理尺寸变，但 pet 列宽不变 → Hiyori 渲染与窗口/面板状态
+        // 完全解耦，切换不重排、不闪。
+        petWidth={282}
       />
 
       {/* P4-S20 — 权限请求弹窗（最高 zIndex） */}
@@ -783,22 +996,23 @@ function App() {
         onClose={() => setSkillStoreOpen(false)}
       />
 
-      {/* VN 底栏：只展示最新一条助手回复 */}
-      <DialogBar
-        latestAssistant={latestAssistant ? stripMarkdown(latestAssistant) : null}
-        onOpenHistory={() => setHistoryOpen(true)}
-      />
+      {/* #2: 独立消息面板打开时，底部 DialogBar 隐藏（二者职责重叠，
+          避免双重显示）；面板关闭时回到桌宠+底栏形态。leftPanelOpen
+          由 Rust 可见性事件驱动，面板自己的 ◀ 也会同步。 */}
+      {!leftPanelOpen && (
+        <DialogBar
+          latestAssistant={
+            latestAssistant ? stripMarkdown(latestAssistant) : null
+          }
+        />
+      )}
 
       {/* 用户消息 2s 小气泡 */}
       <UserBubble text={latestUserInput} visibleMs={2000} />
 
-      {/* 完整会话历史（点 💬 按钮展开）*/}
-      <ChatHistoryPanel
-        open={historyOpen}
-        messages={messages.map((m) => ({ role: m.role, text: stripMarkdown(m.text) }))}
-        onClose={() => setHistoryOpen(false)}
-      />
-
+      {/* 独立消息面板打开时，桌宠底部输入条（mic+输入框+发送）一并隐藏
+          —— 面板已自带同等输入能力，避免双输入入口并存。 */}
+      {!leftPanelOpen && (
       <div
         style={{
           position: "absolute",
@@ -930,6 +1144,7 @@ function App() {
           发送
         </button>
       </div>
+      )}
 
       {/* Toolbar — P4-S20-UI revamp: token-based, grouped, hover/focus states.
           P4-S21 #7: now includes a Quit (⏻) button so users don't need
@@ -967,6 +1182,7 @@ function App() {
         fps={fps}
         connectionState={state}
         routeKind={routeKind}
+        topOffset={petError ? 66 : undefined}
       />
 
       {/* S14 memory management overlay */}
@@ -1034,6 +1250,7 @@ function App() {
           50% { opacity: 0.7; transform: scale(1.1); }
         }
       `}</style>
+      </div>
     </div>
   );
 }

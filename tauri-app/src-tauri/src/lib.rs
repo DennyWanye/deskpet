@@ -7,6 +7,7 @@ mod backend_launch;
 mod click_through;
 mod commands;
 mod crash_reports;
+mod device;
 mod gpu_check;
 mod paths;
 mod process_manager;
@@ -51,12 +52,32 @@ pub fn run() {
             user_data::open_log_dir,
             user_data::open_app_data_dir,
             user_data::purge_user_data,
+            // 2026-05-21: data-dir relocator (Settings → 数据目录)
+            user_data::get_data_dir_setting,
+            user_data::set_data_dir_preference,
+            user_data::move_data_dir_contents,
             // P2-1-S3: cloud LLM API key commands; UI invokes these from
             // SettingsPanel.
             secrets::set_cloud_api_key,
             secrets::get_cloud_api_key,
             secrets::delete_cloud_api_key,
             secrets::has_cloud_api_key,
+            // W2 (relay integration): per-credential slots for the
+            // closed-source RelayAuthAdapter. OSS build still registers
+            // them — they're harmless if no UI ever invokes them.
+            secrets::set_relay_access_token,
+            secrets::get_relay_access_token,
+            secrets::delete_relay_access_token,
+            secrets::set_relay_refresh_token,
+            secrets::get_relay_refresh_token,
+            secrets::delete_relay_refresh_token,
+            secrets::set_relay_device_key,
+            secrets::get_relay_device_key,
+            secrets::delete_relay_device_key,
+            secrets::clear_all_relay_secrets,
+            // W2: stable device id for the relay's X-Device-Id header.
+            device::get_or_create_device_id,
+            device::get_default_device_name,
             // P4-S21 #1: HTTP proxy from frontend to backend, bypasses
             // webview's https→http mixed-content block.
             commands::update_cloud_config,
@@ -67,6 +88,11 @@ pub fn run() {
             // P4-S23: second-window (code panel) open/close commands.
             commands::open_code_panel,
             commands::close_code_panel,
+            // 2026-05-19: slim message panel as its own docked window.
+            commands::open_message_panel,
+            commands::close_message_panel,
+            commands::dock_message_panel,
+            commands::toggle_message_panel,
         ])
         .setup(|app| {
             // P3-S2: NVIDIA precheck. Phase-3 contract is CUDA-only, so

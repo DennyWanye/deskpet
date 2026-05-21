@@ -63,11 +63,20 @@ export interface ProviderDropdownOption {
 export function build_provider_dropdown_options(
   providers: ProviderEntry[],
 ): ProviderDropdownOption[] {
+  // value=null still means "unpinned / follow the global chain", but the
+  // user wants to SEE the real provider name from Settings → LLM
+  // Providers (e.g. "chinzy"), not an abstract "Global Chain". So when
+  // a chain head exists we label the null option with that provider's
+  // name; only the genuinely-empty case keeps the generic label.
+  const enabled = providers.filter((p) => p.enabled !== false);
+  const head = enabled[0];
   const opts: ProviderDropdownOption[] = [
-    { value: null, label: "Global Chain" },
+    {
+      value: null,
+      label: head ? `${head.name || head.id}（默认）` : "Global Chain",
+    },
   ];
-  for (const p of providers) {
-    if (p.enabled === false) continue;
+  for (const p of enabled) {
     opts.push({ value: p.id, label: p.name || p.id });
   }
   return opts;
@@ -83,7 +92,12 @@ export function format_provider_label(
   provider_id: string | null | undefined,
   providers: ProviderEntry[],
 ): string {
-  if (!provider_id) return "Global Chain";
+  if (!provider_id) {
+    // Unpinned → show the effective chain-head provider's real name
+    // (matches Settings → LLM Providers) instead of "Global Chain".
+    const head = providers.find((p) => p.enabled !== false);
+    return head ? head.name || head.id : "Global Chain";
+  }
   const match = providers.find((p) => p.id === provider_id);
   return match?.name || provider_id;
 }

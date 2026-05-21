@@ -12,7 +12,13 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { useSessionsStore, chatLimiter, severity_score } from "../stores/sessionsStore";
-import type { Message, SessionState, SessionStatus, Todo } from "../stores/sessionsStore";
+import type {
+  CodeModelParams,
+  Message,
+  SessionState,
+  SessionStatus,
+  Todo,
+} from "../stores/sessionsStore";
 import { codePanelWS } from "./ws";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ChangeModelModal } from "./ChangeModelModal";
@@ -44,17 +50,31 @@ export function buildSetProviderMessage(
 
 /** Build the outbound `code_session_set_model` ws message.
  * An empty string is normalised to `null` so the backend treats it as
- * "clear preferred_model" (no accidental empty-string model id). */
+ * "clear preferred_model" (no accidental empty-string model id).
+ *
+ * code-session-model-params S2: optional structured `params`. Back-compat
+ * is load-bearing — when `params` is omitted (legacy free-text callers /
+ * clear-binding) the payload keeps the old `{session_id, model}` shape and
+ * the backend falls back to provider defaults (no model_params row). Only
+ * when the Cursor-style picker passes an explicit dict do we attach it. */
 export function buildSetModelMessage(
   session_id: string,
   model: string | null,
+  params?: CodeModelParams | null,
 ): { type: string; payload: Record<string, unknown> } {
   const normalized = model && model.trim() !== "" ? model : null;
-  return {
-    type: "code_session_set_model",
-    payload: { session_id, model: normalized },
-  };
+  const payload: Record<string, unknown> = { session_id, model: normalized };
+  if (params != null) {
+    payload.params = params;
+  }
+  return { type: "code_session_set_model", payload };
 }
+
+// code-session-model-params: the model dropdown is data-driven from the
+// relay's live /models catalog (see codeModelsStore +
+// buildModelOptionsFromCatalog / capsForModel). The old hardcoded
+// CODE_MODEL_PRESETS / buildModelOptions / buildModelParams were removed —
+// a static preset list was exactly the "mock data" problem.
 
 export interface CardDropdownDisplay {
   label: string;
@@ -300,13 +320,9 @@ function Tile({
 
   const on_provider_change = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const raw = e.target.value;
-    // Sentinel for the "change model" action (kept separate from real
-    // provider ids — guaranteed not to collide because provider ids are
-    // kebab-case, no underscores allowed by Phase 1's validation).
-    if (raw === "__change_model__") {
-      set_show_model_modal(true);
-      return;
-    }
+    // Dropdown is provider-selection ONLY now. Model+params editing
+    // moved to the clickable model chip (next to it). No more
+    // "✏️ 改 model..." sentinel polluting the provider list.
     const next: string | null = raw === "" ? null : raw;
     // Optimistic UI update — backend ack via code_session_provider_set
     // reconciles.
@@ -529,26 +545,38 @@ function Tile({
               {opt.label}
             </option>
           ))}
-          <option value="__change_model__">✏️ 改 model...</option>
         </select>
-        {session.preferred_model && (
-          <span
-            style={{
-              fontSize: 10,
-              color: "#cbd5e1",
-              background: "rgba(37, 99, 235, 0.18)",
-              padding: "1px 5px",
-              borderRadius: 3,
-              maxWidth: 120,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-            title={`preferred_model = ${session.preferred_model}`}
-          >
-            {session.preferred_model}
-          </span>
-        )}
+        {/* Clickable model chip → opens the model+params editor. Always
+            shown (even unbound = "默认模型") so it's discoverable. */}
+        <button
+          type="button"
+          onClick={() => set_show_model_modal(true)}
+          title={
+            session.preferred_model
+              ? `点击编辑模型与参数（当前 ${session.preferred_model}）`
+              : "点击选择模型与参数（当前跟随默认）"
+          }
+          aria-label={`编辑 ${project_name} 的模型与参数`}
+          style={{
+            fontSize: 10,
+            color: session.preferred_model ? "#cbd5e1" : "#94a3b8",
+            background: session.preferred_model
+              ? "rgba(37, 99, 235, 0.22)"
+              : "rgba(148, 163, 184, 0.14)",
+            border: "1px solid rgba(96, 165, 250, 0.35)",
+            padding: "1px 6px",
+            borderRadius: 3,
+            maxWidth: 150,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            cursor: "pointer",
+          }}
+        >
+          {session.preferred_model
+            ? `${session.preferred_model} ✎`
+            : "默认模型 ✎"}
+        </button>
       </div>
 
       {/* Todos block */}
@@ -692,6 +720,7 @@ function Tile({
         <ChangeModelModal
           session_id={session_id}
           current_model={session.preferred_model}
+          current_params={session.model_params}
           onClose={() => set_show_model_modal(false)}
         />
       )}

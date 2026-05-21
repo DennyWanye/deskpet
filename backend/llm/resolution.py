@@ -35,7 +35,42 @@ import copy
 import logging
 from typing import Any
 
+from llm.code_params import code_params_to_request
+
 logger = logging.getLogger("deskpet.llm.resolution")
+
+
+def _attach_code_params(entries: list[Any], model_params: Any) -> None:
+    """Attach the mapped chinzy request fragment to every entry, in-place.
+
+    ``code-session-model-params``: callers read ``entry.code_params``
+    and merge it into the OpenAI-compatible request. Empty/None params →
+    ``{}`` (provider defaults). Pure + total (never raises).
+
+    Model-aware: ``code_params_to_request`` derives ``reasoning_effort``
+    from ``thinking`` (an OpenAI-ism). For a model whose family does NOT
+    expose reasoning_effort (Anthropic / Gemini / DeepSeek …) we strip
+    that key per-entry so a Claude request never carries a meaningless
+    ``reasoning_effort`` field. Capability source = the same family map
+    the picker uses, so UI and wire stay consistent.
+    """
+    base = code_params_to_request(model_params)
+    try:
+        from llm.model_catalog import model_param_caps as _caps
+    except Exception:  # noqa: BLE001 — never let an import break resolution
+        _caps = None
+    for e in entries:
+        frag = dict(base)
+        if _caps is not None and "reasoning_effort" in frag:
+            try:
+                if not _caps(str(getattr(e, "model", "")))["effort"]:
+                    frag.pop("reasoning_effort", None)
+            except Exception:  # noqa: BLE001 — non-fatal, keep frag as-is
+                pass
+        try:
+            e.code_params = frag
+        except Exception:  # noqa: BLE001 — namespace may be slotted; non-fatal
+            pass
 
 
 async def resolve_provider_for_session(
@@ -44,17 +79,19 @@ async def resolve_provider_for_session(
     is_code_session: bool,
     registry: Any,
     session_db: Any,
+    code_default_model: str | None = None,
 ) -> list[Any]:
     """Return the list of ProviderEntry-like objects this session should walk.
 
     :param base_sid: session id (sid base, no role suffix).
-    :param is_code_session: True for code panel sessions (have bindings);
-        False for companion sessions (no binding lookup, ever).
+    :param is_code_session: True for code panel sessions. As of
+        2026-05-19 companion ("default") sessions ALSO honor a binding
+        if one exists; this flag now only gates the code-mode
+        ``code_default_model`` fallback.
     :param registry: an ``LLMProviderRegistry`` instance (or stub with
         the same surface — ``get_chain()``, ``get_entry(id)``).
     :param session_db: a ``SessionDB`` instance (or stub with
-        ``async get_code_session_provider_binding(sid)``). Unused when
-        ``is_code_session`` is False.
+        ``async get_code_session_provider_binding(sid)``).
 
     :return: list of provider entries (shallow copies of the registry's
         ProviderEntry dataclasses). May have their ``model`` field
@@ -63,23 +100,48 @@ async def resolve_provider_for_session(
         actionable error event so we don't have to import the error
         class.
     """
-    # Step 1: companion sessions skip DB lookup entirely.
-    if not is_code_session:
+    # Step 1: read the per-session binding for ANY session.
+    #
+    # 2026-05-19: companion ("default") sessions now ALSO honor a
+    # per-session model/params binding — the user wants the slim
+    # message panel to switch model exactly like Code mode. A session
+    # with NO binding row gets {None,None,None} → plain global chain →
+    # zero behavior change for anyone who never sets a model (so the
+    # earlier "companion untouched" guarantee still holds whenever no
+    # binding exists). ``code_default_model`` stays code-mode-only.
+    if session_db is None:
         return _global_chain_entries(registry)
 
-    # Step 2: read binding for code session.
     binding = await session_db.get_code_session_provider_binding(base_sid)
     provider_id = binding.get("provider_id")
     preferred_model = binding.get("preferred_model")
+    model_params = binding.get("model_params")
 
     # Step 3: pinned provider — single-element chain when it still exists.
     if provider_id:
         entry = registry.get_entry(provider_id)
         if entry is not None and getattr(entry, "enabled", True):
-            pinned = copy.copy(entry)
+            # Normalize to a mutable _ChainEntry so code_params attaches
+            # uniformly even if ProviderEntry is __slots__-ed.
+            pinned = _ChainEntry(
+                id=str(getattr(entry, "id", "")),
+                name=str(getattr(entry, "name", getattr(entry, "id", ""))),
+                base_url=str(getattr(entry, "base_url", "")),
+                model=str(getattr(entry, "model", "")),
+                api_key_ref=str(getattr(entry, "api_key_ref", "")),
+                priority=int(getattr(entry, "priority", 1)),
+                enabled=bool(getattr(entry, "enabled", True)),
+            )
             if preferred_model:
                 pinned.model = preferred_model
-            return [pinned]
+            elif is_code_session and code_default_model:
+                # code-mode default (e.g. gpt-5.5) — code sessions only.
+                # Companion honors an explicit preferred_model binding
+                # but never the code-mode default.
+                pinned.model = code_default_model
+            out = [pinned]
+            _attach_code_params(out, model_params)
+            return out
         # Step 4: pinned-to-deleted (or disabled) — log + fall through.
         logger.info(
             "session_binding_stale sid=%s provider_id=%s "
@@ -92,6 +154,13 @@ async def resolve_provider_for_session(
     if preferred_model:
         for entry in chain:
             entry.model = preferred_model
+    elif is_code_session and code_default_model:
+        # Unbound CODE session → code-mode default model on every chain
+        # entry (Strangler-Fig: caller passes None when knob off →
+        # legacy). Companion never takes the code default.
+        for entry in chain:
+            entry.model = code_default_model
+    _attach_code_params(chain, model_params)
     return chain
 
 
@@ -127,7 +196,7 @@ class _ChainEntry:
 
     __slots__ = (
         "id", "name", "base_url", "model", "api_key_ref",
-        "priority", "enabled",
+        "priority", "enabled", "code_params",
     )
 
     def __init__(
@@ -148,6 +217,8 @@ class _ChainEntry:
         self.api_key_ref = api_key_ref
         self.priority = priority
         self.enabled = enabled
+        # code-session-model-params: filled by _attach_code_params.
+        self.code_params: dict = {}
 
     @classmethod
     def from_dict(cls, d: dict) -> "_ChainEntry":

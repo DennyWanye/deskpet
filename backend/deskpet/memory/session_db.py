@@ -557,19 +557,20 @@ class SessionDB:
     ) -> dict[str, Any]:
         """读取 code 会话的 provider/model override 绑定.
 
-        返回 ``{"provider_id": str|None, "preferred_model": str|None}``。
-        没有 binding 行的 sid 返回 ``{"provider_id": None, "preferred_model": None}``
-        ——上层据此知道"走全局 chain"。
+        返回 ``{"provider_id": str|None, "preferred_model": str|None,
+        "model_params": dict|None}``。没有 binding 行 → 三者全 None。
+        code-session-model-params: model_params 是 008 列的 JSON 解析
+        结果；007 旧行(无该列值) → None（resolution 走 provider 默认）。
 
-        Spec: code-session-provider-binding → Requirement "Resolution algorithm"
-        步骤 1（读 SessionDB）.
+        Spec: code-session-model-params → "Per-code-session model+params
+        binding is persisted"（含 "Legacy row without params stays valid"）.
         """
         if not self._initialized:
             await self.initialize()
 
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
-                "SELECT provider_id, preferred_model "
+                "SELECT provider_id, preferred_model, model_params "
                 "FROM code_session_provider WHERE base_session_id = ?",
                 (base_session_id,),
             )
@@ -577,30 +578,57 @@ class SessionDB:
             await cursor.close()
 
         if row is None:
-            return {"provider_id": None, "preferred_model": None}
-        return {"provider_id": row[0], "preferred_model": row[1]}
+            return {
+                "provider_id": None,
+                "preferred_model": None,
+                "model_params": None,
+            }
+        params: dict[str, Any] | None = None
+        raw = row[2]
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                params = parsed if isinstance(parsed, dict) else None
+            except (ValueError, TypeError):
+                params = None  # 损坏 JSON → 当作无参数，永不报错
+        return {
+            "provider_id": row[0],
+            "preferred_model": row[1],
+            "model_params": params,
+        }
 
     async def set_code_session_provider_binding(
         self,
         base_session_id: str,
         provider_id: str | None,
         preferred_model: str | None,
+        model_params: dict[str, Any] | None = None,
     ) -> None:
-        """写入/更新/清除 code 会话的 provider/model override 绑定.
+        """写入/更新/清除 code 会话的 provider/model(+params) override 绑定.
 
         语义：
-          * 任一字段非 None → upsert 一行
-          * 两字段都 None → 删除该 sid 的 binding 行（如果有）
+          * 任一字段非 None → upsert 一行（model_params JSON 序列化）
+          * 三字段都 None → 删除该 sid 的 binding 行（清除=回全局 chain）
 
-        Spec: code-session-provider-binding → Scenarios
-          "Set provider override creates row"
-          "Set preferred_model without provider keeps chain"
-          "Clear override (set provider_id to null) restores global chain"
+        code-session-model-params: model_params 向后兼容——省略=旧行为。
+
+        Spec: code-session-model-params → Scenarios
+          "Set model + params round-trips"
+          "Clear binding restores global chain"
         """
         if not self._initialized:
             await self.initialize()
 
-        clearing = provider_id is None and preferred_model is None
+        clearing = (
+            provider_id is None
+            and preferred_model is None
+            and model_params is None
+        )
+        params_json = (
+            json.dumps(model_params, ensure_ascii=False)
+            if model_params is not None
+            else None
+        )
 
         async def _do():
             async with self._write_lock:
@@ -616,13 +644,20 @@ class SessionDB:
                         # SQLite UPSERT —— ON CONFLICT(PK) DO UPDATE
                         await db.execute(
                             "INSERT INTO code_session_provider "
-                            "(base_session_id, provider_id, preferred_model, updated_at) "
-                            "VALUES (?, ?, ?, julianday('now')) "
+                            "(base_session_id, provider_id, preferred_model, "
+                            " model_params, updated_at) "
+                            "VALUES (?, ?, ?, ?, julianday('now')) "
                             "ON CONFLICT(base_session_id) DO UPDATE SET "
                             "  provider_id = excluded.provider_id, "
                             "  preferred_model = excluded.preferred_model, "
+                            "  model_params = excluded.model_params, "
                             "  updated_at = excluded.updated_at",
-                            (base_session_id, provider_id, preferred_model),
+                            (
+                                base_session_id,
+                                provider_id,
+                                preferred_model,
+                                params_json,
+                            ),
                         )
                     await db.commit()
 

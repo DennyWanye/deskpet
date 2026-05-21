@@ -41,6 +41,10 @@ tauri-plugin-dialog = "2"
 # http://127.0.0.1 directly under release-build mixed-content rules).
 # Pin to native TLS so we don't drag in OpenSSL on Windows.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# W2 (relay integration): stable device id generation. Used by
+# `device::get_or_create_device_id` for the X-Device-Id header sent
+# to /v1/providers. UUIDv4 is enough; we don't need v7's time-sort.
+uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"

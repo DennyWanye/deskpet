@@ -253,6 +253,9 @@ export function SettingsPanel({
           <HiyoriMotionTuner />
         </section>
 
+        {/* ================ 数据目录 (2026-05-21) ================ */}
+        <DataDirSection />
+
         {/* ================ 危险区 (P3-S9) ================ */}
         <DangerZoneSection />
 
@@ -602,6 +605,326 @@ function DangerZoneSection() {
   );
 }
 
+// ----------------------------------------------------------------------
+// 2026-05-21 — 数据目录设置.
+//
+// Lets the user relocate %AppData%\deskpet to a roomier drive
+// without leaving the app. Persistence is via the user-level
+// `DESKPET_USER_DATA` env var, which `paths::user_data_dir()` reads
+// on every startup (see src-tauri/src/paths.rs §57).
+//
+// Why a separate section vs. nesting under DangerZone: the relocate
+// flow is reversible (you can always set the var back) so it doesn't
+// belong with the truly destructive purge action. We do keep a
+// soft confirmation before kicking off the file copy though, because
+// "I clicked the wrong button and now my chat history moved" is a
+// crap user experience even if it's not technically dangerous.
+// ----------------------------------------------------------------------
+interface DataDirSetting {
+  effective: string;
+  default: string | null;
+  env_override: string | null;
+  effective_exists: boolean;
+  effective_size_bytes: number;
+}
+
+function formatMb(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+  return `${mb.toFixed(1)} MB`;
+}
+
+function DataDirSection() {
+  const [setting, setSetting] = useState<DataDirSetting | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [newPath, setNewPath] = useState("");
+  const [moveData, setMoveData] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [opMsg, setOpMsg] = useState<string | null>(null);
+  const [opErr, setOpErr] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setLoadErr(null);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      const s = await core.invoke<DataDirSetting>("get_data_dir_setting");
+      setSetting(s);
+      // Pre-fill the input with the current effective path so the
+      // user can edit-in-place rather than retype from scratch.
+      if (!newPath) setNewPath(s.effective);
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : String(e));
+    }
+    // Intentionally not depending on newPath — we only want this to
+    // pre-fill on the very first load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const handlePickDir = useCallback(async () => {
+    setOpErr(null);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      const picked = await core.invoke<string | null>("open_directory_dialog");
+      if (picked) setNewPath(picked);
+    } catch (e) {
+      setOpErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const handleApply = useCallback(async () => {
+    setOpErr(null);
+    setOpMsg(null);
+    if (!setting) return;
+    const target = newPath.trim();
+    if (!target) {
+      setOpErr("请先选择或输入新路径");
+      return;
+    }
+    if (target === setting.effective) {
+      setOpErr("新路径与当前路径相同，无需修改");
+      return;
+    }
+    const sizeStr = formatMb(setting.effective_size_bytes);
+    const confirmed = window.confirm(
+      `即将把数据目录切换为：\n${target}\n\n` +
+        (moveData
+          ? `并将现有数据（约 ${sizeStr}）从\n${setting.effective}\n复制并删除原位置文件。\n\n`
+          : "（不移动现有数据 — 旧目录保留，新目录从空开始）\n\n") +
+        "DeskPet 需要重启才能完全生效。继续？",
+    );
+    if (!confirmed) return;
+
+    setBusy(true);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      // Set the env var first so even if the move fails halfway,
+      // the next launch sees the new target and at worst boots empty.
+      const updated = await core.invoke<DataDirSetting>(
+        "set_data_dir_preference",
+        { newPath: target },
+      );
+      setSetting(updated);
+
+      if (moveData && setting.effective_exists && setting.effective !== target) {
+        const moved = await core.invoke<number>("move_data_dir_contents", {
+          src: setting.effective,
+          dst: target,
+        });
+        setOpMsg(
+          `已保存并移动 ${formatMb(moved)} 数据。请重启 DeskPet 让所有进程读到新路径。`,
+        );
+      } else {
+        setOpMsg(
+          "已保存。下次启动时 DeskPet 会从新路径读写。",
+        );
+      }
+    } catch (e) {
+      setOpErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [setting, newPath, moveData]);
+
+  const handleReset = useCallback(async () => {
+    if (!setting) return;
+    const confirmed = window.confirm(
+      "将清除 DESKPET_USER_DATA 环境变量，下次启动 DeskPet 会回到默认目录 " +
+        "（%AppData%\\deskpet）。\n\n" +
+        "注意：现有数据不会被自动搬回去 —— 你需要手动移动，或先在上方填入默认路径并勾选「移动」。\n\n继续？",
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setOpErr(null);
+    setOpMsg(null);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      // Setting to the default path effectively "resets" — we just
+      // write the same value `%AppData%\deskpet` would expand to,
+      // so the env var stays consistent. Simpler than adding a
+      // dedicated "clear env var" command.
+      if (setting.default) {
+        const updated = await core.invoke<DataDirSetting>(
+          "set_data_dir_preference",
+          { newPath: setting.default },
+        );
+        setSetting(updated);
+        setNewPath(updated.effective);
+        setOpMsg("已切回默认目录设置。请重启 DeskPet 生效。");
+      } else {
+        setOpErr("无法识别默认目录（%AppData% 未设置？）");
+      }
+    } catch (e) {
+      setOpErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [setting]);
+
+  if (loadErr) {
+    return (
+      <section style={sectionStyle}>
+        <h3 style={h3Style}>数据目录</h3>
+        <div style={{ ...statusStyle, color: "#b91c1c" }}>
+          加载失败：{loadErr}
+        </div>
+      </section>
+    );
+  }
+  if (!setting) {
+    return (
+      <section style={sectionStyle}>
+        <h3 style={h3Style}>数据目录</h3>
+        <div style={statusStyle}>加载中…</div>
+      </section>
+    );
+  }
+
+  return (
+    <section style={sectionStyle}>
+      <h3 style={h3Style}>数据目录</h3>
+      <p style={hintStyle}>
+        DeskPet 的聊天历史、配置、SQLite 数据库和设备 ID 都保存在这里。
+        如果 C 盘空间紧张，可以搬到其他磁盘。
+      </p>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "auto 1fr",
+          columnGap: 10,
+          rowGap: 4,
+          fontSize: 12,
+        }}
+      >
+        <div style={{ color: "#6b7280" }}>当前生效</div>
+        <div style={{ fontFamily: "monospace" }}>
+          {setting.effective}{" "}
+          <span style={{ color: "#6b7280" }}>
+            ({formatMb(setting.effective_size_bytes)})
+          </span>
+        </div>
+
+        <div style={{ color: "#6b7280" }}>环境变量</div>
+        <div style={{ fontFamily: "monospace" }}>
+          {setting.env_override ?? (
+            <span style={{ color: "#9ca3af" }}>(未设置 — 使用默认路径)</span>
+          )}
+        </div>
+
+        <div style={{ color: "#6b7280" }}>默认路径</div>
+        <div style={{ fontFamily: "monospace", color: "#6b7280" }}>
+          {setting.default ?? "—"}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+        <label style={{ fontSize: 12, color: "#374151" }}>新路径</label>
+        <div style={{ display: "flex", gap: 6 }}>
+          <input
+            type="text"
+            value={newPath}
+            onChange={(e) => setNewPath(e.target.value)}
+            disabled={busy}
+            placeholder="F:\deskpet\data"
+            style={{
+              flex: 1,
+              padding: "5px 8px",
+              borderRadius: 4,
+              border: "1px solid #d1d5db",
+              fontSize: 12,
+              fontFamily: "monospace",
+              outline: "none",
+            }}
+            data-testid="data-dir-input"
+          />
+          <button
+            type="button"
+            onClick={handlePickDir}
+            disabled={busy}
+            style={btnStyle}
+          >
+            浏览…
+          </button>
+        </div>
+        <label
+          style={{
+            display: "flex",
+            gap: 6,
+            alignItems: "center",
+            fontSize: 12,
+            color: "#374151",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={moveData}
+            onChange={(e) => setMoveData(e.target.checked)}
+            disabled={busy}
+          />
+          <span>同时移动现有数据到新位置（推荐）</span>
+        </label>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+        <button
+          type="button"
+          onClick={handleApply}
+          disabled={busy}
+          style={{
+            ...btnStyle,
+            background: "#2563eb",
+            color: "white",
+            borderColor: "#2563eb",
+          }}
+          data-testid="data-dir-apply"
+        >
+          {busy ? "处理中…" : "应用"}
+        </button>
+        <button
+          type="button"
+          onClick={handleReset}
+          disabled={busy}
+          style={btnStyle}
+          data-testid="data-dir-reset"
+        >
+          恢复默认
+        </button>
+        <button
+          type="button"
+          onClick={reload}
+          disabled={busy}
+          style={btnStyle}
+        >
+          刷新
+        </button>
+      </div>
+
+      {opMsg && (
+        <div
+          role="status"
+          style={{
+            ...statusStyle,
+            background: "#ecfdf5",
+            border: "1px solid #a7f3d0",
+            color: "#065f46",
+          }}
+        >
+          {opMsg}
+        </div>
+      )}
+      {opErr && (
+        <div role="alert" style={{ ...statusStyle, color: "#b91c1c" }}>
+          {opErr}
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ---- inline styles (kept local so the panel has no CSS imports to wire) ----
 
 const overlayStyle: React.CSSProperties = {
@@ -657,22 +980,6 @@ const h3Style: React.CSSProperties = {
   fontWeight: 600,
 };
 
-const labelStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "80px 1fr",
-  alignItems: "center",
-  gap: 8,
-  fontSize: 12,
-};
-
-const inputStyle: React.CSSProperties = {
-  padding: "5px 8px",
-  borderRadius: 4,
-  border: "1px solid #d1d5db",
-  fontSize: 12,
-  fontFamily: "inherit",
-  outline: "none",
-};
 
 const btnRowStyle: React.CSSProperties = {
   display: "flex",
@@ -702,12 +1009,3 @@ const hintStyle: React.CSSProperties = {
   margin: 0,
 };
 
-const footerStyle: React.CSSProperties = {
-  borderTop: "1px solid #e5e7eb",
-  paddingTop: 12,
-  marginTop: 14,
-  display: "flex",
-  justifyContent: "flex-end",
-  alignItems: "center",
-  gap: 10,
-};

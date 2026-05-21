@@ -7,8 +7,30 @@ import httpx
 import structlog
 
 from llm.errors import LLMProviderError
+from providers._response_sanitizer import sanitize_response
 
 logger = structlog.get_logger()
+
+
+def _merge_code_params(payload: dict, code_params: dict | None) -> dict:
+    """code-session-model-params: splice the per-session request fragment.
+
+    Top-level keys (e.g. ``reasoning_effort``) are set directly; an
+    ``extra_body`` dict is shallow-merged. Total/pure: empty/None →
+    payload unchanged. Never overrides ``model``/``messages``.
+    """
+    if not code_params:
+        return payload
+    for k, v in code_params.items():
+        if k in ("model", "messages"):
+            continue
+        if k == "extra_body" and isinstance(v, dict):
+            eb = dict(payload.get("extra_body") or {})
+            eb.update(v)
+            payload["extra_body"] = eb
+        else:
+            payload[k] = v
+    return payload
 
 
 class OpenAICompatibleProvider:
@@ -29,11 +51,22 @@ class OpenAICompatibleProvider:
         model: str,
         temperature: float = 0.7,
         timeout: float | None = None,
+        sanitize_inline_cot_dsml: bool = True,
+        code_params: dict | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        # code-session-model-params: per-code-session request fragment
+        # (e.g. {"reasoning_effort":"high","extra_body":{...}}) produced
+        # by llm.code_params; merged into the chat payload. None/{} = no
+        # change (provider defaults / non-code sessions).
+        self.code_params = code_params or {}
+        # 2026-05-17 deepseek-inline-cot-dsml-sanitize Strangler-Fig flag.
+        # Default on; caller (provider registry) passes the config value.
+        # False = byte-for-byte legacy passthrough (demo rollback).
+        self.sanitize_inline_cot_dsml = sanitize_inline_cot_dsml
         # P4-S25 / P5-S2: timeout is a tuple-style budget instead of a single
         # number:
         #   * connect = 10s — TCP + TLS handshake. Bumped 5→10s on 2026-05-11
@@ -142,6 +175,7 @@ class OpenAICompatibleProvider:
             "temperature": temp,
             "max_tokens": max_tokens,
         }
+        payload = _merge_code_params(payload, self.code_params)
         async with self._client(timeout=self.timeout) as client:
             async with client.stream(
                 "POST",
@@ -301,6 +335,7 @@ class OpenAICompatibleProvider:
             "temperature": temp,
             "max_tokens": max_tokens,
         }
+        payload = _merge_code_params(payload, self.code_params)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -558,8 +593,18 @@ class OpenAICompatibleProvider:
         self.last_usage = usage
         # Phase 1.3.4: prompt-cache 命中率埋点（非流路径）。
         _log_cache_hit_rate(usage, where="nonstream")
+        # 2026-05-17: strip inline CoT + extract inline DSML tool calls so
+        # deepseek-v4-pro markup never leaks into write_file content.
+        # Structured reasoning_content/tcs are left untouched.
+        _content, tcs, _extracted = sanitize_response(
+            msg.get("content") or "",
+            tcs,
+            enabled=self.sanitize_inline_cot_dsml,
+        )
+        if _extracted:
+            stop_reason = "tool_use"
         return {
-            "content": msg.get("content") or "",
+            "content": _content,
             "reasoning_content": reasoning_content,
             "tool_calls": tcs,
             "stop_reason": stop_reason,
@@ -617,6 +662,14 @@ class OpenAICompatibleProvider:
             "temperature": temp,
             "max_tokens": max_tokens,
         }
+        payload = _merge_code_params(payload, self.code_params)
+        logger.info(
+            "openai_compat_outbound fn=chat_stream_with_tools model=%s "
+            "reasoning_effort=%s extra_body=%s",
+            payload.get("model"),
+            payload.get("reasoning_effort"),
+            payload.get("extra_body"),
+        )
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -1298,9 +1351,22 @@ class OpenAICompatibleProvider:
         # 记命中率；chinzy 现状常不回该字段 → 记 unknown，绝不崩。
         _log_cache_hit_rate(final_usage, where="stream")
 
+        # 2026-05-17 deepseek-inline-cot-dsml-sanitize: sanitize the
+        # *accumulated* content + recover inline DSML tool calls at the
+        # single final-frame chokepoint (per-delta yields are UI-cosmetic
+        # and intentionally left raw; correctness is this final value the
+        # agent loop / write_file consume). reasoning_content untouched.
+        _content, assembled_tools, _extracted = sanitize_response(
+            full_content,
+            assembled_tools,
+            enabled=self.sanitize_inline_cot_dsml,
+        )
+        if _extracted and final_stop != "tool_use":
+            final_stop = "tool_use"
+
         yield {
             "type": "final",
-            "content": full_content,
+            "content": _content,
             "reasoning_content": full_reasoning,
             "tool_calls": assembled_tools,
             "stop_reason": final_stop,
