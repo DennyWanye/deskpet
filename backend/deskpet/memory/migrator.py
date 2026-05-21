@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 DEFAULT_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # v9 是 P4 的起手目标版本。spec "Schema Migration v8 → v9" 定义。
-TARGET_SCHEMA_VERSION = 16  # code-session-model-params: 008_p5s2_code_session_model_params.sql
+TARGET_SCHEMA_VERSION = 17  # memory-v2: 009_memory_v2_tables.sql
 
 
 class MigrationError(RuntimeError):
@@ -80,6 +80,51 @@ def _safe_timestamp() -> str:
     return now.isoformat().replace(":", "-").split("+")[0]
 
 
+#: Cap on the number of `state.db.bak.*` files retained after each
+#: successful backup. 2026-05-21 incident: a hot loop calling
+#: `initialize_state_db` produced 400+ backups (~20 GB) under
+#: `%AppData%\deskpet\data` before anyone noticed. We now prune
+#: oldest files past this threshold so the worst case is bounded
+#: at MAX_BACKUPS * sizeof(state.db) — ~210 MB at v9 size.
+MAX_BACKUPS = 3
+
+
+def _prune_old_backups(db_path: Path, keep: int = MAX_BACKUPS) -> int:
+    """Delete `state.db.bak.*` siblings of `db_path` past the newest `keep`.
+
+    Pure utility: no DB access, just `Path.glob`. Returns the count
+    deleted so the caller can log a single "pruned N stale backups"
+    line at DEBUG level. Failures (locked file, permission denied)
+    are swallowed because pruning is best-effort — we never want a
+    retention pass to crash the migration path.
+
+    Ordering: sort by **filename** descending rather than by mtime.
+    The filename embeds a UTC ISO8601 timestamp (see
+    ``_safe_timestamp``) which is lexicographically sortable. Sorting
+    by mtime would be wrong because ``shutil.copy2`` preserves the
+    SOURCE's mtime on the backup — so a brand-new bak created from a
+    state.db that hasn't been written to since boot could look
+    "older" than pre-existing baks with newer mtimes. The name sort
+    is unambiguous.
+    """
+    parent = db_path.parent
+    name = db_path.name
+    candidates = sorted(
+        parent.glob(f"{name}.bak.*"),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+    pruned = 0
+    for old in candidates[keep:]:
+        try:
+            old.unlink()
+            pruned += 1
+        except OSError:
+            # Locked / disappeared mid-iteration — fine, try next.
+            continue
+    return pruned
+
+
 async def backup_db(db_path: str | Path) -> Path:
     """复制 ``db_path`` 到 ``<db_path>.bak.<timestamp>`` 并返回备份路径。
 
@@ -87,6 +132,12 @@ async def backup_db(db_path: str | Path) -> Path:
     ——本函数约定只在"库已存在要迁移"时调用，调用方先检查 exists 再调。
 
     失败（权限、磁盘满）直接 raise OSError，由上层处理。
+
+    2026-05-21: After creating the new backup we prune older ones past
+    ``MAX_BACKUPS``. This is intentionally **inside** ``backup_db`` not
+    in the caller — anyone who calls this helper inherits the retention
+    policy automatically, including future migration paths we don't
+    yet have.
     """
     db_path = Path(db_path)
     if not db_path.exists():
@@ -95,7 +146,29 @@ async def backup_db(db_path: str | Path) -> Path:
     # shutil.copy2 保留 mtime；SQLite WAL 附属文件（-wal/-shm）可以不 copy
     # 因为迁移时要求库处于干净 close 状态，WAL 已 checkpoint 回主文件。
     shutil.copy2(db_path, bak_path)
+    pruned = _prune_old_backups(db_path)
+    if pruned:
+        log.debug("pruned %d stale state.db backups", pruned)
     return bak_path
+
+
+async def read_user_version(db_path: str | Path) -> int:
+    """Return ``PRAGMA user_version`` for ``db_path``, or 0 if the DB
+    doesn't exist yet.
+
+    Extracted as a public helper (was inlined inside ``ensure_v9``) so
+    ``initialize_state_db`` can use it to decide whether to do the
+    expensive backup-then-migrate dance at all. When the DB is already
+    at the target version, both backup and migration are no-ops; we
+    skip both to keep the on-disk backup count bounded.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return 0
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("PRAGMA user_version")
+        row = await cursor.fetchone()
+    return int(row[0]) if row else 0
 
 
 async def run_migrations(

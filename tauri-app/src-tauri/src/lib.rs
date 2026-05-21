@@ -52,6 +52,10 @@ pub fn run() {
             user_data::open_log_dir,
             user_data::open_app_data_dir,
             user_data::purge_user_data,
+            // 2026-05-21: data-dir relocator (Settings → 数据目录)
+            user_data::get_data_dir_setting,
+            user_data::set_data_dir_preference,
+            user_data::move_data_dir_contents,
             // P2-1-S3: cloud LLM API key commands; UI invokes these from
             // SettingsPanel.
             secrets::set_cloud_api_key,
