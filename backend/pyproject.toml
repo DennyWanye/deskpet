@@ -65,6 +65,11 @@ dependencies = [
     # P4-S5: web tool suite — selectolax is a fast lxml-free HTML parser
     # used by web_crawl for TF-based keyword scoring on titles + body.
     "selectolax>=0.3",
+    # 2026-05-22 ppt-generate skill: local .pptx generation. python-pptx
+    # is pure-Python (no native deps), PyInstaller-friendly, ships as a
+    # ~600KB wheel. Used by deskpet.tools.ppt_tools — gracefully degrades
+    # to a Markdown fallback when missing.
+    "python-pptx>=1.0",
     # P4-S9: MCP client (Model Context Protocol). Lets DeskPet spawn/talk
     # to stdio MCP servers (filesystem, weather, ...) via the official SDK.
     "mcp>=1.0",
