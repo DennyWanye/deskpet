@@ -574,7 +574,7 @@ describe("RelayAuthAdapter.logout", () => {
   it("still clears local state even if /logout fails", async () => {
     const bindings = makeBindings();
     let calls = 0;
-    const fetchImpl = vi.fn(async (url: string) => {
+    const fetchImpl = vi.fn(async (_url: string) => {
       calls += 1;
       if (calls === 1) {
         return mkResponse({ body: { ...SAMPLE_TOKENS, user: SAMPLE_USER } });

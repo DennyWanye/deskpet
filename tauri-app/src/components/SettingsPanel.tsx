@@ -657,22 +657,6 @@ const h3Style: React.CSSProperties = {
   fontWeight: 600,
 };
 
-const labelStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "80px 1fr",
-  alignItems: "center",
-  gap: 8,
-  fontSize: 12,
-};
-
-const inputStyle: React.CSSProperties = {
-  padding: "5px 8px",
-  borderRadius: 4,
-  border: "1px solid #d1d5db",
-  fontSize: 12,
-  fontFamily: "inherit",
-  outline: "none",
-};
 
 const btnRowStyle: React.CSSProperties = {
   display: "flex",
@@ -702,12 +686,3 @@ const hintStyle: React.CSSProperties = {
   margin: 0,
 };
 
-const footerStyle: React.CSSProperties = {
-  borderTop: "1px solid #e5e7eb",
-  paddingTop: 12,
-  marginTop: 14,
-  display: "flex",
-  justifyContent: "flex-end",
-  alignItems: "center",
-  gap: 10,
-};

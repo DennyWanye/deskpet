@@ -1,11 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
-import {
-  MessageStreamPanel,
-  type StreamFilter,
-} from "./components/MessageStreamPanel";
-import { collect_inbox } from "./stores/sessionsStore";
-import { forPet } from "./petText";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { ContextTracePanel } from "./components/ContextTracePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -258,9 +252,6 @@ function App() {
   const clearSupervisorAlert = useSessionsStore((s) => s.clear_supervisor_alert);
   const ensureSession = useSessionsStore((s) => s.ensure);
   // 2026-05-17 桌宠窗左侧常驻消息面板 —— 复用 MessageStreamPanel。
-  const dismissAlert = useSessionsStore((s) => s.dismiss_alert);
-  const dismissAllAlerts = useSessionsStore((s) => s.dismiss_all_alerts);
-  const [streamFilter, setStreamFilter] = useState<StreamFilter>("all");
   // 消息面板是**独立窗口**。点 ▶消息 = Rust toggle_message_panel
   // （显↔隐，权威返回新可见态）。`leftPanelOpen` 由 Rust 发的
   // `message-panel-visibility` 事件驱动（同时覆盖「面板自己的 ◀」），
@@ -760,61 +751,13 @@ function App() {
     [getControlChannel, clearSupervisorAlert],
   );
 
-  // ── 2026-05-17 左侧常驻消息面板数据/接线（照搬 CodePanelRoot 模式）──
-  // 主线程聊天流：messages.flatMap + forPet（滤 <think>/工具 trace，剥
-  // think），合成 ts（store 不带 ts，按序回推）。
-  const streamChat = useMemo(
-    () =>
-      messages.flatMap((m, i) => {
-        const ts = Date.now() - (messages.length - i) * 1000;
-        if (m.role === "user") {
-          return [{ role: "user" as const, text: m.text ?? "", ts }];
-        }
-        const clean = forPet(m.text);
-        if (!clean) return [];
-        return [{ role: "assistant" as const, text: clean, ts }];
-      }),
-    [messages],
-  );
-  const streamWarnings = useMemo(
-    () => collect_inbox(sessions, "yellow"),
-    [sessions],
-  );
-  const streamErrors = useMemo(
-    () => collect_inbox(sessions, "red"),
-    [sessions],
-  );
-  // 桌宠是单主线程：跳转 = 打开完整历史面板兜底。
-  // 桌宠单主线程：原"历史按钮"弹窗已撤，历史信息即在本消息面板内
-  // 展示。jump = 确保面板可见（而非再开独立弹窗）。
-  const handlePanelJump = useCallback(() => togglePanel(true), [togglePanel]);
-  const handlePanelChoice = useCallback(
-    (
-      sid: string,
-      alert_id: string,
-      button_index: number,
-      button_text: string,
-    ) => {
-      const ch = getControlChannel();
-      if (ch) {
-        ch.send({
-          type: "supervisor_user_choice",
-          payload: {
-            session_id: sid,
-            alert_id,
-            button_index,
-            button_text,
-          },
-        });
-      }
-      dismissAlert(sid, alert_id);
-      const cur = sessions[sid]?.supervisor_alert;
-      if (cur && cur.alert_id === alert_id) {
-        clearSupervisorAlert(sid);
-      }
-    },
-    [getControlChannel, dismissAlert, clearSupervisorAlert, sessions],
-  );
+  // ── 2026-05-17: streamChat / streamWarnings / streamErrors /
+  // handlePanelJump / handlePanelChoice derivations used to live here
+  // for the in-pet-window message panel. The panel was extracted to a
+  // separate window (commit 9ebd5ca), and the derivations stopped
+  // being consumed in this file. Removed 2026-05-21 to silence
+  // noUnusedLocals — see message-panel/MessagePanelRoot.tsx for the
+  // live versions.
 
   // Bubble background click → open code panel and request focus on this sid.
   const handleBubbleClickBackground = useCallback(

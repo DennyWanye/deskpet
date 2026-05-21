@@ -127,19 +127,20 @@ export function MessagePanelRoot() {
 
   // Same companion-stream derivation as App.tsx (strip <think>/tool
   // trace via forPet; synth ts since the store has none).
-  const chatMessages = useMemo(
-    () =>
-      messages.flatMap((m, i) => {
-        const ts = Date.now() - (messages.length - i) * 1000;
-        if (m.role === "user") {
-          return [{ role: "user" as const, text: m.text ?? "", ts }];
-        }
-        const clean = forPet(m.text);
-        if (!clean) return [];
-        return [{ role: "assistant" as const, text: clean, ts }];
-      }),
-    [messages],
-  );
+  const chatMessages = useMemo(() => {
+    type ChatItem = { role: "user" | "assistant"; text: string; ts: number };
+    const out: ChatItem[] = [];
+    messages.forEach((m, i) => {
+      const ts = Date.now() - (messages.length - i) * 1000;
+      if (m.role === "user") {
+        out.push({ role: "user", text: m.text ?? "", ts });
+        return;
+      }
+      const clean = forPet(m.text);
+      if (clean) out.push({ role: "assistant", text: clean, ts });
+    });
+    return out;
+  }, [messages]);
   const warnings = useMemo<InboxItem[]>(
     () => collect_inbox(sessions, "yellow"),
     [sessions],
