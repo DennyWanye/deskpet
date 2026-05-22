@@ -323,3 +323,48 @@ def test_ppt_create_json_string_outline(out_path: Path) -> None:
     result = ppt_create(raw, output_path=str(out_path))
     assert result["ok"] is True
     assert result["slide_count"] == 2
+
+
+# --- T7: chart layout enhancement (beta builtin skills) ----------------
+
+@pytestmark_pptx
+def test_t7_2_chart_layout_renders(out_path: Path) -> None:
+    outline = [{
+        "layout": "chart",
+        "title": "季度营收",
+        "chart": {
+            "type": "bar",
+            "categories": ["Q1", "Q2", "Q3"],
+            "series": [{"name": "营收", "values": [10, 20, 15]}],
+        },
+    }]
+    result = ppt_create(outline, output_path=str(out_path))
+    assert result["ok"] is True
+    prs = ppt._Presentation(str(out_path))
+    slide = prs.slides[0]
+    assert any(shape.has_chart for shape in slide.shapes)
+
+
+@pytestmark_pptx
+def test_t7_3_chart_line_and_pie(out_path: Path) -> None:
+    for ctype in ("line", "pie"):
+        outline = [{
+            "layout": "chart",
+            "title": ctype,
+            "chart": {
+                "type": ctype,
+                "categories": ["A", "B"],
+                "series": [{"name": "s", "values": [1, 2]}],
+            },
+        }]
+        result = ppt_create(outline, output_path=str(out_path))
+        assert result["ok"] is True, ctype
+
+
+@pytestmark_pptx
+def test_t7_4_chart_missing_data_degrades(out_path: Path) -> None:
+    # No categories/series → must degrade to bullets, not crash.
+    outline = [{"layout": "chart", "title": "空图表", "bullets": ["要点A"]}]
+    result = ppt_create(outline, output_path=str(out_path))
+    assert result["ok"] is True
+    assert result["slide_count"] == 1

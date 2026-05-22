@@ -34,9 +34,17 @@ JSON outline schema（list of slide dicts，**每一页一个 dict**）：
                             "left_title":  "A 方案", "left":  ["..."],
                             "right_title": "B 方案", "right": ["..."]},
   {"layout": "quote",      "quote": "原句", "cite": "出处"},
-  {"layout": "image",      "title": "...", "image_path": "/abs/path.png", "caption": "图说"}
+  {"layout": "image",      "title": "...", "image_path": "/abs/path.png", "caption": "图说"},
+  {"layout": "chart",      "title": "季度营收",
+                            "chart": {"type": "bar",
+                                      "categories": ["Q1", "Q2", "Q3"],
+                                      "series": [{"name": "营收", "values": [10, 20, 15]}]}}
 ]
 ```
+
+**用好 `chart` 布局**：有数字对比/趋势/占比时，用 `chart` 而不是把数字堆进
+bullet —— `type` 选 `bar`(对比) / `line`(趋势) / `pie`(占比)。数据型 PPT
+至少应有一张图表页。
 
 **严格的内容质量要求**：
 

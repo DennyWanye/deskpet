@@ -61,15 +61,18 @@ try:  # pragma: no cover — import probe
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
     from pptx.enum.dml import MSO_FILL_TYPE
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
     _HAS_PPTX = True
 except ImportError:  # pragma: no cover
     _Presentation = None  # type: ignore
     Inches = Pt = Emu = RGBColor = MSO_SHAPE = PP_ALIGN = MSO_ANCHOR = MSO_FILL_TYPE = None  # type: ignore
+    CategoryChartData = XL_CHART_TYPE = XL_LEGEND_POSITION = None  # type: ignore
     _HAS_PPTX = False
 
 
 VALID_LAYOUTS = (
-    "title", "section", "bullet", "two_column", "image", "quote", "toc",
+    "title", "section", "bullet", "two_column", "image", "quote", "toc", "chart",
 )
 VALID_THEMES = ("minimal", "dark", "playful")
 
@@ -99,6 +102,9 @@ class SlideOutline:
     quote: str = ""
     cite: str = ""
     # toc — uses bullets[]
+    # chart: {"type": "bar"|"line"|"pie", "categories": [...],
+    #         "series": [{"name": "...", "values": [...]}, ...]}
+    chart: Optional[dict] = None
     # generic
     notes: str = ""  # speaker notes
 
@@ -121,6 +127,7 @@ class SlideOutline:
             caption=(self.caption or "").strip(),
             quote=(self.quote or "").strip(),
             cite=(self.cite or "").strip(),
+            chart=(self.chart if isinstance(self.chart, dict) else None),
             notes=(self.notes or "").strip(),
         )
 
@@ -674,6 +681,84 @@ def _render_toc(slide, outline: SlideOutline, theme: Theme) -> None:
         body.font.color.rgb = _rgb(theme.text_rgb)
 
 
+def _render_chart(slide, outline: SlideOutline, theme: Theme) -> None:
+    """Native PowerPoint chart slide (bar / line / pie).
+
+    ``outline.chart`` shape::
+
+        {"type": "bar"|"line"|"pie",
+         "categories": ["Q1", "Q2", ...],
+         "series": [{"name": "营收", "values": [10, 20, ...]}, ...]}
+
+    Missing / malformed data degrades to a bullet layout so the deck
+    never aborts on one bad slide.
+    """
+    _fill_slide_bg(slide, theme)
+    _add_accent_bar(slide, theme)
+    _add_text(
+        slide, outline.title or "(图表)",
+        left=Inches(0.6), top=Inches(0.4),
+        width=Inches(8.8), height=Inches(0.7),
+        font_size=28, bold=True,
+        color=theme.primary_rgb,
+        font_name=theme.font_heading,
+    )
+
+    spec = outline.chart or {}
+    categories = spec.get("categories") or []
+    series = [s for s in (spec.get("series") or []) if isinstance(s, dict)]
+    if not categories or not series:
+        _add_bullet_text(
+            slide, outline.bullets or ["（图表数据缺失，已降级为要点）"],
+            left=Inches(0.7), top=Inches(1.6),
+            width=Inches(8.6), height=Inches(3.8),
+            font_size=18, color=theme.text_rgb,
+            font_name=theme.font_body, accent_color=theme.accent_rgb,
+        )
+        return
+
+    ctype = str(spec.get("type") or "bar").lower()
+    xl_type = {
+        "bar": XL_CHART_TYPE.COLUMN_CLUSTERED,
+        "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
+        "line": XL_CHART_TYPE.LINE_MARKERS,
+        "pie": XL_CHART_TYPE.PIE,
+    }.get(ctype, XL_CHART_TYPE.COLUMN_CLUSTERED)
+
+    chart_data = CategoryChartData()
+    chart_data.categories = [str(c) for c in categories]
+    for s in series:
+        name = str(s.get("name") or "系列")
+        raw_values = s.get("values") or []
+        values: list[float] = []
+        for v in raw_values:
+            try:
+                values.append(float(v))
+            except (TypeError, ValueError):
+                values.append(0.0)
+        chart_data.add_series(name, tuple(values))
+
+    try:
+        gframe = slide.shapes.add_chart(
+            xl_type,
+            Inches(0.8), Inches(1.5), Inches(8.4), Inches(3.5),
+            chart_data,
+        )
+        chart = gframe.chart
+        chart.has_legend = True
+        chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+        chart.legend.include_in_layout = False
+    except Exception as exc:  # noqa: BLE001 — degrade rather than abort
+        log.warning("chart render failed, degrading to bullets: %s", exc)
+        _add_bullet_text(
+            slide, outline.bullets or [f"{s.get('name')}" for s in series],
+            left=Inches(0.7), top=Inches(1.6),
+            width=Inches(8.6), height=Inches(3.8),
+            font_size=18, color=theme.text_rgb,
+            font_name=theme.font_body, accent_color=theme.accent_rgb,
+        )
+
+
 _RENDERERS = {
     "title": _render_title,
     "section": _render_section,
@@ -682,6 +767,7 @@ _RENDERERS = {
     "image": _render_image,
     "quote": _render_quote,
     "toc": _render_toc,
+    "chart": _render_chart,
 }
 
 
