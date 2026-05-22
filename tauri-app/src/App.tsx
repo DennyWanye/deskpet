@@ -13,6 +13,12 @@ import { usePermissionRequests } from "./hooks/usePermissionRequests";
 import { PermissionPopup } from "./components/PermissionPopup";
 import { SkillStorePanel } from "./components/SkillStorePanel";
 import { Toolbar } from "./components/Toolbar";
+// WI-01/02 (beta-100): first-run onboarding wizard + in-app feedback.
+import { OnboardingWizard } from "./components/OnboardingWizard";
+import { FeedbackPanel } from "./components/FeedbackPanel";
+import { onboardingStatus, onboardingComplete } from "./bindings/onboarding";
+import { buildDiagnosticBundle } from "./bindings/diagnostics";
+import { updateCloudConfig } from "./bindings/config";
 import { CodeModePanel } from "./components/CodeModePanel";
 import { PetSupervisorBubble } from "./components/PetSupervisorBubble";
 import { PetDebugOverlay } from "./components/PetDebugOverlay";
@@ -397,6 +403,28 @@ function App() {
 
   // P2-1-S3 — settings panel toggle (cloud account / strategy / daily budget).
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // WI-01 (beta-100): first-run onboarding. `onboardingNeeded` flips
+  // true only when Rust reports no completion marker. Conservative on
+  // error (stay false) so a path-resolution hiccup never traps the
+  // user in a wizard.
+  const [onboardingNeeded, setOnboardingNeeded] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    onboardingStatus()
+      .then((s) => {
+        if (!cancelled) setOnboardingNeeded(s.status === "needs_onboarding");
+      })
+      .catch(() => {
+        /* conservative: never show the wizard if status can't be read */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // WI-02 (beta-100): in-app feedback panel visibility.
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   // 2026-05-19 — pet-window error banner. chat_v2_error used to be
   // pushed as a "⚠ ..." assistant bubble, which then dominated the
@@ -1154,6 +1182,7 @@ function App() {
         onTrace={() => setTraceOpen(true)}
         onSettings={() => setSettingsOpen(true)}
         onSkillStore={() => setSkillStoreOpen(true)}
+        onFeedback={() => setFeedbackOpen(true)}
         onExit={handleBootExit}
         onCodeMode={() => {
           // P4-S23 UX fix: clicking 🔧 just opens the Code panel
@@ -1242,6 +1271,44 @@ function App() {
         onOpenLogDir={handleBootOpenLog}
         onExit={handleBootExit}
       />
+
+      {/* WI-01 (beta-100) — first-run onboarding wizard. Shows only on a
+          brand-new install (no completion marker). "Test connection"
+          reuses the existing update_cloud_config IPC — a successful
+          test also persists the config, so the user isn't asked to
+          save separately. */}
+      {onboardingNeeded && (
+        <OnboardingWizard
+          onTestConnection={async (cfg) => {
+            try {
+              const r = await updateCloudConfig("", {
+                base_url: cfg.base_url,
+                model: cfg.model,
+                api_key: cfg.api_key,
+              });
+              return { ok: !!r.ok };
+            } catch (e) {
+              return { ok: false, error: String(e) };
+            }
+          }}
+          onComplete={() => {
+            void onboardingComplete("0.6.0-beta").catch(() => {});
+            setOnboardingNeeded(false);
+          }}
+          onSkip={() => {
+            void onboardingComplete("0.6.0-beta").catch(() => {});
+            setOnboardingNeeded(false);
+          }}
+        />
+      )}
+
+      {/* WI-02 (beta-100) — in-app feedback / diagnostic bundle panel. */}
+      {feedbackOpen && (
+        <FeedbackPanel
+          onBuildBundle={(note) => buildDiagnosticBundle(note)}
+          onClose={() => setFeedbackOpen(false)}
+        />
+      )}
 
       {/* Pulse animation for recording button */}
       <style>{`

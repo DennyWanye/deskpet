@@ -173,3 +173,81 @@ async def test_hook_denies_cloud_when_budget_is_zero():
         # Local is still free even when cloud is hard-disabled.
         decision_local = await hook(BudgetContext(route="local", model="any"))
         assert decision_local.allow is True
+
+
+# ----------------------------------------------------------------------
+# WI-04 (beta-100) — 80% budget early-warning
+# ----------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def small_budget_ledger():
+    """Ledger with a tiny 1.0 CNY budget so a couple of records cross 80%."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "billing.db"
+        # price 1.0 CNY / 1M tokens → cost = total_tokens / 1e6.
+        # 500K tokens = 0.5 CNY = 50% of the 1.0 budget. Clean math.
+        l = BillingLedger(
+            db_path=db,
+            pricing={"m": 1.0},
+            unknown_model_price_cny_per_m_tokens=1.0,
+            daily_budget_cny=1.0,
+        )
+        await l.init()
+        yield l
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_under_threshold_no_warn(small_budget_ledger):
+    # 0.5 CNY spent = 50% of 1.0 budget → no warning
+    await small_budget_ledger.record("cloud", "m", 250_000, 250_000)
+    r = await small_budget_ledger.check_budget_warning(today_override="2026-05-22")
+    assert r["warn"] is False
+    assert 49 < r["percent_used"] < 51
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_crosses_80_warns_once(small_budget_ledger):
+    # 0.85 CNY = 85% → first call warns
+    await small_budget_ledger.record("cloud", "m", 500_000, 350_000)
+    r1 = await small_budget_ledger.check_budget_warning(today_override="2026-05-22")
+    assert r1["warn"] is True
+    assert r1["percent_used"] >= 80.0
+    # Same day, still over 80% → must NOT warn again
+    r2 = await small_budget_ledger.check_budget_warning(today_override="2026-05-22")
+    assert r2["warn"] is False
+    # Next day → warns again
+    r3 = await small_budget_ledger.check_budget_warning(today_override="2026-05-23")
+    assert r3["warn"] is True
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_zero_budget_never_warns(ledger):
+    """daily_budget_cny<=0 means unlimited — never warn, but still report."""
+    zero = BillingLedger(
+        db_path=ledger._db_path,
+        pricing={},
+        unknown_model_price_cny_per_m_tokens=20.0,
+        daily_budget_cny=0.0,
+    )
+    await zero.init()
+    await zero.record("cloud", "anything", 1_000_000, 1_000_000)
+    r = await zero.check_budget_warning(today_override="2026-05-22")
+    assert r["warn"] is False
+    assert r["spent_today_cny"] > 0  # running total still reported
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_exact_80_boundary(small_budget_ledger):
+    # Exactly 0.80 CNY = 80.0% → boundary is inclusive (>=)
+    await small_budget_ledger.record("cloud", "m", 400_000, 400_000)
+    r = await small_budget_ledger.check_budget_warning(today_override="2026-05-22")
+    assert r["percent_used"] == pytest.approx(80.0)
+    assert r["warn"] is True
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_fields_present(small_budget_ledger):
+    r = await small_budget_ledger.check_budget_warning(today_override="2026-05-22")
+    for key in ("warn", "spent_today_cny", "daily_budget_cny", "percent_used"):
+        assert key in r

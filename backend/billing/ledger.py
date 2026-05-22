@@ -69,6 +69,11 @@ class BillingLedger:
         self._daily_budget = daily_budget_cny
         self._tz = tz
         self._lock = asyncio.Lock()
+        # WI-04 (beta-100): the 80%-budget early-warning is fired at most
+        # once per local day. We remember the last day we warned in-process
+        # — a backend restart resets it, which is acceptable (re-warning
+        # once after a restart is harmless, and never warning is worse).
+        self._last_warned_date: str | None = None
 
     async def init(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,6 +156,52 @@ class BillingLedger:
             # Exposed so the frontend can show which clock the rollover
             # uses (debugging a disputed "why is my budget still X?" trip).
             "tz": str(self._tz),
+        }
+
+    # WI-04 budget-warning threshold: warn the user once they cross this
+    # fraction of the daily budget, so they're not blindsided by the hard
+    # 100% block (which `create_hook` enforces).
+    WARN_THRESHOLD_PCT: float = 80.0
+
+    async def check_budget_warning(
+        self, *, today_override: str | None = None,
+    ) -> dict:
+        """WI-04 — decide whether to fire the 80%-budget early warning.
+
+        Returns ``{"warn", "spent_today_cny", "daily_budget_cny",
+        "percent_used"}``. ``warn`` is True at most **once per local
+        day**: the first call that observes ``percent_used >= 80`` flips
+        it True and records the day; subsequent same-day calls return
+        False even while still over 80%.
+
+        Contract notes:
+          * ``daily_budget_cny <= 0`` (unlimited / unconfigured) →
+            ``warn`` is always False; we still report ``spent`` so the
+            settings panel can show the running total.
+          * The hard 100% block is a *separate* mechanism — see
+            :meth:`create_hook`. This method never blocks anything.
+          * ``today_override`` lets tests pin the local day without
+            monkey-patching the clock.
+        """
+        spent = await self.spent_today_cny()
+        budget = self._daily_budget
+        if budget <= 0:
+            return {
+                "warn": False,
+                "spent_today_cny": spent,
+                "daily_budget_cny": budget,
+                "percent_used": 0.0,
+            }
+        pct = (spent / budget) * 100.0
+        today = today_override or datetime.now(self._tz).date().isoformat()
+        warn = pct >= self.WARN_THRESHOLD_PCT and self._last_warned_date != today
+        if warn:
+            self._last_warned_date = today
+        return {
+            "warn": warn,
+            "spent_today_cny": spent,
+            "daily_budget_cny": budget,
+            "percent_used": pct,
         }
 
     def create_hook(self) -> BudgetHook:

@@ -23,6 +23,8 @@ interface Props {
   onTrace: () => void;
   onSettings: () => void;
   onSkillStore: () => void;
+  /** WI-02 (beta-100): open the in-app feedback / diagnostic panel. */
+  onFeedback: () => void;
   /** P4-S21 #7: invoked when user clicks the Quit (⏻) button. */
   onExit: () => void;
   /** P4-S22: open Code mode entry flow (folder picker + IPC). */
@@ -48,6 +50,7 @@ export const Toolbar: React.FC<Props> = ({
   onTrace,
   onSettings,
   onSkillStore,
+  onFeedback,
   onExit,
   onCodeMode,
   codeModeActive,
@@ -100,6 +103,11 @@ export const Toolbar: React.FC<Props> = ({
         onClick={onSkillStore}
       >
         🏪
+      </IconButton>
+      {/* WI-02 (beta-100): in-app feedback — package crash reports +
+          logs into a redacted zip for the beta channel. */}
+      <IconButton title="反馈问题" testId="feedback-toggle" onClick={onFeedback}>
+        🐞
       </IconButton>
       {/* P4-S22: Code mode entry. Click → folder picker → enters Code
           mode for the chosen project. When active, button shows green

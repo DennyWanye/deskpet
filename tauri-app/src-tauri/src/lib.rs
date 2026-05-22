@@ -8,7 +8,9 @@ mod click_through;
 mod commands;
 mod crash_reports;
 mod device;
+mod diagnostics;
 mod gpu_check;
+mod onboarding;
 mod paths;
 mod process_manager;
 mod secrets;
@@ -93,6 +95,11 @@ pub fn run() {
             commands::close_message_panel,
             commands::dock_message_panel,
             commands::toggle_message_panel,
+            // WI-01 (beta-100): first-run onboarding state.
+            onboarding::onboarding_status,
+            onboarding::onboarding_complete,
+            // WI-02 (beta-100): diagnostic feedback bundle.
+            diagnostics::build_diagnostic_bundle,
         ])
         .setup(|app| {
             // P3-S2: NVIDIA precheck. Phase-3 contract is CUDA-only, so
