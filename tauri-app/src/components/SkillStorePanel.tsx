@@ -15,6 +15,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
+import { Icon, type IconName } from "./Icon";
 import type { ControlChannel } from "../ws/ControlChannel";
 import type {
   MarketplaceSkill,
@@ -255,44 +256,65 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
             gap: tokens.space.md,
           }}
         >
-          <div style={{ flex: 1 }}>
-            <div
+          <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 11 }}>
+            <span
               style={{
-                fontSize: tokens.text.xs.size,
-                color: tokens.color.neutral[500],
-                fontWeight: tokens.weight.medium,
-                marginBottom: 2,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 36,
+                height: 36,
+                borderRadius: 11,
+                background: "linear-gradient(180deg,#eff6ff,#dbeafe)",
+                color: "#2563eb",
+                flexShrink: 0,
               }}
             >
-              SkillStore
+              <Icon name="store" size={20} />
+            </span>
+            <div>
+              <div
+                style={{
+                  fontSize: tokens.text.xs.size,
+                  color: tokens.color.neutral[500],
+                  fontWeight: tokens.weight.medium,
+                  marginBottom: 1,
+                }}
+              >
+                SkillStore
+              </div>
+              <h2
+                id="skill-store-title"
+                style={{
+                  margin: 0,
+                  fontSize: tokens.text.xl.size,
+                  fontWeight: tokens.weight.bold,
+                  color: tokens.color.neutral[900],
+                }}
+              >
+                技能商店
+              </h2>
             </div>
-            <h2
-              id="skill-store-title"
-              style={{
-                margin: 0,
-                fontSize: tokens.text.xl.size,
-                fontWeight: tokens.weight.semibold,
-                color: tokens.color.neutral[900],
-              }}
-            >
-              技能商店
-            </h2>
           </div>
           <button
             type="button"
-            className="bp-btn-ghost"
             onClick={onClose}
             style={{
-              ...buttonStyle("ghost", "sm"),
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
               width: 32,
               height: 32,
               padding: 0,
-              fontSize: tokens.text.xl.size,
+              borderRadius: 9,
+              background: tokens.color.neutral[100],
+              border: `1px solid ${tokens.color.neutral[200]}`,
               color: tokens.color.neutral[500],
+              cursor: "pointer",
             }}
             aria-label="关闭"
           >
-            ✕
+            <Icon name="close" size={16} />
           </button>
         </div>
 
@@ -346,14 +368,13 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
                 onClick={() => setAlert(null)}
                 style={{
                   ...buttonStyle("ghost", "sm"),
-                  padding: "0 6px",
-                  fontSize: tokens.text.md.size,
+                  padding: 4,
                   color: "currentColor",
-                  opacity: 0.6,
+                  opacity: 0.65,
                 }}
                 aria-label="关闭提示"
               >
-                ✕
+                <Icon name="close" size={14} />
               </button>
             </div>
           </div>
@@ -406,7 +427,7 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
 
 // ---------- Installed list ----------
 
-const EmptyState: React.FC<{ icon?: string; title: string; hint?: string }> = ({
+const EmptyState: React.FC<{ icon?: IconName; title: string; hint?: string }> = ({
   icon,
   title,
   hint,
@@ -418,7 +439,23 @@ const EmptyState: React.FC<{ icon?: string; title: string; hint?: string }> = ({
       color: tokens.color.neutral[500],
     }}
   >
-    {icon && <div style={{ fontSize: 32, marginBottom: tokens.space.sm }}>{icon}</div>}
+    {icon && (
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          margin: "0 auto",
+          marginBottom: tokens.space.md,
+          borderRadius: 16,
+          display: "grid",
+          placeItems: "center",
+          background: tokens.color.neutral[100],
+          color: tokens.color.neutral[400],
+        }}
+      >
+        <Icon name={icon} size={26} />
+      </div>
+    )}
     <div
       style={{
         fontSize: tokens.text.md.size,
@@ -465,7 +502,7 @@ const InstalledList: React.FC<{
   if (!skills.length)
     return (
       <EmptyState
-        icon="📭"
+        icon="archive"
         title="暂无已安装技能"
         hint="切换到「市场」或「通过 URL 安装」试试"
       />
@@ -553,7 +590,7 @@ const MarketplaceList: React.FC<{
   if (!skills.length)
     return (
       <EmptyState
-        icon="🛒"
+        icon="store"
         title="暂无可用技能"
         hint="官方注册表暂未发布，可使用「通过 URL 安装」"
       />
@@ -792,10 +829,20 @@ const ConfirmModal: React.FC<{
           {(staged.manifest.description as string) || "(无描述)"}
         </p>
         {dangerous && (
-          <div style={bannerStyle("error")}>
-            ⚠ 该技能请求敏感权限：
-            <strong style={{ marginLeft: 4 }}>{sensitive.join(", ")}</strong>
-            。请确认来源可信。
+          <div
+            style={{
+              ...bannerStyle("error"),
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 7,
+            }}
+          >
+            <Icon name="alert" size={15} style={{ marginTop: 1, flexShrink: 0 }} />
+            <span>
+              该技能请求敏感权限：
+              <strong style={{ marginLeft: 4 }}>{sensitive.join(", ")}</strong>
+              。请确认来源可信。
+            </span>
           </div>
         )}
         <details style={{ marginTop: tokens.space.md, fontSize: tokens.text.sm.size }}>

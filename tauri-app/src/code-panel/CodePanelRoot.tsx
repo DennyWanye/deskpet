@@ -14,6 +14,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+import { Icon } from "../components/Icon";
 import { useSessionsStore } from "../stores/sessionsStore";
 import { SessionSidebar } from "./SessionSidebar";
 import { MessageStream } from "./MessageStream";
@@ -82,26 +83,54 @@ export function CodePanelRoot() {
           the multi-project dashboard from inside chat. */}
       <header
         style={{
-          height: 40,
+          height: 44,
           padding: "0 14px",
           display: "flex",
           alignItems: "center",
-          gap: 12,
-          background: "rgba(15, 18, 28, 0.98)",
-          borderBottom: "1px solid rgba(148, 163, 184, 0.18)",
+          gap: 11,
+          background:
+            "linear-gradient(180deg, rgba(26,30,44,0.98), rgba(16,19,28,0.99))",
+          borderBottom: "1px solid rgba(255,255,255,0.07)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
           fontSize: 12.5,
         }}
       >
-        <strong style={{ fontSize: 13 }}>🔧 DeskPet · Code Mode</strong>
-        <span style={{ color: "#94a3b8" }}>·</span>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 26,
+            height: 26,
+            borderRadius: 8,
+            background: "rgba(52,211,153,0.16)",
+            color: "#6ee7b7",
+          }}
+        >
+          <Icon name="terminal" size={15} />
+        </span>
+        <strong style={{ fontSize: 13, fontWeight: 600, letterSpacing: 0.2 }}>
+          DeskPet · Code Mode
+        </strong>
+        <span
+          aria-hidden
+          style={{
+            width: 1,
+            height: 16,
+            background: "rgba(148,163,184,0.28)",
+          }}
+        />
         <span
           data-bp-selectable=""
           style={{
-            color: "#cbd5e1",
+            color: "#9aa6b8",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             flex: 1,
+            fontFamily:
+              '"JetBrains Mono","Cascadia Code",Consolas,monospace',
+            fontSize: 11.5,
           }}
           title={session?.project_root ?? ""}
         >
@@ -109,9 +138,6 @@ export function CodePanelRoot() {
             ? "多项目仪表盘"
             : session?.project_root ?? "(选择一个项目)"}
         </span>
-        {/* Only the "show dashboard" button remains. The previous
-            "← chat" return button is gone — sidebar click handles
-            that now (see SessionSidebar.onPick). */}
         {view === "chat" && (
           <button
             type="button"
@@ -119,11 +145,17 @@ export function CodePanelRoot() {
             title="多项目仪表盘"
             style={btnStyle}
           >
-            ⊞ 仪表盘
+            <Icon name="grid" size={13} />
+            仪表盘
           </button>
         )}
-        <button type="button" onClick={close_panel} title="关闭面板" style={btnStyle}>
-          ✕
+        <button
+          type="button"
+          onClick={close_panel}
+          title="关闭面板"
+          style={{ ...btnStyle, padding: 0, width: 28, height: 28 }}
+        >
+          <Icon name="close" size={15} />
         </button>
       </header>
 
@@ -157,11 +189,17 @@ export function CodePanelRoot() {
 }
 
 const btnStyle: React.CSSProperties = {
-  background: "rgba(148, 163, 184, 0.16)",
-  color: "#e2e8f0",
-  border: "1px solid rgba(148, 163, 184, 0.22)",
-  borderRadius: 5,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 5,
+  background: "rgba(255,255,255,0.06)",
+  color: "#dbe2f0",
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: 8,
   fontSize: 11.5,
-  padding: "4px 10px",
+  fontWeight: 600,
+  padding: "6px 11px",
   cursor: "pointer",
+  transition: "background 120ms ease",
 };

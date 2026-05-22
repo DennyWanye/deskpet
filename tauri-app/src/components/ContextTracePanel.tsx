@@ -1,4 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Icon } from "./Icon";
+import {
+  dark,
+  darkPanelSurface,
+  darkPanelHeader,
+  darkCloseBtn,
+  darkButton,
+  darkListSurface,
+  darkInput,
+} from "../theme/components";
 import type { ControlChannel } from "../ws/ControlChannel";
 import type {
   DecisionRecord,
@@ -70,52 +80,60 @@ export function ContextTracePanel({ open, onClose, getChannel }: Props) {
   if (!open) return null;
 
   return (
-    <div
-      data-testid="context-trace-panel"
-      style={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: "rgba(0, 0, 0, 0.85)",
-        zIndex: 1000,
-        display: "flex",
-        flexDirection: "column",
-        padding: "12px",
-        color: "white",
-        fontSize: "12px",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: "8px",
-        }}
-      >
-        <strong style={{ fontSize: "14px" }}>ContextTrace · 决策轨迹</strong>
+    <div data-testid="context-trace-panel" style={darkPanelSurface} role="dialog" aria-label="ContextTrace">
+      <div style={darkPanelHeader}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 26,
+              height: 26,
+              borderRadius: 8,
+              background: "rgba(34,211,238,0.15)",
+              color: "#67e8f9",
+            }}
+          >
+            <Icon name="compass" size={15} />
+          </span>
+          <strong style={{ fontSize: 14, fontWeight: 600, letterSpacing: 0.2 }}>
+            ContextTrace
+          </strong>
+          <span style={{ color: dark.textFaint, fontSize: 12 }}>决策轨迹</span>
+        </span>
         <button
           data-testid="trace-close"
           onClick={onClose}
-          style={{
-            background: "transparent",
-            color: "white",
-            border: "1px solid #555",
-            borderRadius: "4px",
-            padding: "2px 8px",
-            cursor: "pointer",
+          style={darkCloseBtn}
+          title="关闭"
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(239,68,68,0.18)";
+            e.currentTarget.style.color = "#fca5a5";
           }}
-          title="Close"
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+            e.currentTarget.style.color = dark.textMuted;
+          }}
         >
-          ✕
+          <Icon name="close" size={15} />
         </button>
       </div>
 
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          padding: 13,
+          gap: 8,
+        }}
+      >
       {/* Controls */}
-      <div style={{ display: "flex", gap: "6px", marginBottom: "6px", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <button data-testid="trace-refresh" onClick={refresh} style={btnStyle("#3b82f6")}>
+          <Icon name="refresh" size={13} />
           {loading ? "…" : "刷新"}
         </button>
         <label style={{ display: "flex", alignItems: "center", gap: "4px" }}>
@@ -162,11 +180,10 @@ export function ContextTracePanel({ open, onClose, getChannel }: Props) {
         <div
           data-testid="trace-budget"
           style={{
-            marginBottom: "8px",
-            padding: "6px 8px",
-            border: `1px solid ${budgetWarn ? "#f97316" : "#334155"}`,
-            borderRadius: "4px",
-            background: budgetWarn ? "rgba(249,115,22,0.15)" : "rgba(51,65,85,0.25)",
+            padding: "9px 11px",
+            border: `1px solid ${budgetWarn ? "rgba(249,115,22,0.5)" : dark.border}`,
+            borderRadius: 10,
+            background: budgetWarn ? "rgba(249,115,22,0.13)" : dark.card,
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px" }}>
@@ -206,23 +223,16 @@ export function ContextTracePanel({ open, onClose, getChannel }: Props) {
       )}
 
       {/* Timeline */}
-      <div
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          border: "1px solid #333",
-          borderRadius: "6px",
-          padding: "6px",
-        }}
-      >
+      <div style={darkListSurface}>
         {ordered.length === 0 && !loading && (
-          <div style={{ opacity: 0.5, textAlign: "center", marginTop: "20px" }}>
+          <div style={{ color: dark.textFaint, textAlign: "center", marginTop: 32, fontSize: 12 }}>
             (无决策记录)
           </div>
         )}
         {ordered.map((d, i) => (
           <DecisionRow key={i} index={i} decision={d} contextWindow={contextWindow} />
         ))}
+      </div>
       </div>
     </div>
   );
@@ -247,11 +257,11 @@ function DecisionRow({
     <div
       data-testid={`trace-decision-${index}`}
       style={{
-        padding: "6px 4px",
-        borderBottom: "1px solid #1f2937",
+        padding: "8px 6px",
+        borderBottom: `1px solid ${dark.hairline}`,
         display: "flex",
         flexDirection: "column",
-        gap: "3px",
+        gap: "4px",
       }}
     >
       <div
@@ -444,23 +454,12 @@ function sum(xs: number[]): number {
 }
 
 const numInputStyle: React.CSSProperties = {
-  width: "56px",
-  background: "#0f172a",
-  color: "white",
-  border: "1px solid #334155",
-  borderRadius: "4px",
-  padding: "2px 4px",
-  fontSize: "11px",
+  ...darkInput,
+  width: 58,
+  padding: "4px 6px",
+  textAlign: "center",
 };
 
 function btnStyle(bg: string): React.CSSProperties {
-  return {
-    background: bg,
-    color: "white",
-    border: "none",
-    borderRadius: "4px",
-    padding: "3px 8px",
-    fontSize: "11px",
-    cursor: "pointer",
-  };
+  return darkButton(bg === "#3b82f6" ? "primary" : "neutral", "sm");
 }

@@ -66,21 +66,25 @@ const barStyle: CSSProperties = {
   // 高度 → 内层 overflowY:auto 永不触发，长回复被截断且滚不动。修复在
   // 下方 alignItems:stretch + textStyle.minHeight:0；高度仍保持 96。
   maxHeight: 96,
-  background: "rgba(15, 18, 28, 0.85)",
-  borderRadius: 14,
-  border: "1px solid rgba(148, 163, 184, 0.14)",
-  padding: "10px 14px",
-  color: "#e2e8f0",
+  // 高级感玻璃：深色渐变 + 高饱和模糊 + 顶部内高光线 + 柔和投影
+  background:
+    "linear-gradient(180deg, rgba(30,35,52,0.86) 0%, rgba(17,20,30,0.90) 100%)",
+  borderRadius: 16,
+  border: "1px solid rgba(255,255,255,0.10)",
+  padding: "11px 15px",
+  color: "#e8edf6",
   fontSize: 13.5,
-  lineHeight: 1.55,
+  lineHeight: 1.6,
   zIndex: 10,
   overflow: "hidden",
   display: "flex",
   // stretch（非 center）：让文本子元素撑满 bar 高度，其 overflowY:auto
   // 才能在 maxHeight 内真正滚动。短消息顶部对齐，可读性更好。
   alignItems: "stretch",
-  backdropFilter: "blur(14px)",
-  boxShadow: "0 4px 24px rgba(0, 0, 0, 0.18)",
+  backdropFilter: "blur(20px) saturate(1.5)",
+  WebkitBackdropFilter: "blur(20px) saturate(1.5)",
+  boxShadow:
+    "0 12px 36px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.08)",
 };
 
 const textStyle: CSSProperties = {

@@ -21,6 +21,8 @@
  */
 import { memo, useMemo, useState, useCallback } from "react";
 
+import { Icon } from "./Icon";
+
 export interface OnboardingConfig {
   base_url: string;
   model: string;
@@ -206,12 +208,14 @@ function OnboardingWizardImpl({
             </button>
             {testState === "ok" && (
               <p data-testid="onboarding-test-ok" style={okStyle}>
-                ✓ 连接成功，配置已保存
+                <Icon name="check" size={15} />
+                连接成功，配置已保存
               </p>
             )}
             {testState === "failed" && (
               <p data-testid="onboarding-test-error" style={errStyle}>
-                ✗ {testError}
+                <Icon name="alert" size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>{testError}</span>
               </p>
             )}
           </div>
@@ -285,37 +289,42 @@ export const OnboardingWizard = memo(OnboardingWizardImpl);
 const overlayStyle: React.CSSProperties = {
   position: "fixed",
   inset: 0,
-  background: "rgba(15, 23, 42, 0.55)",
+  background: "rgba(8,11,20,0.58)",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
   zIndex: 9999,
-  backdropFilter: "blur(4px)",
+  backdropFilter: "blur(7px)",
+  WebkitBackdropFilter: "blur(7px)",
 };
 
 const cardStyle: React.CSSProperties = {
   width: 460,
   maxWidth: "92vw",
   background: "#ffffff",
-  borderRadius: 16,
-  padding: "26px 30px 20px",
-  boxShadow: "0 24px 60px rgba(0,0,0,0.32)",
-  fontFamily: "Microsoft YaHei UI, sans-serif",
+  borderRadius: 20,
+  padding: "28px 32px 22px",
+  border: "1px solid rgba(255,255,255,0.6)",
+  boxShadow:
+    "0 32px 70px rgba(8,11,20,0.45), 0 4px 14px rgba(8,11,20,0.18)",
+  fontFamily:
+    '"Inter","PingFang SC","Microsoft YaHei UI",sans-serif',
   color: "#0f172a",
+  animation: "bp-pop-in 280ms cubic-bezier(0.16,1,0.3,1)",
 };
 
 const stepBarStyle: React.CSSProperties = {
   display: "flex",
-  gap: 8,
+  gap: 7,
   justifyContent: "center",
-  marginBottom: 18,
+  marginBottom: 20,
 };
 
 const dotStyle: React.CSSProperties = {
-  width: 28,
-  height: 6,
-  borderRadius: 3,
-  transition: "background 200ms",
+  width: 30,
+  height: 5,
+  borderRadius: 999,
+  transition: "background 220ms ease",
 };
 
 const titleStyle: React.CSSProperties = {
@@ -343,22 +352,24 @@ const inputStyle: React.CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
   marginTop: 4,
-  padding: "8px 10px",
+  padding: "9px 12px",
   fontSize: 13,
-  border: "1px solid #cbd5e1",
-  borderRadius: 8,
+  border: "1px solid #e2e8f0",
+  borderRadius: 10,
+  background: "#f8fafc",
   outline: "none",
+  color: "#0f172a",
 };
 
 const testBtnStyle: React.CSSProperties = {
   marginTop: 14,
-  padding: "8px 16px",
+  padding: "9px 18px",
   fontSize: 13,
-  fontWeight: 600,
-  background: "#0f172a",
+  fontWeight: 700,
+  background: "linear-gradient(180deg,#1e293b,#0f172a)",
   color: "#fff",
-  border: "none",
-  borderRadius: 8,
+  border: "1px solid rgba(15,23,42,0.6)",
+  borderRadius: 10,
   cursor: "pointer",
 };
 
@@ -367,6 +378,9 @@ const okStyle: React.CSSProperties = {
   fontSize: 13,
   fontWeight: 600,
   marginTop: 10,
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
 };
 
 const errStyle: React.CSSProperties = {
@@ -374,6 +388,10 @@ const errStyle: React.CSSProperties = {
   fontSize: 13,
   fontWeight: 600,
   marginTop: 10,
+  display: "flex",
+  alignItems: "flex-start",
+  gap: 6,
+  lineHeight: 1.5,
 };
 
 const footerStyle: React.CSSProperties = {
@@ -384,24 +402,25 @@ const footerStyle: React.CSSProperties = {
 };
 
 const primaryBtnStyle: React.CSSProperties = {
-  padding: "8px 20px",
+  padding: "9px 22px",
   fontSize: 13,
   fontWeight: 700,
-  background: "#2563eb",
+  background: "linear-gradient(180deg,#3b82f6,#2563eb)",
   color: "#fff",
-  border: "none",
-  borderRadius: 8,
+  border: "1px solid rgba(37,99,235,0.5)",
+  borderRadius: 10,
+  boxShadow: "0 6px 16px rgba(37,99,235,0.30)",
   cursor: "pointer",
 };
 
 const secondaryBtnStyle: React.CSSProperties = {
-  padding: "8px 16px",
+  padding: "9px 16px",
   fontSize: 13,
   fontWeight: 600,
-  background: "#e2e8f0",
+  background: "#ffffff",
   color: "#334155",
-  border: "none",
-  borderRadius: 8,
+  border: "1px solid #e2e8f0",
+  borderRadius: 10,
   cursor: "pointer",
 };
 

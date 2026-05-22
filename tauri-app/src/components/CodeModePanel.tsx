@@ -12,6 +12,8 @@
 import React, { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+import { Icon } from "./Icon";
+
 import type { ControlChannel } from "../ws/ControlChannel";
 
 interface TodoItem {
@@ -85,21 +87,28 @@ export const CodeModePanel: React.FC<Props> = ({
           code mode isn't on yet. Yellow strip near the top. */}
       {suggest && !state.enabled && (
         <div style={suggestBannerStyle}>
-          <span style={{ flex: 1, fontSize: 12 }}>
-            🔧 看起来你想启动一个项目（"{suggest.trigger_text.slice(0, 40)}..."），
-            <br />
-            要切到 Code 模式吗？
-          </span>
-          <button
-            onClick={onAcceptSuggest}
-            style={suggestActionStyle("primary")}
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 26,
+              height: 26,
+              borderRadius: 8,
+              background: "rgba(245,158,11,0.22)",
+              color: "#fcd34d",
+              flexShrink: 0,
+            }}
           >
+            <Icon name="terminal" size={15} />
+          </span>
+          <span style={{ flex: 1, fontSize: 12, lineHeight: 1.5, minWidth: 0 }}>
+            看起来你想启动一个项目（"{suggest.trigger_text.slice(0, 32)}…"），要切到 Code 模式吗？
+          </span>
+          <button onClick={onAcceptSuggest} style={suggestActionStyle("primary")}>
             是的
           </button>
-          <button
-            onClick={onDismissSuggest}
-            style={suggestActionStyle("secondary")}
-          >
+          <button onClick={onDismissSuggest} style={suggestActionStyle("secondary")}>
             稍后
           </button>
         </div>
@@ -133,26 +142,38 @@ const suggestBannerStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   flexWrap: "wrap",
-  gap: 6,
-  rowGap: 4,
-  padding: "6px 10px",
-  borderRadius: 6,
-  background: "rgba(120, 80, 0, 0.85)",
-  color: "#fde68a",
-  border: "1px solid rgba(245, 158, 11, 0.45)",
-  backdropFilter: "blur(8px)",
+  gap: 8,
+  rowGap: 6,
+  padding: "9px 11px",
+  borderRadius: 13,
+  background:
+    "linear-gradient(180deg, rgba(53,40,12,0.92) 0%, rgba(38,28,8,0.94) 100%)",
+  color: "#fde9b8",
+  border: "1px solid rgba(245, 158, 11, 0.38)",
+  boxShadow:
+    "0 12px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)",
+  backdropFilter: "blur(18px) saturate(1.4)",
+  WebkitBackdropFilter: "blur(18px) saturate(1.4)",
 };
 
 function suggestActionStyle(variant: "primary" | "secondary"): React.CSSProperties {
   return {
     fontSize: 11,
-    fontWeight: 600,
-    padding: "3px 8px",
-    borderRadius: 4,
-    border: "1px solid rgba(255,255,255,0.2)",
-    background: variant === "primary" ? "#f59e0b" : "rgba(255,255,255,0.1)",
-    color: variant === "primary" ? "#000" : "#fff",
+    fontWeight: 700,
+    padding: "5px 12px",
+    borderRadius: 999,
+    border: `1px solid ${
+      variant === "primary"
+        ? "rgba(251,191,36,0.6)"
+        : "rgba(255,255,255,0.16)"
+    }`,
+    background:
+      variant === "primary"
+        ? "linear-gradient(180deg, #fbbf24, #f59e0b)"
+        : "rgba(255,255,255,0.07)",
+    color: variant === "primary" ? "#3a2606" : "#fde9b8",
     cursor: "pointer",
+    transition: "transform 120ms ease",
   };
 }
 

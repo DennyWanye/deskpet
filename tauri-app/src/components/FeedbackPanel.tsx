@@ -15,6 +15,8 @@
  */
 import { memo, useState, useCallback } from "react";
 
+import { Icon } from "./Icon";
+
 export interface FeedbackBundleResult {
   zip_path: string;
   size_bytes: number;
@@ -74,14 +76,30 @@ function FeedbackPanelImpl({
     <div data-testid="feedback-panel" style={overlayStyle}>
       <div style={cardStyle} role="dialog" aria-label="反馈问题">
         <div style={headerStyle}>
-          <h2 style={titleStyle}>🐞 反馈问题</h2>
+          <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 32,
+                height: 32,
+                borderRadius: 10,
+                background: "linear-gradient(180deg,#fef2f2,#fee2e2)",
+                color: "#e11d48",
+              }}
+            >
+              <Icon name="bug" size={18} />
+            </span>
+            <h2 style={titleStyle}>反馈问题</h2>
+          </span>
           <button
             data-testid="feedback-close-btn"
             style={closeBtnStyle}
             onClick={onClose}
             aria-label="关闭"
           >
-            ✕
+            <Icon name="close" size={16} />
           </button>
         </div>
 
@@ -120,8 +138,18 @@ function FeedbackPanelImpl({
 
         {state === "done" && result && (
           <div data-testid="feedback-result" style={resultStyle}>
-            <p style={{ margin: "0 0 6px", fontWeight: 600, color: "#16a34a" }}>
-              ✓ 诊断包已生成（{(result.size_bytes / 1024).toFixed(0)} KB）
+            <p
+              style={{
+                margin: "0 0 6px",
+                fontWeight: 600,
+                color: "#16a34a",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <Icon name="check" size={15} />
+              诊断包已生成（{(result.size_bytes / 1024).toFixed(0)} KB）
             </p>
             <code style={pathStyle}>{result.zip_path}</code>
             <p style={{ margin: "8px 0 0", fontSize: 12.5, color: "#475569" }}>
@@ -182,10 +210,15 @@ const titleStyle: React.CSSProperties = {
 };
 
 const closeBtnStyle: React.CSSProperties = {
-  background: "transparent",
-  border: "none",
-  fontSize: 16,
-  color: "#94a3b8",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 30,
+  height: 30,
+  background: "#f1f5f9",
+  border: "1px solid #e2e8f0",
+  borderRadius: 9,
+  color: "#64748b",
   cursor: "pointer",
 };
 
@@ -199,13 +232,16 @@ const hintStyle: React.CSSProperties = {
 const textareaStyle: React.CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
-  padding: "10px 12px",
+  padding: "11px 13px",
   fontSize: 13,
-  border: "1px solid #cbd5e1",
-  borderRadius: 8,
+  lineHeight: 1.6,
+  border: "1px solid #e2e8f0",
+  borderRadius: 11,
+  background: "#f8fafc",
   outline: "none",
   resize: "vertical",
   fontFamily: "inherit",
+  color: "#0f172a",
 };
 
 const counterStyle: React.CSSProperties = {
@@ -216,13 +252,14 @@ const counterStyle: React.CSSProperties = {
 
 const buildBtnStyle: React.CSSProperties = {
   width: "100%",
-  padding: "10px 0",
+  padding: "11px 0",
   fontSize: 14,
   fontWeight: 700,
-  background: "#2563eb",
+  background: "linear-gradient(180deg, #3b82f6 0%, #2563eb 100%)",
   color: "#fff",
-  border: "none",
-  borderRadius: 8,
+  border: "1px solid rgba(37,99,235,0.5)",
+  borderRadius: 11,
+  boxShadow: "0 6px 18px rgba(37,99,235,0.32)",
 };
 
 const resultStyle: React.CSSProperties = {

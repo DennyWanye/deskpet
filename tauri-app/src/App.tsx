@@ -13,6 +13,7 @@ import { usePermissionRequests } from "./hooks/usePermissionRequests";
 import { PermissionPopup } from "./components/PermissionPopup";
 import { SkillStorePanel } from "./components/SkillStorePanel";
 import { Toolbar } from "./components/Toolbar";
+import { Icon } from "./components/Icon";
 // WI-01/02 (beta-100): first-run onboarding wizard + in-app feedback.
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { FeedbackPanel } from "./components/FeedbackPanel";
@@ -954,22 +955,37 @@ function App() {
             zIndex: 30,
             display: "flex",
             alignItems: "center",
-            gap: 4,
-            height: 30,
-            padding: "0 8px 0 6px",
-            background: "rgba(17,21,34,0.82)",
+            gap: 5,
+            height: 34,
+            padding: "0 11px 0 9px",
+            background:
+              "linear-gradient(180deg, rgba(33,38,58,0.86) 0%, rgba(20,23,34,0.90) 100%)",
             color: "#c7d2fe",
-            border: "1px solid rgba(99,102,241,0.34)",
+            borderTop: "1px solid rgba(129,140,248,0.40)",
+            borderRight: "1px solid rgba(129,140,248,0.40)",
+            borderBottom: "1px solid rgba(129,140,248,0.40)",
             borderLeft: "none",
-            borderTopRightRadius: 9,
-            borderBottomRightRadius: 9,
-            fontSize: 11,
+            borderTopRightRadius: 12,
+            borderBottomRightRadius: 12,
+            fontSize: 11.5,
+            fontWeight: 600,
+            letterSpacing: 0.3,
             cursor: "pointer",
-            backdropFilter: "blur(8px)",
-            boxShadow: "2px 2px 10px rgba(0,0,0,0.4)",
+            backdropFilter: "blur(16px) saturate(1.4)",
+            WebkitBackdropFilter: "blur(16px) saturate(1.4)",
+            boxShadow:
+              "3px 4px 16px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.07)",
+            transition: "padding 160ms ease, background 160ms ease",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.paddingRight = "15px";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.paddingRight = "11px";
           }}
         >
-          ▶ 消息
+          <Icon name="message" size={13} />
+          消息
         </button>
       )}
       {/* 收起控件已回归 panel header 最左（清晰固定边缘）。中缝悬浮
@@ -1075,11 +1091,15 @@ function App() {
           alignItems: "center",
           gap: 6,
           zIndex: 20,
-          background: "rgba(15, 18, 28, 0.55)",
-          padding: "6px 8px",
+          background:
+            "linear-gradient(180deg, rgba(30,35,52,0.82) 0%, rgba(17,20,30,0.88) 100%)",
+          padding: "7px 9px",
           borderRadius: 24,
-          border: "1px solid rgba(148, 163, 184, 0.14)",
-          backdropFilter: "blur(12px)",
+          border: "1px solid rgba(255,255,255,0.10)",
+          boxShadow:
+            "0 12px 36px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.08)",
+          backdropFilter: "blur(20px) saturate(1.5)",
+          WebkitBackdropFilter: "blur(20px) saturate(1.5)",
         }}
       >
         {/* Mic button — pulses while recording */}
@@ -1088,28 +1108,36 @@ function App() {
           onClick={toggleRecording}
           disabled={audioState !== "connected" && state !== "connected"}
           style={{
-            width: 34,
-            height: 34,
-            borderRadius: 17,
-            border: "none",
+            width: 36,
+            height: 36,
+            borderRadius: "50%",
+            border: `1px solid ${
+              isRecording
+                ? "rgba(239,68,68,0.55)"
+                : vadStatus === "speaking"
+                  ? "rgba(245,158,11,0.55)"
+                  : "rgba(255,255,255,0.12)"
+            }`,
             background: isRecording
-              ? "#ef4444"
+              ? "linear-gradient(180deg, #f87171, #ef4444)"
               : vadStatus === "speaking"
-                ? "#f59e0b"
-                : "rgba(255,255,255,0.12)",
-            color: "white",
-            fontSize: 14,
+                ? "linear-gradient(180deg, #fbbf24, #f59e0b)"
+                : "rgba(255,255,255,0.07)",
+            color: isRecording || vadStatus === "speaking" ? "#fff" : "#cbd5e1",
             cursor: "pointer",
             animation: isRecording ? "pulse 1.5s infinite" : "none",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             flexShrink: 0,
-            transition: "background 120ms ease",
+            boxShadow: isRecording
+              ? "0 0 14px rgba(239,68,68,0.5)"
+              : "none",
+            transition: "background 160ms ease, box-shadow 160ms ease",
           }}
           title={isRecording ? "停止录音" : "按住录音"}
         >
-          {isRecording ? "⏹" : "🎤"}
+          <Icon name={isRecording ? "stop" : "mic"} size={17} />
         </button>
 
         {/* Interrupt button — TTS playing */}
@@ -1118,27 +1146,28 @@ function App() {
             data-testid="interrupt-button"
             onClick={handleInterrupt}
             style={{
-              width: 34,
-              height: 34,
-              borderRadius: 17,
-              border: "none",
-              background: "#dc2626",
+              width: 36,
+              height: 36,
+              borderRadius: "50%",
+              border: "1px solid rgba(239,68,68,0.55)",
+              background: "linear-gradient(180deg, #ef4444, #dc2626)",
               color: "white",
-              fontSize: 14,
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
+              boxShadow: "0 0 14px rgba(239,68,68,0.45)",
             }}
             title="打断 (Esc)"
           >
-            ✋
+            <Icon name="hand" size={17} />
           </button>
         )}
 
         <input
           data-testid="chat-input"
+          className="bp-chat-input"
           type="text"
           value={chatText}
           onChange={(e) => setChatText(e.target.value)}
@@ -1150,51 +1179,64 @@ function App() {
           style={{
             flex: 1,
             minWidth: 0,
-            height: 34,
-            padding: "0 14px",
-            borderRadius: 17,
-            border: "1px solid rgba(148, 163, 184, 0.16)",
+            height: 36,
+            padding: "0 15px",
+            borderRadius: 18,
+            border: "1px solid rgba(255,255,255,0.10)",
             fontSize: 13,
-            background: "rgba(255, 255, 255, 0.95)",
-            color: "#0f172a",
+            background: "rgba(255,255,255,0.06)",
+            color: "#e8edf6",
             outline: "none",
             fontFamily: "inherit",
+            transition: "border-color 140ms ease, box-shadow 140ms ease, background 140ms ease",
           }}
         />
-        <button
-          data-testid="send-button"
-          onClick={handleSend}
-          disabled={state !== "connected" || !chatText.trim()}
-          style={{
-            padding: "0 16px",
-            height: 34,
-            borderRadius: 17,
-            border: "none",
-            background:
-              state === "connected" && chatText.trim()
-                ? "#3b82f6"
-                : "rgba(148, 163, 184, 0.4)",
-            color: "white",
-            fontSize: 13,
-            fontWeight: 600,
-            cursor:
-              state === "connected" && chatText.trim() ? "pointer" : "not-allowed",
-            transition: "background 120ms ease",
-            flexShrink: 0,
-          }}
-          onMouseEnter={(e) => {
-            if (state === "connected" && chatText.trim()) {
-              (e.currentTarget as HTMLButtonElement).style.background = "#2563eb";
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (state === "connected" && chatText.trim()) {
-              (e.currentTarget as HTMLButtonElement).style.background = "#3b82f6";
-            }
-          }}
-        >
-          发送
-        </button>
+        {(() => {
+          const active = state === "connected" && !!chatText.trim();
+          return (
+            <button
+              data-testid="send-button"
+              onClick={handleSend}
+              disabled={!active}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "0 15px",
+                height: 36,
+                borderRadius: 18,
+                border: `1px solid ${active ? "rgba(96,165,250,0.6)" : "rgba(255,255,255,0.07)"}`,
+                background: active
+                  ? "linear-gradient(180deg, #4f93ff 0%, #2563eb 100%)"
+                  : "rgba(255,255,255,0.05)",
+                color: active ? "#fff" : "rgba(148,163,184,0.6)",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: active ? "pointer" : "not-allowed",
+                boxShadow: active ? "0 4px 14px rgba(37,99,235,0.42)" : "none",
+                transition: "background 140ms ease, box-shadow 140ms ease, transform 120ms ease",
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => {
+                if (active) {
+                  e.currentTarget.style.background =
+                    "linear-gradient(180deg, #60a5fa 0%, #1d4ed8 100%)";
+                  e.currentTarget.style.transform = "translateY(-1px)";
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (active) {
+                  e.currentTarget.style.background =
+                    "linear-gradient(180deg, #4f93ff 0%, #2563eb 100%)";
+                  e.currentTarget.style.transform = "translateY(0)";
+                }
+              }}
+            >
+              <Icon name="send" size={14} />
+              发送
+            </button>
+          );
+        })()}
       </div>
       )}
 

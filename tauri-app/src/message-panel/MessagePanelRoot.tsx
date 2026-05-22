@@ -17,6 +17,8 @@
 import { useMemo, useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+import { Icon } from "../components/Icon";
+
 import {
   useSessionsStore,
   collect_inbox,
@@ -214,7 +216,7 @@ export function MessagePanelRoot() {
             aria-label="收起消息面板"
             style={iconBtnStyle}
           >
-            ◀
+            <Icon name="chevron-left" size={14} />
           </button>
           <span
             style={{
@@ -225,7 +227,7 @@ export function MessagePanelRoot() {
               pointerEvents: "none",
             }}
           >
-            <span style={{ fontSize: 14 }}>💬</span>
+            <Icon name="message" size={14} style={{ color: "#a5b4fc" }} />
             <span>消息 · 主线程</span>
           </span>
           <button
@@ -240,7 +242,16 @@ export function MessagePanelRoot() {
             aria-label="模型与参数"
             style={modelChipStyle}
           >
-            {preferred_model ? `${preferred_model} ✎` : "默认模型 ✎"}
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {preferred_model || "默认模型"}
+            </span>
+            <Icon name="edit" size={11} style={{ flexShrink: 0 }} />
           </button>
           <button
             type="button"
@@ -250,7 +261,7 @@ export function MessagePanelRoot() {
             aria-label="放大 / 还原"
             style={iconBtnStyle}
           >
-            ⛶
+            <Icon name="expand" size={13} />
           </button>
         </header>
 
@@ -299,24 +310,28 @@ export function MessagePanelRoot() {
                 width: 36,
                 height: 36,
                 flexShrink: 0,
-                borderRadius: 18,
-                border: "none",
+                borderRadius: "50%",
+                border: `1px solid ${
+                  isRecording
+                    ? "rgba(239,68,68,0.55)"
+                    : "rgba(255,255,255,0.12)"
+                }`,
                 background: isRecording
-                  ? "#ef4444"
+                  ? "linear-gradient(180deg,#f87171,#ef4444)"
                   : audioState === "connected"
-                    ? "rgba(99,102,241,0.30)"
-                    : "rgba(148,163,184,0.20)",
-                color: "#fff",
-                fontSize: 15,
+                    ? "rgba(129,140,248,0.20)"
+                    : "rgba(255,255,255,0.06)",
+                color: isRecording ? "#fff" : "#c7d2fe",
                 cursor:
                   audioState === "connected" ? "pointer" : "not-allowed",
+                boxShadow: isRecording ? "0 0 13px rgba(239,68,68,0.5)" : "none",
                 animation: isRecording ? "pulse 1.5s infinite" : "none",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
               }}
             >
-              {isRecording ? "⏹" : "🎤"}
+              <Icon name={isRecording ? "stop" : "mic"} size={16} />
             </button>
           }
         />
@@ -357,43 +372,43 @@ const cardStyle: React.CSSProperties = {
   flexDirection: "column",
   width: "100%",
   height: "100%",
-  borderRadius: 14,
+  borderRadius: 16,
   overflow: "hidden",
   background:
-    "linear-gradient(160deg, rgba(17,21,34,0.95) 0%, rgba(13,16,26,0.93) 55%, rgba(15,23,42,0.95) 100%)",
-  border: "1px solid rgba(99,102,241,0.30)",
+    "linear-gradient(165deg, rgba(26,30,46,0.96) 0%, rgba(15,17,26,0.97) 60%, rgba(17,20,34,0.97) 100%)",
+  border: "1px solid rgba(255,255,255,0.09)",
   boxShadow:
-    "0 10px 40px -12px rgba(0,0,0,0.7), inset 0 0 0 1px rgba(148,163,184,0.06)",
-  backdropFilter: "blur(14px)",
+    "0 18px 50px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.07)",
+  backdropFilter: "blur(22px) saturate(1.5)",
+  WebkitBackdropFilter: "blur(22px) saturate(1.5)",
 };
 
 const headerStyle: React.CSSProperties = {
   flexShrink: 0,
-  padding: "9px 12px",
+  padding: "10px 12px",
   fontSize: 12.5,
   fontWeight: 600,
   letterSpacing: 0.3,
-  color: "#c7d2fe",
+  color: "#dbe2f0",
   display: "flex",
   alignItems: "center",
   gap: 8,
-  borderBottom: "1px solid rgba(148,163,184,0.12)",
+  borderBottom: "1px solid rgba(255,255,255,0.06)",
   background:
-    "linear-gradient(180deg, rgba(79,70,229,0.18), rgba(79,70,229,0))",
+    "linear-gradient(180deg, rgba(99,102,241,0.16), rgba(99,102,241,0))",
 };
 
 const iconBtnStyle: React.CSSProperties = {
-  width: 26,
-  height: 26,
+  width: 27,
+  height: 27,
   flexShrink: 0,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  background: "rgba(99,102,241,0.20)",
+  background: "rgba(255,255,255,0.06)",
   color: "#c7d2fe",
-  border: "1px solid rgba(99,102,241,0.34)",
-  borderRadius: 7,
-  fontSize: 13,
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: 8,
   cursor: "pointer",
   padding: 0,
 };
@@ -401,21 +416,16 @@ const iconBtnStyle: React.CSSProperties = {
 const modelChipStyle: React.CSSProperties = {
   flexShrink: 0,
   maxWidth: 150,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-  height: 26,
-  padding: "0 8px",
+  height: 27,
+  padding: "0 9px",
   display: "flex",
   alignItems: "center",
-  background: preferredChipBg(),
-  color: "#cbd5e1",
-  border: "1px solid rgba(96,165,250,0.35)",
-  borderRadius: 7,
+  gap: 5,
+  background: "rgba(99,102,241,0.16)",
+  color: "#c7d2fe",
+  border: "1px solid rgba(129,140,248,0.34)",
+  borderRadius: 999,
   fontSize: 10.5,
+  fontWeight: 600,
   cursor: "pointer",
 };
-
-function preferredChipBg(): string {
-  return "rgba(37, 99, 235, 0.20)";
-}

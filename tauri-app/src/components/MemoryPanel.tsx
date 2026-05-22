@@ -1,4 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
+import { Icon } from "./Icon";
+import {
+  dark,
+  darkPanelSurface,
+  darkPanelHeader,
+  darkCloseBtn,
+  segGroup,
+  segTab,
+  darkButton,
+  darkListSurface,
+  darkInput,
+} from "../theme/components";
 import type { ControlChannel } from "../ws/ControlChannel";
 import type {
   IncomingMessage,
@@ -247,58 +259,68 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
   if (!open) return null;
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: "rgba(0, 0, 0, 0.85)",
-        zIndex: 1000,
-        display: "flex",
-        flexDirection: "column",
-        padding: "12px",
-        color: "white",
-        fontSize: "12px",
-      }}
-    >
+    <div style={darkPanelSurface} role="dialog" aria-label="记忆管理">
       {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: "8px",
-        }}
-      >
-        <strong style={{ fontSize: "14px" }}>
-          记忆管理{view === "turns" && scope === "session" ? ` · ${sessionId}` : ""}
-          {view === "turns" && scope === "all" ? " · 全部会话" : ""}
-          {view === "l1" ? ` · L1 ${l1Target === "memory" ? "MEMORY.md" : "USER.md"}` : ""}
-          {view === "search" ? " · 向量搜索" : ""}
-          {view === "skills" ? " · 技能" : ""}
-        </strong>
+      <div style={darkPanelHeader}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 26,
+              height: 26,
+              borderRadius: 8,
+              background: "rgba(79,147,255,0.16)",
+              color: "#7fb0ff",
+              flexShrink: 0,
+            }}
+          >
+            <Icon name="archive" size={15} />
+          </span>
+          <strong style={{ fontSize: 14, fontWeight: 600, letterSpacing: 0.2 }}>
+            记忆管理
+          </strong>
+          <span style={{ color: dark.textFaint, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {view === "turns" && scope === "session" ? sessionId : ""}
+            {view === "turns" && scope === "all" ? "全部会话" : ""}
+            {view === "l1" ? `L1 · ${l1Target === "memory" ? "MEMORY.md" : "USER.md"}` : ""}
+            {view === "search" ? "向量搜索" : ""}
+            {view === "skills" ? "技能" : ""}
+          </span>
+        </span>
         <button
           data-testid="memory-close"
           onClick={onClose}
-          style={{
-            background: "transparent",
-            color: "white",
-            border: "1px solid #555",
-            borderRadius: "4px",
-            padding: "2px 8px",
-            cursor: "pointer",
+          style={darkCloseBtn}
+          title="关闭"
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(239,68,68,0.18)";
+            e.currentTarget.style.color = "#fca5a5";
           }}
-          title="Close"
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+            e.currentTarget.style.color = dark.textMuted;
+          }}
         >
-          ✕
+          <Icon name="close" size={15} />
         </button>
       </div>
 
+      {/* Body */}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          padding: 13,
+          gap: 8,
+        }}
+      >
       {/* Top-level view tabs — 对话 / L1 / 搜索 / 技能 */}
       <div
-        style={{ display: "flex", gap: "4px", marginBottom: "6px" }}
+        style={{ ...segGroup, alignSelf: "flex-start" }}
         role="tablist"
         aria-label="Panel view"
       >
@@ -344,7 +366,7 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
       {view === "turns" && (
         <>
           <div
-            style={{ display: "flex", gap: "4px", marginBottom: "6px" }}
+            style={{ ...segGroup, alignSelf: "flex-start" }}
             role="tablist"
             aria-label="Memory scope"
           >
@@ -450,34 +472,33 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
       {/* --- L1 档案 view --------------------------------------------- */}
       {view === "l1" && (
         <>
-          <div
-            style={{ display: "flex", gap: "4px", marginBottom: "6px" }}
-            role="tablist"
-            aria-label="L1 target"
-          >
-            <button
-              data-testid="l1-target-memory"
-              role="tab"
-              aria-selected={l1Target === "memory"}
-              onClick={() => setL1Target("memory")}
-              style={tabStyle(l1Target === "memory")}
-            >
-              MEMORY.md
-            </button>
-            <button
-              data-testid="l1-target-user"
-              role="tab"
-              aria-selected={l1Target === "user"}
-              onClick={() => setL1Target("user")}
-              style={tabStyle(l1Target === "user")}
-            >
-              USER.md
-            </button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <div style={segGroup} role="tablist" aria-label="L1 target">
+              <button
+                data-testid="l1-target-memory"
+                role="tab"
+                aria-selected={l1Target === "memory"}
+                onClick={() => setL1Target("memory")}
+                style={tabStyle(l1Target === "memory")}
+              >
+                MEMORY.md
+              </button>
+              <button
+                data-testid="l1-target-user"
+                role="tab"
+                aria-selected={l1Target === "user"}
+                onClick={() => setL1Target("user")}
+                style={tabStyle(l1Target === "user")}
+              >
+                USER.md
+              </button>
+            </div>
             <button
               data-testid="l1-refresh"
               onClick={refreshL1}
               style={{ ...btnStyle("#3b82f6"), marginLeft: "auto" }}
             >
+              <Icon name="refresh" size={13} />
               刷新
             </button>
           </div>
@@ -545,15 +566,8 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleSearch();
               }}
-              style={{
-                flex: 1,
-                background: "#0f172a",
-                color: "white",
-                border: "1px solid #334155",
-                borderRadius: "4px",
-                padding: "4px 8px",
-                fontSize: "12px",
-              }}
+              className="bp-dark-input"
+              style={{ ...darkInput, flex: 1 }}
             />
             <input
               data-testid="memory-search-topk"
@@ -564,15 +578,8 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
               onChange={(e) =>
                 setSearchTopK(Math.max(1, Math.min(50, Number(e.target.value) || 10)))
               }
-              style={{
-                width: "64px",
-                background: "#0f172a",
-                color: "white",
-                border: "1px solid #334155",
-                borderRadius: "4px",
-                padding: "4px",
-                fontSize: "12px",
-              }}
+              className="bp-dark-input"
+              style={{ ...darkInput, width: 60, textAlign: "center" }}
               title="top_k"
             />
             <button
@@ -691,6 +698,7 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
           </div>
         </>
       )}
+      </div>
     </div>
   );
 }
@@ -718,62 +726,51 @@ function groupSkills(
 }
 
 const listStyle: React.CSSProperties = {
-  flex: 1,
-  overflowY: "auto",
-  border: "1px solid #333",
-  borderRadius: "6px",
-  padding: "6px",
+  ...darkListSurface,
+  padding: "4px 6px",
 };
 
 const rowStyle: React.CSSProperties = {
   display: "flex",
-  gap: "6px",
-  padding: "4px 6px",
-  borderBottom: "1px solid #222",
+  gap: "8px",
+  padding: "7px 8px",
+  borderBottom: `1px solid ${dark.hairline}`,
   alignItems: "flex-start",
+  borderRadius: 6,
 };
 
 const emptyStyle: React.CSSProperties = {
-  opacity: 0.5,
+  color: dark.textFaint,
   textAlign: "center",
-  marginTop: "20px",
+  marginTop: "32px",
+  fontSize: 12,
 };
 
 const sessionTagStyle: React.CSSProperties = {
   display: "inline-block",
   marginRight: "6px",
-  padding: "0 4px",
-  opacity: 0.55,
+  padding: "1px 6px",
+  color: dark.textMuted,
   fontSize: "10px",
-  border: "1px solid #444",
-  borderRadius: "3px",
+  background: "rgba(255,255,255,0.05)",
+  border: `1px solid ${dark.border}`,
+  borderRadius: 5,
   verticalAlign: "middle",
 };
 
+// 把旧的「颜色字符串」入参映射到深色按钮变体，保持各调用点不动。
 function btnStyle(bg: string): React.CSSProperties {
-  return {
-    background: bg,
-    color: "white",
-    border: "none",
-    borderRadius: "4px",
-    padding: "3px 8px",
-    fontSize: "11px",
-    cursor: "pointer",
-  };
+  const variant =
+    bg === "#3b82f6"
+      ? "primary"
+      : bg === "#10b981"
+        ? "success"
+        : bg === "#dc2626" || bg === "#7f1d1d" || bg === "#991b1b"
+          ? "danger"
+          : "neutral";
+  return darkButton(variant, "sm");
 }
 
-// Scope-tab button — filled when active, outlined + muted when inactive.
-// Keeping this visually distinct from the action buttons below so the
-// user doesn't confuse a view switch with a destructive action.
 function tabStyle(active: boolean): React.CSSProperties {
-  return {
-    background: active ? "#2563eb" : "transparent",
-    color: active ? "white" : "#cbd5e1",
-    border: `1px solid ${active ? "#2563eb" : "#334155"}`,
-    borderRadius: "4px",
-    padding: "3px 10px",
-    fontSize: "11px",
-    cursor: "pointer",
-    fontWeight: active ? 600 : 400,
-  };
+  return segTab(active);
 }

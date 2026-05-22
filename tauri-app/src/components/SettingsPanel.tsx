@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 
+import { Icon } from "./Icon";
 import { EmbedderStatusCard } from "./EmbedderStatusCard";
 import { ModelContextCard } from "./ModelContextCard";
 import { SettingsProviders } from "./SettingsProviders";
@@ -156,16 +157,34 @@ export function SettingsPanel({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div style={panelStyle}>
+      <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
         <header style={headerStyle}>
-          <h2 style={{ margin: 0, fontSize: 16 }}>设置</h2>
+          <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 32,
+                height: 32,
+                borderRadius: 10,
+                background: "linear-gradient(180deg,#eff6ff,#dbeafe)",
+                color: "#2563eb",
+              }}
+            >
+              <Icon name="settings" size={18} />
+            </span>
+            <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, letterSpacing: 0.2 }}>
+              设置
+            </h2>
+          </span>
           <button
             type="button"
             onClick={onClose}
             aria-label="关闭设置"
             style={closeBtnStyle}
           >
-            ✕
+            <Icon name="close" size={16} />
           </button>
         </header>
 
@@ -930,54 +949,76 @@ function DataDirSection() {
 const overlayStyle: React.CSSProperties = {
   position: "fixed",
   inset: 0,
-  background: "rgba(0,0,0,0.5)",
+  background: "rgba(8,11,20,0.55)",
+  backdropFilter: "blur(6px)",
+  WebkitBackdropFilter: "blur(6px)",
   display: "grid",
   placeItems: "center",
-  padding: 8,
+  padding: 12,
   zIndex: 1000,
+  animation: "bp-fade-in 200ms cubic-bezier(0.16,1,0.3,1)",
 };
 
 const panelStyle: React.CSSProperties = {
-  background: "white",
-  padding: 18,
-  borderRadius: 8,
-  width: "min(94vw, 520px)",
+  background: "#ffffff",
+  padding: "0 22px 22px",
+  borderRadius: 18,
+  width: "min(94vw, 540px)",
   boxSizing: "border-box",
   maxHeight: "92vh",
   overflowY: "auto",
   overflowX: "hidden",
-  color: "#111",
-  boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+  color: "#0f172a",
+  border: "1px solid rgba(255,255,255,0.6)",
+  boxShadow:
+    "0 32px 70px rgba(8,11,20,0.45), 0 4px 14px rgba(8,11,20,0.18)",
+  fontFamily:
+    '"Inter","PingFang SC","Microsoft YaHei UI",sans-serif',
+  animation: "bp-pop-in 260ms cubic-bezier(0.16,1,0.3,1)",
 };
 
 const headerStyle: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "center",
-  marginBottom: 12,
+  position: "sticky",
+  top: 0,
+  zIndex: 2,
+  margin: "0 -22px 8px",
+  padding: "16px 22px",
+  background: "rgba(255,255,255,0.92)",
+  backdropFilter: "blur(8px)",
+  WebkitBackdropFilter: "blur(8px)",
+  borderBottom: "1px solid #eef1f6",
 };
 
 const closeBtnStyle: React.CSSProperties = {
-  background: "transparent",
-  border: "none",
-  fontSize: 16,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 30,
+  height: 30,
+  background: "#f1f5f9",
+  border: "1px solid #e2e8f0",
+  borderRadius: 9,
   cursor: "pointer",
-  color: "#6b7280",
+  color: "#64748b",
 };
 
 const sectionStyle: React.CSSProperties = {
-  borderTop: "1px solid #e5e7eb",
-  paddingTop: 12,
-  marginTop: 12,
+  borderTop: "1px solid #eef1f6",
+  paddingTop: 16,
+  marginTop: 16,
   display: "grid",
-  gap: 8,
+  gap: 9,
 };
 
 const h3Style: React.CSSProperties = {
   margin: 0,
   fontSize: 13,
-  color: "#374151",
-  fontWeight: 600,
+  color: "#0f172a",
+  fontWeight: 700,
+  letterSpacing: 0.2,
 };
 
 
@@ -988,24 +1029,30 @@ const btnRowStyle: React.CSSProperties = {
 };
 
 const btnStyle: React.CSSProperties = {
-  padding: "5px 12px",
-  borderRadius: 4,
-  border: "1px solid #d1d5db",
-  background: "white",
+  padding: "7px 14px",
+  borderRadius: 9,
+  border: "1px solid #e2e8f0",
+  background: "#ffffff",
+  color: "#334155",
   fontSize: 12,
+  fontWeight: 600,
   cursor: "pointer",
+  transition: "background 120ms ease, border-color 120ms ease",
 };
 
 const statusStyle: React.CSSProperties = {
   fontSize: 12,
-  padding: "4px 8px",
-  background: "#f9fafb",
-  borderRadius: 4,
+  padding: "7px 10px",
+  background: "#f8fafc",
+  border: "1px solid #eef1f6",
+  borderRadius: 9,
+  lineHeight: 1.5,
 };
 
 const hintStyle: React.CSSProperties = {
-  fontSize: 11,
-  color: "#6b7280",
+  fontSize: 11.5,
+  color: "#64748b",
   margin: 0,
+  lineHeight: 1.6,
 };
 

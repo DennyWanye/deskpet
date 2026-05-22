@@ -1,18 +1,19 @@
 /**
- * P4-S20-UI: top-right toolbar.
+ * 桌宠右上角工具栏 — 高级感重设计。
  *
  * 设计要点：
- * - 视觉分组：[左] 应用面板入口 (memory/trace/settings/store) ・分隔条・
- *   [中] 功能开关 (chat_v2 tool-use, autostart) ・分隔条・
- *   [右] 状态徽章 (rec / tts / thinking / fps / connection)
- * - 按钮统一为 28×28 圆角图标按钮，深色半透明 + 模糊背景
- * - 状态徽章用色块语义（绿=本地、蓝=云、灰=未知、橙=断开）
- * - 全部 hover 有 1px 上抬动画 + 边框高亮
+ * - 视觉分组：[左] 应用面板入口 (memory/trace/settings/store/feedback/code)
+ *   ・分隔条・[中] 功能开关 (autostart) ・分隔条・[右] 状态徽章
+ * - emoji 图标全部替换为统一的 SVG 线性图标（Icon 组件）—— 跨平台一致、
+ *   克制精致。
+ * - 玻璃容器：深色渐变 + 高饱和模糊 + 顶部内高光，呈现「液态玻璃」质感。
+ * - 图标按钮 26×26，hover 有柔和高亮 + 1px 上抬。
+ * - 状态徽章用「圆点 + 文字」语义编码（绿=本地、青=云、橙=断开）。
  */
 import React from "react";
 
 import { tokens } from "../theme/tokens";
-import { buttonStyle } from "../theme/components";
+import { Icon, type IconName } from "./Icon";
 
 interface Props {
   /** @deprecated chat path is unified now; kept to avoid prop-drilling churn */
@@ -25,7 +26,7 @@ interface Props {
   onSkillStore: () => void;
   /** WI-02 (beta-100): open the in-app feedback / diagnostic panel. */
   onFeedback: () => void;
-  /** P4-S21 #7: invoked when user clicks the Quit (⏻) button. */
+  /** P4-S21 #7: invoked when user clicks the Quit button. */
   onExit: () => void;
   /** P4-S22: open Code mode entry flow (folder picker + IPC). */
   onCodeMode: () => void;
@@ -71,75 +72,56 @@ export const Toolbar: React.FC<Props> = ({
         position: "absolute",
         top: topOffset != null ? topOffset : tokens.space.xs,
         right: tokens.space.xs,
-        // 桌宠窗口很窄（~282px）— 允许多行换行避免溢出
+        // 桌宠窗口很窄（~360px）— 允许多行换行避免溢出
         maxWidth: "calc(100% - 8px)",
         display: "flex",
         alignItems: "center",
         flexWrap: "wrap",
         justifyContent: "flex-end",
         rowGap: 4,
-        columnGap: 2,
+        columnGap: 3,
         zIndex: 20,
-        background: "rgba(15, 18, 28, 0.55)",
-        padding: "3px 4px",
-        borderRadius: tokens.radius.md,
-        border: `1px solid rgba(148, 163, 184, 0.14)`,
-        backdropFilter: "blur(12px)",
+        background:
+          "linear-gradient(180deg, rgba(28,33,48,0.78) 0%, rgba(16,19,28,0.84) 100%)",
+        padding: "4px 5px",
+        borderRadius: 13,
+        border: "1px solid rgba(255,255,255,0.09)",
+        boxShadow:
+          "0 8px 28px rgba(0,0,0,0.40), inset 0 1px 0 rgba(255,255,255,0.07)",
+        backdropFilter: "blur(20px) saturate(1.5)",
+        WebkitBackdropFilter: "blur(20px) saturate(1.5)",
       }}
     >
       {/* Group 1 — panel toggles */}
-      <IconButton title="记忆管理" testId="memory-toggle" onClick={onMemory}>
-        🗂
-      </IconButton>
-      <IconButton title="ContextTrace" testId="trace-toggle" onClick={onTrace}>
-        🧭
-      </IconButton>
-      <IconButton title="设置" testId="settings-toggle" onClick={onSettings}>
-        ⚙
-      </IconButton>
-      <IconButton
-        title="技能商店"
-        testId="skill-store-toggle"
-        onClick={onSkillStore}
-      >
-        🏪
-      </IconButton>
-      {/* WI-02 (beta-100): in-app feedback — package crash reports +
-          logs into a redacted zip for the beta channel. */}
-      <IconButton title="反馈问题" testId="feedback-toggle" onClick={onFeedback}>
-        🐞
-      </IconButton>
-      {/* P4-S22: Code mode entry. Click → folder picker → enters Code
-          mode for the chosen project. When active, button shows green
-          tint to make the mode obvious. */}
+      <IconButton title="记忆管理" testId="memory-toggle" icon="archive" onClick={onMemory} />
+      <IconButton title="ContextTrace" testId="trace-toggle" icon="compass" onClick={onTrace} />
+      <IconButton title="设置" testId="settings-toggle" icon="settings" onClick={onSettings} />
+      <IconButton title="技能商店" testId="skill-store-toggle" icon="store" onClick={onSkillStore} />
+      <IconButton title="反馈问题" testId="feedback-toggle" icon="bug" onClick={onFeedback} />
       <IconButton
         title={codeModeActive ? "Code 模式已开启 — 点击切换项目" : "进入 Code 模式（编程助手）"}
         testId="code-mode-toggle"
+        icon="terminal"
         onClick={onCodeMode}
         active={codeModeActive}
-      >
-        🔧
-      </IconButton>
-      {/* P4-S21 #7: Quit button. Without this, after backend startup
-          finishes the only path to exit was Task Manager — the boot
-          overlay's Exit button hides itself once startup succeeds. */}
-      <IconButton title="退出 DeskPet" testId="exit-toggle" onClick={onExit}>
-        ⏻
-      </IconButton>
+      />
+      <IconButton
+        title="退出 DeskPet"
+        testId="exit-toggle"
+        icon="power"
+        onClick={onExit}
+        danger
+      />
 
       <Divider />
 
-      {/* Group 2 — feature toggles. P4-S20-LLM-Unified 之后 chat 永远走
-          工具调用回路，🛠 toggle 删掉，UI 更简洁。 */}
+      {/* Group 2 — feature toggles */}
       {autostartReady && (
         <ToggleChip
           active={autostartEnabled}
           onClick={onToggleAutostart}
-          label={autostartEnabled ? "开机启动" : "开机启动"}
-          title={
-            autostartEnabled ? "已开启开机自启 — 点击关闭" : "点击开启开机自启"
-          }
-          variant="success"
+          label="开机启动"
+          title={autostartEnabled ? "已开启开机自启 — 点击关闭" : "点击开启开机自启"}
         />
       )}
 
@@ -147,13 +129,17 @@ export const Toolbar: React.FC<Props> = ({
 
       {/* Group 3 — status badges */}
       {vadStatus === "thinking" && !isPlaying && (
-        <StatusBadge color="warning">思考中</StatusBadge>
+        <StatusBadge color="warning" pulse>
+          思考中
+        </StatusBadge>
       )}
       {isPlaying && <StatusBadge color="info">朗读</StatusBadge>}
-      {isRecording && <StatusBadge color="danger">录音</StatusBadge>}
-      <StatusBadge color={fps >= 30 ? "success" : "danger"}>
-        {fps} FPS
-      </StatusBadge>
+      {isRecording && (
+        <StatusBadge color="danger" pulse>
+          录音
+        </StatusBadge>
+      )}
+      <StatusBadge color={fps >= 30 ? "success" : "danger"}>{fps} FPS</StatusBadge>
       <StatusBadge color={getConnColor(connectionState, routeKind)}>
         {getConnLabel(connectionState, routeKind)}
       </StatusBadge>
@@ -189,31 +175,52 @@ function getConnLabel(
 // -------------- IconButton --------------
 
 const IconButton: React.FC<{
-  children: React.ReactNode;
+  icon: IconName;
   onClick: () => void;
   title: string;
   testId?: string;
   active?: boolean;
-}> = ({ children, onClick, title, testId, active }) => (
+  danger?: boolean;
+}> = ({ icon, onClick, title, testId, active, danger }) => (
   <button
     type="button"
-    className="bp-btn-icon"
     data-testid={testId}
     onClick={onClick}
     title={title}
     style={{
-      ...buttonStyle("icon", "md"),
-      width: 24,
-      height: 24,
-      fontSize: 13,
+      width: 27,
+      height: 27,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
       padding: 0,
-      // override the dark overlay for tighter integration with toolbar bg
-      background: active ? "rgba(34, 197, 94, 0.30)" : "transparent",
-      borderColor: active ? "rgba(34, 197, 94, 0.50)" : "transparent",
-      color: tokens.color.surface.darkText,
+      borderRadius: 8,
+      cursor: "pointer",
+      background: active ? "rgba(52,211,153,0.20)" : "transparent",
+      border: `1px solid ${active ? "rgba(52,211,153,0.42)" : "transparent"}`,
+      color: active ? "#6ee7b7" : "rgba(226,232,240,0.78)",
+      transition: `background ${tokens.duration.fast}ms ${tokens.easing.inOut}, color ${tokens.duration.fast}ms ${tokens.easing.inOut}, transform ${tokens.duration.fast}ms ${tokens.easing.inOut}`,
+    }}
+    onMouseEnter={(e) => {
+      const b = e.currentTarget;
+      if (!active) {
+        b.style.background = danger
+          ? "rgba(239,68,68,0.20)"
+          : "rgba(255,255,255,0.10)";
+        b.style.color = danger ? "#fca5a5" : "#f1f5f9";
+      }
+      b.style.transform = "translateY(-1px)";
+    }}
+    onMouseLeave={(e) => {
+      const b = e.currentTarget;
+      if (!active) {
+        b.style.background = "transparent";
+        b.style.color = "rgba(226,232,240,0.78)";
+      }
+      b.style.transform = "translateY(0)";
     }}
   >
-    {children}
+    <Icon name={icon} size={15} />
   </button>
 );
 
@@ -224,44 +231,41 @@ const ToggleChip: React.FC<{
   onClick: () => void;
   label: string;
   title: string;
-  variant?: "primary" | "success";
-  testId?: string;
-}> = ({ active, onClick, label, title, variant = "primary", testId }) => {
-  const accentColor =
-    variant === "success" ? tokens.color.success.bg : tokens.color.accent.bg;
+}> = ({ active, onClick, label, title }) => {
   return (
     <button
       type="button"
-      data-testid={testId}
       onClick={onClick}
       title={title}
       style={{
         fontFamily: tokens.font.ui,
         fontSize: 10.5,
         fontWeight: tokens.weight.semibold,
-        height: 20,
-        padding: "0 6px",
-        borderRadius: tokens.radius.sm,
+        height: 21,
+        padding: "0 9px",
+        borderRadius: tokens.radius.pill,
         border: `1px solid ${
-          active ? accentColor : "rgba(148, 163, 184, 0.18)"
+          active ? "rgba(52,211,153,0.55)" : "rgba(255,255,255,0.12)"
         }`,
-        background: active ? accentColor : "rgba(0, 0, 0, 0.18)",
-        color: active ? "#fff" : tokens.color.surface.darkTextMuted,
+        background: active
+          ? "linear-gradient(180deg, rgba(52,211,153,0.32), rgba(16,185,129,0.22))"
+          : "rgba(255,255,255,0.04)",
+        color: active ? "#a7f3d0" : "rgba(148,163,184,0.92)",
         cursor: "pointer",
-        transition: `background ${tokens.duration.fast}ms ${tokens.easing.inOut}, border-color ${tokens.duration.fast}ms ${tokens.easing.inOut}`,
+        transition: `background ${tokens.duration.fast}ms ${tokens.easing.inOut}, border-color ${tokens.duration.fast}ms ${tokens.easing.inOut}, color ${tokens.duration.fast}ms ${tokens.easing.inOut}`,
         whiteSpace: "nowrap",
         letterSpacing: 0.3,
       }}
       onMouseEnter={(e) => {
         if (!active) {
-          (e.currentTarget as HTMLButtonElement).style.background =
-            "rgba(255, 255, 255, 0.08)";
+          e.currentTarget.style.background = "rgba(255,255,255,0.10)";
+          e.currentTarget.style.color = "#e2e8f0";
         }
       }}
       onMouseLeave={(e) => {
         if (!active) {
-          (e.currentTarget as HTMLButtonElement).style.background =
-            "rgba(0, 0, 0, 0.18)";
+          e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+          e.currentTarget.style.color = "rgba(148,163,184,0.92)";
         }
       }}
     >
@@ -273,35 +277,49 @@ const ToggleChip: React.FC<{
 // -------------- StatusBadge --------------
 
 const PALETTES = {
-  success: { bg: "rgba(16, 185, 129, 0.20)", fg: "#86efac" },
-  info: { bg: "rgba(6, 182, 212, 0.22)", fg: "#67e8f9" },
-  warning: { bg: "rgba(245, 158, 11, 0.22)", fg: "#fcd34d" },
-  danger: { bg: "rgba(239, 68, 68, 0.22)", fg: "#fca5a5" },
-  muted: { bg: "rgba(148, 163, 184, 0.18)", fg: "#cbd5e1" },
+  success: { dot: "#34d399", fg: "#a7f3d0", bg: "rgba(16,185,129,0.14)" },
+  info: { dot: "#22d3ee", fg: "#a5f3fc", bg: "rgba(6,182,212,0.14)" },
+  warning: { dot: "#fbbf24", fg: "#fde68a", bg: "rgba(245,158,11,0.14)" },
+  danger: { dot: "#f87171", fg: "#fecaca", bg: "rgba(239,68,68,0.14)" },
+  muted: { dot: "#94a3b8", fg: "#cbd5e1", bg: "rgba(148,163,184,0.12)" },
 } as const;
 
 const StatusBadge: React.FC<{
   color: keyof typeof PALETTES;
   children: React.ReactNode;
-}> = ({ color, children }) => {
+  pulse?: boolean;
+}> = ({ color, children, pulse }) => {
   const p = PALETTES[color];
   return (
     <span
       style={{
         fontFamily: tokens.font.ui,
         fontSize: 10.5,
-        fontWeight: tokens.weight.medium,
-        height: 20,
-        padding: "0 6px",
-        borderRadius: tokens.radius.sm,
+        fontWeight: tokens.weight.semibold,
+        height: 21,
+        padding: "0 8px 0 6px",
+        borderRadius: tokens.radius.pill,
         background: p.bg,
         color: p.fg,
         display: "inline-flex",
         alignItems: "center",
+        gap: 4,
         whiteSpace: "nowrap",
-        letterSpacing: 0.3,
+        letterSpacing: 0.2,
+        border: `1px solid ${p.bg}`,
       }}
     >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: p.dot,
+          boxShadow: `0 0 5px ${p.dot}`,
+          animation: pulse ? "bp-pulse 1.5s ease-in-out infinite" : "none",
+          flexShrink: 0,
+        }}
+      />
       {children}
     </span>
   );
@@ -314,9 +332,10 @@ const Divider: React.FC = () => (
     aria-hidden
     style={{
       width: 1,
-      height: 14,
-      background: "rgba(148, 163, 184, 0.22)",
-      margin: "0 3px",
+      height: 15,
+      background:
+        "linear-gradient(180deg, transparent, rgba(148,163,184,0.30), transparent)",
+      margin: "0 2px",
     }}
   />
 );
