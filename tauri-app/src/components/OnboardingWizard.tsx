@@ -1,21 +1,25 @@
 /**
  * WI-01 (beta-100) — first-run onboarding wizard.
  *
- * Three steps, each skippable:
- *   1. Welcome — what DeskPet is.
- *   2. Connect a model — base_url / model / api_key + a "test
- *      connection" button. "Next" stays disabled until the test passes;
- *      a successful test also persists the config (testing == saving in
- *      the onboarding flow, so the user isn't asked to click Save
- *      separately).
- *   3. Local capability — explains the BGE-M3 memory model downloads in
- *      the background; memory degrades to mock until then.
+ * WI-R3 (relay edition) — the step list is now **data-driven** instead
+ * of a hard-coded `1 | 2 | 3`. `stepsForEdition()` returns the ordered
+ * step list for the active build edition:
+ *
+ *   - manual / null edition → [welcome, connectModel, ready]  (3 steps,
+ *     byte-identical to the original WI-01 behaviour)
+ *   - relay edition         → [welcome, ready]                (2 steps —
+ *     the LLM is auto-configured by login, so there is no "手填模型"
+ *     step; see RelayAuthAdapter / relayProviderBridge)
+ *
+ * Step-dot rendering, prev/next navigation and `nextStepAllowed` all key
+ * off the array + the current index — adding/removing a step never again
+ * means touching a `1 | 2 | 3` union.
  *
  * The component is **presentation + local state only**. All side
  * effects (test connection, persist completion) are injected as props
  * so the wizard is unit-testable without Tauri.
  */
-import { memo, useState, useCallback } from "react";
+import { memo, useMemo, useState, useCallback } from "react";
 
 export interface OnboardingConfig {
   base_url: string;
@@ -24,7 +28,8 @@ export interface OnboardingConfig {
 }
 
 export interface OnboardingWizardProps {
-  /** Test (and persist) the LLM connection. Resolves ok=false on failure. */
+  /** Test (and persist) the LLM connection. Resolves ok=false on failure.
+   *  Unused in relay edition (no connectModel step). */
   onTestConnection: (
     cfg: OnboardingConfig,
   ) => Promise<{ ok: boolean; error?: string }>;
@@ -32,37 +37,59 @@ export interface OnboardingWizardProps {
   onComplete: () => void;
   /** Called when the user skips at any step. Host still writes the marker. */
   onSkip: () => void;
+  /** Build edition — selects the step list. Defaults to "manual". */
+  edition?: string;
 }
 
-export type OnboardingStep = 1 | 2 | 3;
 export type OnboardingTestState = "idle" | "testing" | "ok" | "failed";
 
-// Re-export under the old local names so the component body below is
-// unchanged.
-type Step = OnboardingStep;
-type TestState = OnboardingTestState;
+/** The distinct onboarding step kinds. */
+export type OnboardingStepId = "welcome" | "connectModel" | "ready";
+
+export interface OnboardingStepDef {
+  id: OnboardingStepId;
+}
 
 /**
- * Pure: may the user advance from `step`?
- *  - step 1 → always (just an intro)
- *  - step 2 → only when the connection test passed (testState === "ok")
- *  - step 3 → no "next" (it's the last step; the host shows "完成")
+ * Ordered step list for an edition. relay edition drops `connectModel`
+ * (login auto-configures the model). Pure — unit-testable.
+ */
+export function stepsForEdition(edition?: string): OnboardingStepDef[] {
+  if (edition === "relay") {
+    return [{ id: "welcome" }, { id: "ready" }];
+  }
+  return [{ id: "welcome" }, { id: "connectModel" }, { id: "ready" }];
+}
+
+/**
+ * Pure: may the user advance from the step at `index` of `steps`?
+ *  - last step                → false (host shows "完成", not "下一步")
+ *  - a `connectModel` step     → only when the connection test passed
+ *  - any other step            → always (intro-style steps)
  * Exported so it can be unit-tested without a DOM.
  */
 export function nextStepAllowed(
-  step: OnboardingStep,
+  steps: OnboardingStepDef[],
+  index: number,
   testState: OnboardingTestState,
 ): boolean {
-  if (step === 2) return testState === "ok";
-  return step < 3;
+  const step = steps[index];
+  if (!step) return false;
+  if (index >= steps.length - 1) return false;
+  if (step.id === "connectModel") return testState === "ok";
+  return true;
 }
+
+type TestState = OnboardingTestState;
 
 function OnboardingWizardImpl({
   onTestConnection,
   onComplete,
   onSkip,
+  edition,
 }: OnboardingWizardProps) {
-  const [step, setStep] = useState<Step>(1);
+  const steps = useMemo(() => stepsForEdition(edition), [edition]);
+  const [index, setIndex] = useState(0);
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -90,40 +117,40 @@ function OnboardingWizardImpl({
     }
   }, [onTestConnection, baseUrl, model, apiKey]);
 
-  const canLeaveStep2 = nextStepAllowed(2, testState);
+  const currentStep = steps[index];
+  const isLast = index >= steps.length - 1;
+  const canAdvance = nextStepAllowed(steps, index, testState);
 
   return (
     <div data-testid="onboarding-wizard" style={overlayStyle}>
       <div style={cardStyle} role="dialog" aria-label="DeskPet 初次设置">
-        {/* Step indicator */}
+        {/* Step indicator — one dot per step in the active edition's list */}
         <div style={stepBarStyle}>
-          {[1, 2, 3].map((n) => (
+          {steps.map((s, n) => (
             <div
-              key={n}
-              data-testid={`step-dot-${n}`}
+              key={s.id}
+              data-testid={`step-dot-${n + 1}`}
               style={{
                 ...dotStyle,
-                background: n <= step ? "#2563eb" : "#cbd5e1",
+                background: n <= index ? "#2563eb" : "#cbd5e1",
               }}
             />
           ))}
         </div>
 
-        {step === 1 && (
-          <div data-testid="onboarding-step-1">
+        {currentStep?.id === "welcome" && (
+          <div data-testid="onboarding-step-welcome">
             <h2 style={titleStyle}>欢迎使用 DeskPet 🐾</h2>
             <p style={bodyStyle}>
               DeskPet 是一只住在你桌面上的 AI 桌宠。它能陪你聊天、记住你说过的事、
               帮你做 PPT、查资料，还能进入"代码模式"帮你写程序。
             </p>
-            <p style={bodyStyle}>
-              接下来只需 2 步就能开始 —— 整个过程不到 1 分钟。
-            </p>
+            <p style={bodyStyle}>很快就能开始 —— 整个过程不到 1 分钟。</p>
           </div>
         )}
 
-        {step === 2 && (
-          <div data-testid="onboarding-step-2">
+        {currentStep?.id === "connectModel" && (
+          <div data-testid="onboarding-step-connectModel">
             <h2 style={titleStyle}>接入大模型</h2>
             <p style={bodyStyle}>
               DeskPet 的"大脑"需要一个大语言模型。填入你的服务地址、模型名和密钥，
@@ -190,8 +217,8 @@ function OnboardingWizardImpl({
           </div>
         )}
 
-        {step === 3 && (
-          <div data-testid="onboarding-step-3">
+        {currentStep?.id === "ready" && (
+          <div data-testid="onboarding-step-ready">
             <h2 style={titleStyle}>本地记忆能力</h2>
             <p style={bodyStyle}>
               DeskPet 会在后台下载一个本地记忆模型 (BGE-M3，约 286MB)，
@@ -215,26 +242,28 @@ function OnboardingWizardImpl({
             跳过
           </button>
           <div style={{ flex: 1 }} />
-          {step > 1 && (
+          {index > 0 && (
             <button
               data-testid="onboarding-back-btn"
               style={secondaryBtnStyle}
-              onClick={() => setStep((s) => (s - 1) as Step)}
+              onClick={() => setIndex((i) => Math.max(0, i - 1))}
             >
               上一步
             </button>
           )}
-          {step < 3 && (
+          {!isLast && (
             <button
               data-testid="onboarding-next-btn"
               style={primaryBtnStyle}
-              disabled={step === 2 && !canLeaveStep2}
-              onClick={() => setStep((s) => (s + 1) as Step)}
+              disabled={!canAdvance}
+              onClick={() =>
+                setIndex((i) => Math.min(steps.length - 1, i + 1))
+              }
             >
               下一步
             </button>
           )}
-          {step === 3 && (
+          {isLast && (
             <button
               data-testid="onboarding-finish-btn"
               style={primaryBtnStyle}

@@ -22,11 +22,18 @@ class LLMProviderError(Exception):
         provider: Optional[str] = None,
         status_code: Optional[int] = None,
         retriable: bool = False,
+        error_class: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.provider = provider
         self.status_code = status_code
         self.retriable = retriable
+        # WI-R5: a structured relay error code — e.g.
+        # "insufficient_balance" / "relay_key_invalid" (see
+        # llm.relay_errors.classify_relay_error). None for non-relay /
+        # unclassified failures. The chat layer surfaces it to the UI
+        # (friendly 余额不足 message / 401 retry loop).
+        self.error_class = error_class
 
 
 class LLMRateLimitError(LLMProviderError):

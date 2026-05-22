@@ -29,6 +29,7 @@ import React, { useEffect, useState } from "react";
 import type { RelayAuthAdapter } from "./RelayAuthAdapter";
 import { RelayApiError } from "./RelayApiError";
 import { messageForCode } from "./RelayAuthModal";
+import { RECHARGE_URL } from "./relayConfig";
 import type { UsageSummary } from "./types";
 
 interface AccountSettingsPanelProps {
@@ -205,6 +206,17 @@ export function AccountSettingsPanel({
         {state.kind === "ready" && (
           <UsageDetails usage={state.usage} />
         )}
+        {/* WI-R4: 充值是跳转链接 —— 用同账号登录中转站网页后充值。
+            与"设备管理"一致，用 <a target="_blank"> 打开外部浏览器。 */}
+        <a
+          href={RECHARGE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={rechargeBtnStyle}
+          data-testid="account-recharge-btn"
+        >
+          去充值 →
+        </a>
       </section>
 
       <section style={sectionStyle}>
@@ -536,4 +548,17 @@ const linkBtnStyle: React.CSSProperties = {
   fontSize: 12,
   color: "#2563eb",
   textDecoration: "underline",
+};
+
+// WI-R4: "去充值" — a prominent button-styled external link.
+const rechargeBtnStyle: React.CSSProperties = {
+  display: "inline-block",
+  marginTop: 10,
+  padding: "7px 16px",
+  fontSize: 13,
+  fontWeight: 600,
+  background: "#2563eb",
+  color: "#fff",
+  borderRadius: 8,
+  textDecoration: "none",
 };

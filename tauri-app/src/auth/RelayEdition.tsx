@@ -26,11 +26,12 @@
  * the adapter has already restored the session and the pill is closed,
  * so it has near-zero render cost.
  */
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 
 import { AccountSettingsPanel } from "./AccountSettingsPanel";
 import type { RelayAuthAdapter } from "./RelayAuthAdapter";
 import { RelayAuthModal } from "./RelayAuthModal";
+import { relayProviderBridge, type BridgeStatus } from "./relayProviderBridge";
 
 interface RelayEditionProps {
   adapter: RelayAuthAdapter;
@@ -43,6 +44,18 @@ export function RelayEdition({ adapter, brandName }: RelayEditionProps) {
   const [authed, setAuthed] = useState(adapter.isAuthenticated());
   const [bootDone, setBootDone] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
+  const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>(
+    relayProviderBridge.status(),
+  );
+
+  // WI-R2: kick a /v1/providers fetch. Its `providers-updated` event
+  // drives relayProviderBridge → backend LLM endpoint. Fire-and-forget;
+  // failures surface via the bridge status banner.
+  const refreshProviders = useCallback(() => {
+    adapter.listProviders().catch((err) => {
+      console.warn("[RelayEdition] listProviders failed:", err);
+    });
+  }, [adapter]);
 
   // 1. Boot: restore session once. Guarded by `bootDone` so HMR /
   //    StrictMode-double-mount doesn't kick a second /v1/me call.
@@ -50,7 +63,9 @@ export function RelayEdition({ adapter, brandName }: RelayEditionProps) {
     let cancelled = false;
     (async () => {
       try {
-        await adapter.restoreSession();
+        const restored = await adapter.restoreSession();
+        // WI-R2: already-logged-in cold start → push provider to backend.
+        if (restored && !cancelled) refreshProviders();
       } finally {
         if (!cancelled) {
           setAuthed(adapter.isAuthenticated());
@@ -61,21 +76,37 @@ export function RelayEdition({ adapter, brandName }: RelayEditionProps) {
     return () => {
       cancelled = true;
     };
-  }, [adapter]);
+  }, [adapter, refreshProviders]);
 
   // 2. Stay in sync with adapter lifecycle events (logout from
   //    AccountSettingsPanel, /refresh failure on a background ws
   //    call, etc).
   useEffect(() => {
     const unsub = adapter.onEvent((e) => {
-      if (e.type === "login") setAuthed(true);
+      if (e.type === "login") {
+        setAuthed(true);
+        // WI-R2: fresh login → fetch providers → bridge to backend.
+        refreshProviders();
+      }
       if (e.type === "logout") {
         setAuthed(false);
         setShowAccount(false);
       }
+      // WI-R2: every /v1/providers result (incl. key rotation) flows
+      // through the bridge to the backend LLM endpoint.
+      if (e.type === "providers-updated") {
+        void relayProviderBridge.apply(e.providers);
+      }
     });
     return unsub;
-  }, [adapter]);
+  }, [adapter, refreshProviders]);
+
+  // 3. WI-R2: surface bridge failures — a login that succeeds but whose
+  //    provider push fails would otherwise look "logged in" yet every
+  //    chat 401s. Show a retry banner instead of failing silently.
+  useEffect(() => {
+    return relayProviderBridge.onStatus(setBridgeStatus);
+  }, []);
 
   // Don't flash the login modal during the initial restoreSession
   // round-trip — it's the worst possible first impression for a user
@@ -109,6 +140,19 @@ export function RelayEdition({ adapter, brandName }: RelayEditionProps) {
       >
         👤
       </button>
+      {bridgeStatus === "error" && (
+        <div data-testid="relay-bridge-error" style={bridgeErrorStyle}>
+          <span>模型配置失败</span>
+          <button
+            type="button"
+            data-testid="relay-bridge-retry"
+            onClick={refreshProviders}
+            style={bridgeRetryBtnStyle}
+          >
+            点此重试
+          </button>
+        </div>
+      )}
       {showAccount && (
         <div
           role="dialog"
@@ -162,6 +206,32 @@ const pillStyle: React.CSSProperties = {
   fontSize: 13,
   cursor: "pointer",
   backdropFilter: "blur(12px)",
+};
+
+const bridgeErrorStyle: React.CSSProperties = {
+  position: "fixed",
+  top: 42,
+  left: 8,
+  zIndex: 1100,
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "4px 8px",
+  borderRadius: 6,
+  background: "rgba(185, 28, 28, 0.92)",
+  color: "white",
+  fontSize: 11,
+  boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+};
+
+const bridgeRetryBtnStyle: React.CSSProperties = {
+  background: "rgba(255,255,255,0.18)",
+  border: "1px solid rgba(255,255,255,0.35)",
+  borderRadius: 4,
+  color: "white",
+  fontSize: 11,
+  padding: "1px 6px",
+  cursor: "pointer",
 };
 
 const overlayStyle: React.CSSProperties = {

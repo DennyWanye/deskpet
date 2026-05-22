@@ -123,6 +123,14 @@ describe("buildAdapter() factory", () => {
     expect(a.id).toBe("relay");
     expect(a).toBeInstanceOf(RelayAuthAdapter);
   });
+
+  it("T1-4: unknown edition throws (exhaustive guard)", () => {
+    // WI-R1: VITE_AUTH_EDITION is a build-time string; a typo / bad
+    // value must fail loud, not silently fall through.
+    expect(() =>
+      buildAdapter("bogus" as unknown as Parameters<typeof buildAdapter>[0]),
+    ).toThrow(/Unknown AuthEdition/);
+  });
 });
 
 describe("getAuthAdapter() singleton", () => {

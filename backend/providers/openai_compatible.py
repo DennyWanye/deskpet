@@ -7,6 +7,7 @@ import httpx
 import structlog
 
 from llm.errors import LLMProviderError
+from llm.relay_errors import classify_relay_error
 from providers._response_sanitizer import sanitize_response
 
 logger = structlog.get_logger()
@@ -478,12 +479,24 @@ class OpenAICompatibleProvider:
                         pass
                     raise LLMProviderError(
                         f"LLM HTTP {exc2.response.status_code} {exc2.response.reason_phrase}: "
-                        f"{body2}"
+                        f"{body2}",
+                        status_code=exc2.response.status_code,
+                        error_class=classify_relay_error(
+                            exc2.response.status_code, body2
+                        ),
                     ) from exc2
             else:
+                # WI-R5: classify relay 402 (余额不足) / 401 (key 失效) into
+                # a structured error_class so the chat layer can surface a
+                # friendly message + 充值 link / drive the key-rotation
+                # retry loop, instead of bubbling a half-raw HTTP error.
                 raise LLMProviderError(
                     f"LLM HTTP {exc.response.status_code} {exc.response.reason_phrase}: "
-                    f"{body_snippet[:300]}"
+                    f"{body_snippet[:300]}",
+                    status_code=exc.response.status_code,
+                    error_class=classify_relay_error(
+                        exc.response.status_code, body_snippet
+                    ),
                 ) from exc
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
             # Network-layer failure — typical when chinzy keep-alive
@@ -755,8 +768,16 @@ class OpenAICompatibleProvider:
                         stripped=len(used_messages),
                     )
                     continue  # retry the loop with stripped messages
+                # WI-R5: classify relay 402 (余额不足) / 401 (key 失效)
+                # into a structured error_class so the chat layer can show
+                # a friendly message + 充值 link / drive the key-rotation
+                # retry, instead of bubbling a half-raw HTTP error.
                 raise LLMProviderError(
-                    f"LLM HTTP {exc.response.status_code} {exc.response.reason_phrase}: {body[:300]}"
+                    f"LLM HTTP {exc.response.status_code} {exc.response.reason_phrase}: {body[:300]}",
+                    status_code=exc.response.status_code,
+                    error_class=classify_relay_error(
+                        exc.response.status_code, body
+                    ),
                 ) from exc
             except transient as exc:
                 last_exc = exc

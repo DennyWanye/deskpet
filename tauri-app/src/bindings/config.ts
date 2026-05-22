@@ -16,6 +16,10 @@ export interface CloudConfigUpdate {
   model: string;
   api_key?: string;   // empty/absent = keep current
   strategy?: string;  // empty/absent = keep current
+  /** WI-R2: false → api_key applied to the live provider but NOT
+   *  persisted to llm_runtime.json (relay rotating `tsk_xxx` key).
+   *  Absent/true → existing behaviour (key persisted). */
+  persist_key?: boolean;
 }
 
 export interface CloudConfigResult {

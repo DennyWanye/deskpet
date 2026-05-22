@@ -638,6 +638,22 @@ describe("RelayAuthAdapter.restoreSession", () => {
     expect(headers.Authorization).toBe("Bearer persisted_access");
   });
 
+  it("WI-R2 bugfix: restoreSession loads device identity", async () => {
+    // Without this, a cold-start listProviders() sends an empty
+    // X-Device-Id header and the relay rejects it — the provider
+    // bridge then never re-pushes the rotating key to the backend.
+    const bindings = makeBindings({
+      getRelayAccessToken: vi.fn(async () => "persisted_access"),
+      getRelayRefreshToken: vi.fn(async () => "persisted_refresh"),
+    });
+    const fetchImpl = vi.fn(queueFetch([mkResponse({ body: SAMPLE_USER })]));
+    const adapter = new RelayAuthAdapter({ fetchImpl, bindings });
+
+    expect(await adapter.restoreSession()).toBe(true);
+    expect(bindings.getOrCreateDeviceId).toHaveBeenCalled();
+    expect(bindings.getDefaultDeviceName).toHaveBeenCalled();
+  });
+
   it("transparently refreshes when persisted access is expired", async () => {
     // Persisted access has expired but refresh is still valid (the
     // common case on app restart >1h after last activity). authedJson

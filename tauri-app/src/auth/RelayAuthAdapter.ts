@@ -179,6 +179,13 @@ export class RelayAuthAdapter implements AuthAdapter {
     this.accessToken = access;
     this.refreshToken = refresh;
     this.deviceKey = await this.bindings.getRelayDeviceKey();
+    // WI-R2 bugfix: a restored session must also load the device
+    // identity. Without this, `listProviders()` on cold start sends an
+    // empty `X-Device-Id` header and the relay rejects it — the
+    // provider bridge then never re-pushes the rotating key to the
+    // backend. login()/register() already do this; restoreSession()
+    // must match.
+    await this.ensureDeviceIdentity();
     try {
       this.user = await this.fetchMe();
       this.emit({ type: "login", user: this.user });

@@ -1589,6 +1589,12 @@ class CloudConfigRequest(BaseModel):
     model: str
     api_key: str | None = None   # absent or empty = keep current key
     strategy: str | None = None  # absent = keep current strategy
+    # WI-R2 (beta-100 relay): when False, the api_key is applied to the
+    # live in-memory provider but NEVER written to llm_runtime.json.
+    # The relay edition uses this for the rotating `tsk_xxx` device key
+    # — it must not be persisted in plaintext. Defaults True so manual
+    # edition / every existing caller is byte-identical.
+    persist_key: bool = True
 
     @field_validator("base_url")
     @classmethod
@@ -1694,10 +1700,16 @@ async def update_cloud_config(body: CloudConfigRequest, request: Request):
         "model": body.model,
         "temperature": current_temperature,
     }
-    if body.api_key and body.api_key.strip():
+    if body.persist_key and body.api_key and body.api_key.strip():
         # Persist key to runtime json. (Keychain is the more secure path
         # but storing here makes it work without a Tauri shell — useful
         # for headless dev.)
+        #
+        # WI-R2: `persist_key=False` (relay edition) skips this — the
+        # rotating `tsk_xxx` device key is applied to the live provider
+        # above but MUST NOT land in plaintext on disk. The frontend
+        # `relayProviderBridge` re-pushes it after every restart /
+        # rotation, so losing it from the persisted file is fine.
         overrides_to_save["api_key"] = body.api_key.strip()
     _save_llm_runtime_overrides(overrides_to_save)
 
@@ -3943,7 +3955,14 @@ async def control_channel(ws: WebSocket):
                                     # surface to the user directly.
                                     await _ws.send_json({
                                         "type": "chat_v2_error",
-                                        "payload": {"reason": ev.reason, "detail": ev.detail, "session_id": _sid},
+                                        "payload": {
+                                            "reason": ev.reason,
+                                            "detail": ev.detail,
+                                            "session_id": _sid,
+                                            # WI-R5: relay error code for
+                                            # the frontend friendly message.
+                                            "error_class": getattr(ev, "error_class", "") or "",
+                                        },
                                     })
 
                         # P4-S24: assistant persistence moved INTO the

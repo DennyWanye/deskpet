@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-import { nextStepAllowed } from "./OnboardingWizard";
+import { nextStepAllowed, stepsForEdition } from "./OnboardingWizard";
 
 // --- mock Tauri invoke -------------------------------------------------
 const invokeMock = vi.fn();
@@ -24,25 +24,58 @@ beforeEach(() => {
 });
 
 // ----------------------------------------------------------------------
-// nextStepAllowed — pure
+// T4 — stepsForEdition + nextStepAllowed (WI-R3 step-array refactor)
 // ----------------------------------------------------------------------
 
-describe("nextStepAllowed", () => {
-  it("step 1 can always advance (intro only)", () => {
-    expect(nextStepAllowed(1, "idle")).toBe(true);
-    expect(nextStepAllowed(1, "failed")).toBe(true);
+describe("T4-1/T4-2/T4-5 · stepsForEdition", () => {
+  it("relay edition → 2 steps, no connectModel", () => {
+    const steps = stepsForEdition("relay");
+    expect(steps).toHaveLength(2);
+    expect(steps.map((s) => s.id)).toEqual(["welcome", "ready"]);
+    expect(steps.some((s) => s.id === "connectModel")).toBe(false);
   });
 
-  it("step 2 blocked until connection test passes", () => {
-    expect(nextStepAllowed(2, "idle")).toBe(false);
-    expect(nextStepAllowed(2, "testing")).toBe(false);
-    expect(nextStepAllowed(2, "failed")).toBe(false);
-    expect(nextStepAllowed(2, "ok")).toBe(true);
+  it("manual edition → 3 steps incl. connectModel (regression)", () => {
+    const steps = stepsForEdition("manual");
+    expect(steps).toHaveLength(3);
+    expect(steps.map((s) => s.id)).toEqual([
+      "welcome",
+      "connectModel",
+      "ready",
+    ]);
   });
 
-  it("step 3 has no next (last step)", () => {
-    expect(nextStepAllowed(3, "ok")).toBe(false);
-    expect(nextStepAllowed(3, "idle")).toBe(false);
+  it("undefined edition defaults to the 3-step manual list", () => {
+    expect(stepsForEdition()).toHaveLength(3);
+  });
+});
+
+describe("T4-3/T4-4/T4-6 · nextStepAllowed (array + index)", () => {
+  const manual = stepsForEdition("manual");
+  const relay = stepsForEdition("relay");
+
+  it("T4-3: relay welcome step always advances (no test gate)", () => {
+    expect(nextStepAllowed(relay, 0, "idle")).toBe(true);
+  });
+
+  it("T4-4: manual connectModel step blocked until test ok", () => {
+    expect(nextStepAllowed(manual, 1, "idle")).toBe(false);
+    expect(nextStepAllowed(manual, 1, "testing")).toBe(false);
+    expect(nextStepAllowed(manual, 1, "failed")).toBe(false);
+    expect(nextStepAllowed(manual, 1, "ok")).toBe(true);
+  });
+
+  it("welcome step (manual) always advances", () => {
+    expect(nextStepAllowed(manual, 0, "idle")).toBe(true);
+  });
+
+  it("T4-6: last step has no next — both editions", () => {
+    expect(nextStepAllowed(manual, 2, "ok")).toBe(false);
+    expect(nextStepAllowed(relay, 1, "ok")).toBe(false);
+  });
+
+  it("out-of-range index → false", () => {
+    expect(nextStepAllowed(relay, 9, "ok")).toBe(false);
   });
 });
 

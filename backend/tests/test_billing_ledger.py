@@ -249,5 +249,16 @@ async def test_budget_warning_exact_80_boundary(small_budget_ledger):
 @pytest.mark.asyncio
 async def test_budget_warning_fields_present(small_budget_ledger):
     r = await small_budget_ledger.check_budget_warning(today_override="2026-05-22")
-    for key in ("warn", "spent_today_cny", "daily_budget_cny", "percent_used"):
+    for key in ("warn", "spent_today_cny", "daily_budget_cny", "percent_used", "message"):
         assert key in r
+
+
+@pytest.mark.asyncio
+async def test_t6_4_budget_warning_message_has_recharge_hint(small_budget_ledger):
+    """WI-R5 / T6-4 — the 80% warning text carries a recharge link so the
+    user can top up at the relay console in one click."""
+    from billing.ledger import RECHARGE_HINT_URL
+
+    r = await small_budget_ledger.check_budget_warning(today_override="2026-05-22")
+    assert RECHARGE_HINT_URL in r["message"]
+    assert "充值" in r["message"]

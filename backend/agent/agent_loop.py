@@ -316,6 +316,11 @@ class FinalEvent(AgentEvent):
 class ErrorEvent(AgentEvent):
     reason: str = ""
     detail: str = ""
+    # WI-R5: structured relay error code propagated from
+    # LLMProviderError.error_class — "insufficient_balance" /
+    # "relay_key_invalid". "" for non-relay / unclassified failures.
+    # The frontend renders a friendly message + 充值 hint for it.
+    error_class: str = ""
 
     def __post_init__(self) -> None:
         if not self.type:
@@ -828,6 +833,9 @@ class AgentLoop:
                     iteration=iteration,
                     reason="llm_error",
                     detail=str(exc),
+                    # WI-R5: carry the relay error code so the frontend
+                    # can show 余额不足 / key 失效 friendly messages.
+                    error_class=getattr(exc, "error_class", "") or "",
                 )
                 return
 

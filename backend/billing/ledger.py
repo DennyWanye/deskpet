@@ -25,6 +25,11 @@ logger = structlog.get_logger()
 # logic all agree on what "local means zero-cost, skip the budget gate".
 _LOCAL_ROUTE = "local"
 
+# WI-R5 (beta-100 relay): the 80%-budget warning embeds a recharge hint
+# pointing at the 中转站 console. Kept here so the message stays in one
+# place; the frontend renders it verbatim.
+RECHARGE_HINT_URL = "https://chinzy.com/console/billing"
+
 # P2-1-S8 review: daily rollover defaults to Asia/Shanghai because the
 # product targets Chinese users — at 02:00 Beijing the UTC `.date()` is
 # still "yesterday", so a fresh-day budget reset would be off by a day
@@ -197,11 +202,18 @@ class BillingLedger:
         warn = pct >= self.WARN_THRESHOLD_PCT and self._last_warned_date != today
         if warn:
             self._last_warned_date = today
+        # WI-R5: the warning text carries a recharge hint so the user has
+        # a one-click path to top up at the relay console.
+        message = (
+            f"今日已用 ¥{spent:.2f} / ¥{budget:.2f}（{pct:.0f}%）。"
+            f"余额不足可前往中转站充值：{RECHARGE_HINT_URL}"
+        )
         return {
             "warn": warn,
             "spent_today_cny": spent,
             "daily_budget_cny": budget,
             "percent_used": pct,
+            "message": message,
         }
 
     def create_hook(self) -> BudgetHook:

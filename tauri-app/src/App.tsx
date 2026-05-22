@@ -38,6 +38,8 @@ import type { AudioMessage, LipSyncMessage } from "./types/messages";
 import { getAuthAdapter } from "./auth";
 import { RelayAuthAdapter } from "./auth/RelayAuthAdapter";
 import { RelayEdition } from "./auth/RelayEdition";
+import { relayProviderBridge } from "./auth/relayProviderBridge";
+import { friendlyChatErrorMessage } from "./auth/relayErrorText";
 
 function stripMarkdown(text: string): string {
   return text
@@ -557,15 +559,21 @@ function App() {
       case "chat_v2_error": {
         // P4-S22 fix: render whatever the backend sent — `error`
         // (catch-all path), `detail` (AgentLoop ErrorEvent), or
-        // `reason` — and append the type if available. Only fall back
-        // to "unknown" when literally nothing is present.
+        // `reason`. WI-R5: a relay `error_class` (insufficient_balance /
+        // relay_key_invalid) is translated into a friendly Chinese
+        // message via friendlyChatErrorMessage instead of a raw HTTP
+        // error string.
         const p: any = (lastMessage as any).payload || {};
-        const parts = [p.error, p.detail, p.reason].filter(Boolean);
-        const msg = parts.length > 0 ? parts.join(" — ") : "unknown";
+        const msg = friendlyChatErrorMessage(p);
         // Surface in the top error banner instead of injecting a
         // "⚠ ..." assistant bubble that the bottom DialogBar would
         // then render over the pet persistently.
         setPetError(msg);
+        // WI-R5: key 失效 → drive the cross-layer recovery loop so the
+        // next message works (fetch a fresh key → re-push to backend).
+        if (p.error_class === "relay_key_invalid" && relayAdapter) {
+          void relayProviderBridge.recoverFromKeyInvalid(relayAdapter);
+        }
         break;
       }
       case "supervisor_alert": {
@@ -817,6 +825,22 @@ function App() {
     const a = getAuthAdapter();
     return a instanceof RelayAuthAdapter ? a : null;
   }, []);
+
+  // WI-R3: in relay edition the forced login modal must come BEFORE the
+  // onboarding wizard. Track auth state so the wizard is gated on it.
+  // Non-relay editions: no adapter → `relayAuthed` stays true → wizard
+  // shows normally (zero behaviour change).
+  const [relayAuthed, setRelayAuthed] = useState(
+    relayAdapter ? relayAdapter.isAuthenticated() : true,
+  );
+  useEffect(() => {
+    if (!relayAdapter) return;
+    setRelayAuthed(relayAdapter.isAuthenticated());
+    return relayAdapter.onEvent((e) => {
+      if (e.type === "login") setRelayAuthed(true);
+      if (e.type === "logout") setRelayAuthed(false);
+    });
+  }, [relayAdapter]);
 
   return (
     <div
@@ -1277,8 +1301,9 @@ function App() {
           reuses the existing update_cloud_config IPC — a successful
           test also persists the config, so the user isn't asked to
           save separately. */}
-      {onboardingNeeded && (
+      {onboardingNeeded && relayAuthed && (
         <OnboardingWizard
+          edition={relayAdapter ? "relay" : "manual"}
           onTestConnection={async (cfg) => {
             try {
               const r = await updateCloudConfig("", {

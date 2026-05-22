@@ -347,3 +347,44 @@ async def test_integration_dashscope_roundtrip():
     ):
         tokens.append(tok)
     assert len("".join(tokens)) >= 1
+
+
+# --------------------------------------------------------------------------
+# WI-R5 — relay error classification wired into chat_with_tools.
+# A relay 402 / 401 must surface as LLMProviderError.error_class so the
+# chat layer can show a friendly 余额不足 message / drive the key retry.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_with_tools_classifies_relay_402_insufficient_balance():
+    from llm.errors import LLMProviderError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(402, json={"error": {"message": "insufficient balance"}})
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://chinzy.com/v1", api_key="tsk_x", model="gpt-5.5",
+    )
+    provider._test_transport = httpx.MockTransport(handler)
+
+    with pytest.raises(LLMProviderError) as ei:
+        await provider.chat_with_tools([{"role": "user", "content": "hi"}])
+    assert ei.value.error_class == "insufficient_balance"
+
+
+@pytest.mark.asyncio
+async def test_chat_with_tools_classifies_relay_401_key_invalid():
+    from llm.errors import LLMProviderError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "unauthorized"}})
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://chinzy.com/v1", api_key="tsk_stale", model="gpt-5.5",
+    )
+    provider._test_transport = httpx.MockTransport(handler)
+
+    with pytest.raises(LLMProviderError) as ei:
+        await provider.chat_with_tools([{"role": "user", "content": "hi"}])
+    assert ei.value.error_class == "relay_key_invalid"
