@@ -328,3 +328,61 @@ cd backend && python -m scripts.e2e_summarizer_full
 新表 `messages_archive`：原文备份 + `archived_at` + `archived_into_id`。
 
 Schema 版本从 v9 升级到 v10。
+
+---
+
+## 文档索引
+
+项目的设计文档、调研报告、内测就绪材料的速查表。代码改动遵循
+spec-first：3+ 文件的改动先有 plan/spec，再有实现。
+
+### 100 人内测就绪（beta-100, 2026-05-22）
+
+| 文档 | 作用 |
+|------|------|
+| [`plans/2026-05-22-beta-100-readiness.md`](./plans/2026-05-22-beta-100-readiness.md) | 内测就绪**主计划** — 12 个工作项 (WI-01~WI-12) 的 PRD + 技术设计 + TDD + 排期 + Go/No-Go checklist |
+| [`plans/2026-05-22-beta-100-manual-test.md`](./plans/2026-05-22-beta-100-manual-test.md) | **人工点击测试脚本** — 6 条测试路径，逐步可勾选，含全新安装 / 升级 / 卸载 / updater 全流程 |
+| [`plans/2026-05-22-beta-100-manual-test-results.md`](./plans/2026-05-22-beta-100-manual-test-results.md) | **实机测试执行记录** — windows-mcp 实机跑 WI-01/WI-02，结果 13/13 通过、0 功能 bug |
+| [`RELEASE.md`](./RELEASE.md) | **内测发布流程 SOP** — tag → 签名 → `latest.json` → 灰度 → 全量；含回滚预案 |
+| [`docs/signing.md`](./docs/signing.md) | Windows 代码签名指南 — OV/EV 证书、`signtool`、SmartScreen 信誉、CI 集成 |
+| [`docs/beta-feature-flags.md`](./docs/beta-feature-flags.md) | feature flag 审计表 — memory-v2 / ppt / deep-research 等新功能的默认开关态 |
+| [`docs/beta/内测协议.md`](./docs/beta/内测协议.md) | 面向内测用户的协议 — 性质、保密、反馈义务、无 SLA |
+| [`docs/beta/隐私说明.md`](./docs/beta/隐私说明.md) | 隐私说明 — 数据存储位置、API key 凭据库、诊断包脱敏（与代码逐条核对） |
+| [`docs/beta/已知问题.md`](./docs/beta/已知问题.md) | 用户版已知问题清单 — 从 MSI 已知问题提炼，去掉构建侧、保留用户可见项 |
+| [`docs/beta/安装包瘦身评估.md`](./docs/beta/安装包瘦身评估.md) | 安装包瘦身评估 — 5.4GB MSI 体积构成 + 模型按需下载方案 |
+
+**beta-100 新增能力**（commit `4ee869c`，全部 strangler-fig、feature-flag 默认 OFF）：
+- **WI-01 onboarding 向导** — 首次启动 3 步配置引导（`tauri-app/src/components/OnboardingWizard.tsx` + `src-tauri/src/onboarding.rs`）
+- **WI-02 应用内反馈** — Toolbar 🐞 按钮一键打包脱敏诊断 zip（`FeedbackPanel.tsx` + `src-tauri/src/diagnostics.rs`，**绝不含 api_key**）
+- **WI-04 成本护栏** — 每日预算 80% 早期警告（`backend/billing/ledger.py`）
+- **WI-05 进程生命周期** — 启动/退出残留检测脚本（`scripts/e2e_process_lifecycle.ps1`）
+- **WI-12 最小可观测** — 匿名使用计数 `metrics.jsonl`，key 白名单隐私墙（`backend/observability/metrics_sink.py`）
+
+### 记忆系统第二代（memory-v2, Phase A-E）
+
+| 文档 | 作用 |
+|------|------|
+| [`plans/2026-05-21-memory-system-survey.md`](./plans/2026-05-21-memory-system-survey.md) | 记忆系统**调研 + 改造路线图** — 现状盘点、6 大痛点、mem0/Letta 对标、Phase A-E 设计 |
+
+**memory-v2 新增模块**（commit `e3e090b`，全部默认 OFF）：
+- **Phase A 评估底座** — `deskpet/memory/eval/`：hit@k/MRR 回测 + thumbs-up 反馈
+- **Phase B 事实抽取** — `deskpet/memory/facts.py`：mem0 风格 LLM 事实抽取 + 冲突合并
+- **Phase C 召回精度** — `reranker.py` / `chunker.py` / `query_rewriter.py`
+- **Phase D 工作记忆** — `deskpet/memory/workspace.py`：per-session 文件操作快照
+- **Phase E 反思 + 程序记忆** — `deskpet/memory/reflection.py`
+- 非侵入包装器 `enhanced_retriever.py` — 所有 plug-in 为空时与原 Retriever 字节一致
+
+### 新技能调研
+
+| 文档 | 作用 |
+|------|------|
+| [`plans/2026-05-22-ppt-deepresearch-survey.md`](./plans/2026-05-22-ppt-deepresearch-survey.md) | PPT 生成 + DeepResearch 技能**调研与设计** — Gamma/Tome/OpenAI Deep Research 对标 |
+
+**新增技能**（commit `3d8bb03`）：
+- **ppt-generate** — `deskpet/tools/ppt_tools.py`：python-pptx 本地生成，3 主题 × 7 布局
+- **deep-research** — `deskpet/tools/research_tools.py`：多阶段流水线 + 严格引用核验（plan → search → fetch → synthesize → cite-check）
+- SKILL.md 在 `deskpet/skills/builtin/ppt-generate/` 与 `deep-research/`
+
+### 其它历史文档
+
+`docs/` 下另有 Phase 2~6 的架构文档（`P4-agent-harness-prd.md` / `P6-agent-loop-architecture.md` 等）、打包 (`PACKAGING.md`)、性能 (`PERFORMANCE.md`)、权限 (`PERMISSIONS.md`)、技能系统 (`SKILLS.md`)。完整目录见 [`docs/INDEX.md`](./docs/INDEX.md)。
