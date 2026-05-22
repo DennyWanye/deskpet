@@ -26,6 +26,19 @@ export default defineConfig(({ mode }) => {
     define['import.meta.env.VITE_AUTH_EDITION'] = JSON.stringify(envEdition)
   }
 
+  // Parallel-dev port isolation (git worktree support).
+  //  - DESKPET_VITE_PORT    → this dev server's port (default 5173)
+  //  - DESKPET_BACKEND_PORT → the backend port; injected as
+  //    import.meta.env.VITE_BACKEND_PORT so frontend WS/HTTP clients
+  //    target the right backend. Default 8100.
+  // A second checkout / worktree sets both to free ports and never
+  // collides. Defaults preserve current behaviour exactly.
+  const vitePort = Number(process.env.DESKPET_VITE_PORT) || 5173
+  const backendPort = Number(process.env.DESKPET_BACKEND_PORT) || 8100
+  define['import.meta.env.VITE_BACKEND_PORT'] = JSON.stringify(
+    String(backendPort),
+  )
+
   return {
     plugins: [react()],
     define,
@@ -33,7 +46,7 @@ export default defineConfig(({ mode }) => {
     // Prevent vite from obscuring rust errors
     clearScreen: false,
     server: {
-      port: 5173,
+      port: vitePort,
       strictPort: true,
       watch: {
         // Tell vite to ignore watching `src-tauri`

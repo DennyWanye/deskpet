@@ -31,6 +31,7 @@ import { useBackendLifecycle } from "./hooks/useBackendLifecycle";
 import { useSessionsStore } from "./stores/sessionsStore";
 import { PetStateMachine } from "./pet-state/PetStateMachine";
 import type { AudioMessage, LipSyncMessage } from "./types/messages";
+import { BACKEND_PORT } from "./backendPort";
 // W3.3 (relay integration): lazy-mount the relay edition UI only when
 // the active adapter is RelayAuthAdapter. OSS default (`manual` /
 // `null` editions) never instantiates this component, so its presence
@@ -309,7 +310,7 @@ function App() {
 
   // Control channel (text chat + interrupt + emotion/action events)
   const { state, lastMessage, sendChatV2, sendInterrupt, getChannel: getControlChannel } =
-    useControlChannel(8100, secret);
+    useControlChannel(BACKEND_PORT, secret);
 
   // 2026-05-18: 连接(或重连)后从 SessionDB 回灌 default 会话历史，
   // 使左侧消息面板重启后也显示历史记录（后端 session_messages_load
@@ -469,7 +470,7 @@ function App() {
     lastMessage: audioMessage,
     sendAudio,
     getChannel,
-  } = useAudioChannel(8100, secret);
+  } = useAudioChannel(BACKEND_PORT, secret);
 
   // Audio recorder (microphone → PCM16 → backend)
   const { isRecording, startRecording, stopRecording } =

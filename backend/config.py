@@ -424,6 +424,16 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     config = AppConfig()
     if "backend" in raw:
         config.backend = _load_section(BackendConfig, raw["backend"])
+    # DESKPET_BACKEND_PORT env override — lets a second checkout / git
+    # worktree run its own dev backend on a different port without
+    # editing config.toml. The Tauri shell (process_manager.rs) reads
+    # the SAME env var so both halves of the handshake agree.
+    _port_override = os.environ.get("DESKPET_BACKEND_PORT")
+    if _port_override:
+        try:
+            config.backend.port = int(_port_override.strip())
+        except ValueError:
+            pass
     if "llm" in raw:
         raw_llm = raw["llm"]
         raw_local = raw_llm.pop("local", None)

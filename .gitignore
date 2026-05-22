@@ -92,3 +92,4 @@ docs/EVIDENCE/screenshot_*.png
 # Per-distribution installer payloads built ad-hoc for friends/testers.
 # Regeneratable from the bundle scripts; not source.
 codex-installer-for-friend.zip
+.dev-userdata/

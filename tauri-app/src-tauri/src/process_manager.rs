@@ -16,10 +16,19 @@ use crate::backend_launch::{self, BackendLaunch};
 /// actually wedged (e.g. Python import error, missing DLL).
 const SECRET_TIMEOUT_SECS: u64 = 90;
 
-/// Backend FastAPI port. Hard-coded on both sides of the handshake;
-/// we only use this constant for the pre-spawn "is it already taken?"
-/// probe so a more useful error message reaches the user.
-const BACKEND_PORT: u16 = 8100;
+/// Backend FastAPI port. Default 8100; overridable via the
+/// `DESKPET_BACKEND_PORT` env var so a second checkout / git worktree
+/// can run its own dev backend without colliding on the port. The
+/// Python side reads the SAME env var (see backend/config.py) so both
+/// halves of the handshake always agree.
+const DEFAULT_BACKEND_PORT: u16 = 8100;
+
+fn backend_port() -> u16 {
+    std::env::var("DESKPET_BACKEND_PORT")
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .unwrap_or(DEFAULT_BACKEND_PORT)
+}
 
 /// How many times the supervisor will respawn a crashed backend before it
 /// gives up. Hitting this likely means a config bug, not a transient fault.
@@ -104,7 +113,7 @@ impl BackendProcess {
     /// P4-S21 #1: backend listen port. Currently a const (8100) — pulled
     /// out into an accessor so the IPC bridge doesn't have to re-import
     /// the module-private constant.
-    pub fn port(&self) -> u16 { BACKEND_PORT }
+    pub fn port(&self) -> u16 { backend_port() }
 }
 
 /// Spawn the Python backend and read its SHARED_SECRET announcement.
@@ -138,7 +147,7 @@ fn spawn_once(launch: &BackendLaunch) -> Result<(Child, String), String> {
     // because the supervisor respawn path also goes through spawn_once —
     // if a zombie backend survived a window close, we want the friendly
     // message on every retry, not just the initial attempt.
-    check_port_free(BACKEND_PORT)?;
+    check_port_free(backend_port())?;
 
     let mut cmd = match launch {
         BackendLaunch::Bundled { exe } => {

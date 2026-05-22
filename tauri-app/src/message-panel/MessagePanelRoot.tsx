@@ -31,6 +31,7 @@ import { InputBar } from "../code-panel/InputBar";
 import { ChangeModelModal } from "../code-panel/ChangeModelModal";
 import { codePanelWS } from "../code-panel/ws";
 import { useAudioChannel } from "../hooks/useAudioChannel";
+import { BACKEND_PORT } from "../backendPort";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
 import { useAudioPlayer } from "../hooks/useAudioPlayer";
 
@@ -83,7 +84,7 @@ export function MessagePanelRoot() {
     lastMessage: audioMessage,
     sendAudio,
     getChannel,
-  } = useAudioChannel(8100, secret);
+  } = useAudioChannel(BACKEND_PORT, secret);
   const { isRecording, startRecording, stopRecording } =
     useAudioRecorder(sendAudio);
   const {
