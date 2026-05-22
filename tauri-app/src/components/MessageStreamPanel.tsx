@@ -283,7 +283,9 @@ function ChatRow({
           {format_relative(ts)}
         </span>
       </div>
-      <div style={bodyStyle}>{text || "(空)"}</div>
+      {/* data-bp-selectable: 让消息正文可被鼠标拖选复制（index.css 的
+          全局 user-select:none 默认会挡住）。 */}
+      <div data-bp-selectable="" style={bodyStyle}>{text || "(空)"}</div>
     </div>
   );
 }
@@ -338,7 +340,9 @@ function AlertRow({
           {format_relative(item.received_at)}
         </span>
       </div>
-      <div style={bodyStyle}>
+      {/* data-bp-selectable: 告警正文可被拖选复制。拖选时浏览器不触发
+          click，行级 onClick 跳转不受影响。 */}
+      <div data-bp-selectable="" style={bodyStyle}>
         {item.user_message || item.diagnosis || "(supervisor 未提供详情)"}
       </div>
       <div

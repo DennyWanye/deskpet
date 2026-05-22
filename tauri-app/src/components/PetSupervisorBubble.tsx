@@ -127,7 +127,17 @@ export function PetSupervisorBubble({
           <span style={{ fontWeight: 600 }}>桌宠提醒</span>
           <span style={{ marginLeft: "auto", opacity: 0.6 }}>{truncated_sid}</span>
         </div>
-        <div style={{ marginBottom: buttons.length ? 8 : 0, whiteSpace: "pre-wrap" }}>
+        <div
+          // 让桌宠提醒文字可被鼠标拖选复制。`data-bp-selectable` 触发
+          // index.css 的 `user-select:text`；`onMouseDown` stopPropagation
+          // 阻止 mousedown 冒泡到桌宠窗根节点的 `data-tauri-drag-region`
+          // （否则会被 Tauri 当成拖动窗口，选区拉不出来）。一次普通点击
+          // 仍会冒泡到 wrapper 的 onClick 跳转——拖选时浏览器不触发
+          // click，两种交互互不打架。
+          data-bp-selectable=""
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{ marginBottom: buttons.length ? 8 : 0, whiteSpace: "pre-wrap" }}
+        >
           {message || "supervisor 检测到一个需要关注的状态。"}
         </div>
         {buttons.length > 0 && (
