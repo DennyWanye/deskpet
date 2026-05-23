@@ -73,8 +73,10 @@ a JSON array. Each entry MUST be a JSON object with keys:
 
   category  — one of: preference | profile | project | event
   subject   — who/what the fact is about (default: "user")
-  key       — short snake_case key, e.g. "favorite_drink"
-  value     — short free text value (< 100 chars)
+  key       — short snake_case ENGLISH key, e.g. "favorite_drink"
+  value     — short free text value (< 100 chars). MUST be in the SAME
+              LANGUAGE as the source message (Chinese source → Chinese
+              value; English source → English value). Do NOT translate.
   confidence — float 0..1, your certainty
   evidence  — the exact source phrase (verbatim, <= 80 chars)
 
