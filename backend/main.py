@@ -353,6 +353,13 @@ try:
         )
     )
     deskpet_tool_registry_v2.set_permission_gate(permission_gate_v2)
+    # WI-T3.1 last-mile wiring: provider 模式注入 ToolsConfig 到 registry。
+    # flag 全 OFF 默认 → execute_tool envelope wrapping 是 no-op (字节级一致)；
+    # 用户/管理员开任一 flag (artifact_envelope/frontend_artifact_card/...)
+    # 后 runtime 立即生效，无需重启。
+    deskpet_tool_registry_v2.set_tools_config_provider(
+        lambda: getattr(config, "tools", None)
+    )
     # P4-S25: persist auto_mode across restart. Path lives under the
     # user data dir so it follows the user's profile (dev mode uses
     # `<repo>/userdata/`, prod uses `%APPDATA%/deskpet/`). Loading
