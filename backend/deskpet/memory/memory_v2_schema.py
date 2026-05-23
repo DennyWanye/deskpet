@@ -69,6 +69,10 @@ CREATE INDEX IF NOT EXISTS idx_feedback_time ON memory_user_feedback(created_at)
 -- =====================================================================
 -- Phase B — Facts
 -- =====================================================================
+-- 记忆系统升级 WI-M1.4 / PRD §3.1：facts 走向量召回（中文整句 LIKE
+-- 子串匹配几乎不命中）。``embedding`` 存规范文本 "key: value" 的 BGE-M3
+-- 向量（float32 BLOB）。facts 表小，召回走 Python brute-force cosine，
+-- 不必上向量索引。facts 表此前从不被调用（死代码），DDL 直接带该列。
 CREATE TABLE IF NOT EXISTS facts (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     category       TEXT    NOT NULL,
@@ -82,7 +86,8 @@ CREATE TABLE IF NOT EXISTS facts (
     evidence       TEXT,
     is_active      INTEGER NOT NULL DEFAULT 1,
     decay_rate     REAL    NOT NULL DEFAULT 0.02,
-    last_recalled  REAL
+    last_recalled  REAL,
+    embedding      BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_facts_subject_key ON facts(subject, key, is_active);
 CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category, is_active);

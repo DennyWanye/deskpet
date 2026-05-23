@@ -536,6 +536,39 @@ except NameError:
     # the v2 block). Voice prompts skip TTS narration; popup still works.
     pass
 
+# 记忆系统升级 WI-M1.2/M1.7: facts 抽取 / reflection 需要一个
+# (prompt:str)->str 的 LLMCall —— summarizer.make_llm_call 走的是
+# messages->dict 形状，不匹配。这里把 provider 适配成纯字符串形状。
+def _make_str_llm_call(provider, *, max_tokens: int = 512):
+    """Adapt an OpenAICompatibleProvider into a ``(prompt: str) -> str``
+    async callable. provider=None → return None so callers can skip
+    (用户未配置 / 离线时 facts/reflection 静默跳过，不报错)。
+    """
+    if provider is None:
+        return None
+
+    async def _call(prompt: str) -> str:
+        result = await provider.chat_with_tools(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=0.2,  # 抽取/反思要稳定，不发散
+        )
+        return (result or {}).get("content") or ""
+
+    return _call
+
+
+# 记忆系统升级 WI-M1.2: facts shadow 抽取器 + FactsStore。模块级默认
+# None —— p4 服务块构造失败时 lifespan 的 fanout 仍能安全引用（同
+# _summarizer_*）。_facts_store 还被 WI-M1.4 的 EnhancedRetriever 复用。
+_fact_extractor = None  # type: ignore[assignment]
+_facts_store = None  # type: ignore[assignment]
+# 记忆系统升级 WI-M1.5: 长消息切块器。fanout 在 chunking flag 开时用它
+# 切块 + embed 进 messages_chunks；EnhancedRetriever 读侧复用做向量召回。
+_message_chunker = None  # type: ignore[assignment]
+# 记忆系统升级 WI-M1.7b: procedural memory（反复问题→解法）存储。
+_skill_memory_store = None  # type: ignore[assignment]
+
 # --- P4-S13: read-only P4 services (FileMemory + SkillLoader + MemoryManager) ---
 #
 # We construct the three "safe" components at module top-level so p4_ipc.py
@@ -602,6 +635,127 @@ try:
         embedder=_embedder,
     )
 
+    # 记忆系统升级 WI-M1.2: facts 抽取器（shadow 模式）。是否真抽取由
+    # lifespan 的 _on_message_written fanout 按 config.memory.v2.facts_extract
+    # 决定（Strangler-Fig：flag 关 → fanout 不调它 → ensure_memory_v2_tables
+    # 不触发 → facts 表不存在）。无可用 LLM 时不构造（_fact_extractor=None
+    # → fanout 跳过，不报错）。WI-M1.4 的 EnhancedRetriever 也复用 _facts_store。
+    try:
+        from deskpet.memory.facts import (
+            FactsStore as _FactsStore,
+            FactExtractor as _FactExtractor,
+        )
+        # embedder 注入 → upsert 时对 "key: value" 算 BGE-M3 向量存
+        # embedding 列（WI-M1.4 facts 向量召回）。mock embedder 时 _embed_fact
+        # 自动返回 None（不写向量），召回端降级 LIKE。
+        _facts_store = _FactsStore(_state_db_path, embedder=_embedder)
+        _facts_llm = _make_str_llm_call(local_llm)
+        if _facts_llm is not None:
+            _fact_extractor = _FactExtractor(
+                _facts_store,
+                extract_llm=_facts_llm,
+                min_chars=config.memory.v2.facts.min_user_chars,
+            )
+            logger.info(
+                "p4_fact_extractor_ready",
+                min_chars=config.memory.v2.facts.min_user_chars,
+            )
+        else:
+            logger.info("p4_fact_extractor_skipped", reason="no_llm_provider")
+    except Exception as _fe_exc:  # noqa: BLE001
+        logger.warning("p4_fact_extractor_init_failed", error=str(_fe_exc))
+        _fact_extractor = None
+
+    # 记忆系统升级 WI-M1.5: 长消息切块器。无条件构造（轻量），是否真切
+    # 由 fanout 按 config.memory.v2.chunking 决定。embedder 注入 → chunk
+    # 带向量；mock embedder → chunk 无向量、读侧跳过。
+    try:
+        from deskpet.memory.chunker import MessageChunker as _MessageChunker
+        _message_chunker = _MessageChunker(_state_db_path, embedder=_embedder)
+    except Exception as _ck_exc:  # noqa: BLE001
+        logger.warning("p4_message_chunker_init_failed", error=str(_ck_exc))
+        _message_chunker = None
+
+    # 记忆系统升级 WI-M1.7b: SkillMemoryStore（procedural memory）。reflection
+    # flag 开时构造 —— 与 ReflectionWorker 同 flag、相互独立（无调用关系）。
+    if config.memory.v2.reflection:
+        try:
+            from deskpet.memory.reflection import (
+                SkillMemoryStore as _SkillMemoryStore,
+            )
+            _skill_memory_store = _SkillMemoryStore(_state_db_path)
+            logger.info("p4_skill_memory_store_ready")
+        except Exception as _sm_exc:  # noqa: BLE001
+            logger.warning(
+                "p4_skill_memory_store_init_failed", error=str(_sm_exc),
+            )
+            _skill_memory_store = None
+
+    # 记忆系统升级 WI-M1.3/M1.4/M1.5: EnhancedRetriever 非侵入 wrapper。
+    # rerank / enhanced_retriever / query_rewrite 任一 flag 开 → 用它包住
+    # 老 Retriever；全关 → MemoryManager 直接持裸 Retriever（recall 与第
+    # 一代逐字节一致，Strangler-Fig）。
+    _retriever_for_mm = _retriever
+    _v2 = config.memory.v2
+    if _v2.rerank or _v2.enhanced_retriever or _v2.query_rewrite or _v2.chunking:
+        try:
+            from deskpet.memory.enhanced_retriever import (
+                build_recall_retriever as _build_recall_retriever,
+            )
+            # WI-M1.3: reranker —— 模型缺失 → BGEReranker 内部降级 mock，
+            # EnhancedRetriever._apply_reranker 检测到 mock 会自动 bypass。
+            _reranker = None
+            if _v2.rerank:
+                from deskpet.memory.reranker import BGEReranker as _BGEReranker
+                try:
+                    _rr_dir = resolve_model_dir("bge-reranker-v2-m3")
+                except Exception:  # noqa: BLE001
+                    _rr_dir = None
+                _reranker = _BGEReranker(
+                    model_path=_rr_dir, use_mock_when_missing=True,
+                )
+            # WI-M1.5: 短 query 改写器。无 LLM → None（不改写）。
+            _query_rewriter = None
+            if _v2.query_rewrite:
+                from deskpet.memory.query_rewriter import (
+                    LLMQueryRewriter as _LLMQueryRewriter,
+                )
+                _qr_llm = _make_str_llm_call(local_llm, max_tokens=128)
+                if _qr_llm is not None:
+                    _query_rewriter = _LLMQueryRewriter(_qr_llm)
+            # WI-M1.4: enhanced_retriever 依赖 facts_extract —— 单独开
+            # facts 表不会被写入，召回路长期为空，warn 一次。
+            if _v2.enhanced_retriever and not _v2.facts_extract:
+                logger.warning(
+                    "memory.v2.enhanced_retriever=true 但 facts_extract"
+                    "=false —— facts 表不会被写入，facts 路召回将长期为空。"
+                )
+            _retriever_for_mm = _build_recall_retriever(
+                _retriever,
+                rerank=_v2.rerank,
+                enhanced_retriever=_v2.enhanced_retriever,
+                query_rewrite=_v2.query_rewrite,
+                chunking=_v2.chunking,
+                facts_store=_facts_store,
+                facts_weight=_v2.facts.facts_weight,
+                reranker=_reranker,
+                query_rewriter=_query_rewriter,
+                embedder=_embedder,
+                chunk_store=_message_chunker,
+            )
+            logger.info(
+                "p4_enhanced_retriever_ready",
+                rerank=_v2.rerank,
+                enhanced_retriever=_v2.enhanced_retriever,
+                query_rewrite=_v2.query_rewrite,
+                chunking=_v2.chunking,
+            )
+        except Exception as _er_exc:  # noqa: BLE001
+            logger.warning(
+                "p4_enhanced_retriever_init_failed", error=str(_er_exc),
+            )
+            _retriever_for_mm = _retriever
+
     # P4-S17: MemoryManager and agent memory share SessionDB as the
     # canonical L2/conversation store.
     # OpenSpec 2026-05-16-companion-context-isolation §D1/D4: inject the
@@ -613,7 +767,7 @@ try:
     _memory_manager = _MemoryManager(
         file_memory=_file_memory,
         session_db=_session_db,
-        retriever=_retriever,
+        retriever=_retriever_for_mm,
         cross_session_decay=(
             float(_xsess_decay) if _xsess_decay is not None else None
         ),
@@ -645,6 +799,28 @@ try:
     # use the embed-tier route (rule → embed → llm cascade). When BGE-M3
     # isn't loaded yet, the embed path silently falls through to default —
     # graceful degradation already implemented in the classifier.
+    # 记忆系统升级 WI-M1.6: workspace 工作记忆。flag 开 → 构造
+    # WorkspaceMemoryStore，注入 file 工具（file_read/file_write 记动作 +
+    # workspace_recall 查回）和 assembler 组件。flag 关 → store=None，
+    # 工具不记、组件空转、workspace_state 表不会被建（Strangler-Fig）。
+    _workspace_mem_store = None
+    if config.memory.v2.workspace_memory:
+        try:
+            from deskpet.memory.workspace import (
+                WorkspaceMemoryStore as _WorkspaceMemoryStore,
+            )
+            from deskpet.tools.file_tools import (
+                set_workspace_store as _set_workspace_store,
+            )
+            _workspace_mem_store = _WorkspaceMemoryStore(_state_db_path)
+            _set_workspace_store(_workspace_mem_store)
+            logger.info("p4_workspace_memory_ready")
+        except Exception as _ws_exc:  # noqa: BLE001
+            logger.warning(
+                "p4_workspace_memory_init_failed", error=str(_ws_exc),
+            )
+            _workspace_mem_store = None
+
     from deskpet.agent.assembler import build_default_assembler as _build_assembler
     _assembler = _build_assembler(
         embedder=_embedder,
@@ -652,6 +828,7 @@ try:
         enabled=True,
         context_window=32_000,
         budget_ratio=0.6,
+        workspace_memory_store=_workspace_mem_store,
     )
     service_context.register("context_assembler", _assembler)
 
@@ -954,10 +1131,87 @@ async def lifespan(app: FastAPI):
     if _vw is not None and _sdb is not None:
         try:
             await _vw.start()
-            _sdb._on_message_written = _vw.enqueue  # type: ignore[attr-defined]
-            logger.info("p4_vector_worker_ready")
+            # 记忆系统升级 WI-M1.2: _on_message_written 从「只触发
+            # VectorWorker」升级为组合 fanout —— VectorWorker 永远跑，
+            # facts 抽取按 config.memory.v2.facts_extract 决定。hook 仍是
+            # 2 参 (mid, text)（不动既有调用点）；facts 需要的 role 由
+            # SessionDB.get_message_role 按 mid 反查。facts 抽取走
+            # asyncio.create_task → 不阻塞 append_message（shadow 模式）。
+            async def _on_message_fanout(mid: int, text: str) -> None:
+                await _vw.enqueue(mid, text)
+                if (
+                    config.memory.v2.facts_extract
+                    and _fact_extractor is not None
+                ):
+                    async def _extract_facts_bg(_mid: int, _text: str) -> None:
+                        try:
+                            _role = await _sdb.get_message_role(_mid)
+                            if not _role:
+                                return
+                            await _fact_extractor.process_message(
+                                message_id=_mid, content=_text, role=_role,
+                            )
+                        except Exception as _ex:  # noqa: BLE001
+                            logger.warning(
+                                "facts_extract_bg_failed mid=%s err=%s",
+                                _mid, _ex,
+                            )
+                    asyncio.create_task(_extract_facts_bg(mid, text))
+                # WI-M1.5: chunking —— 长消息切块 + embed 进
+                # messages_chunks。异步不阻塞 append_message（shadow）。
+                if config.memory.v2.chunking and _message_chunker is not None:
+                    async def _chunk_bg(_mid: int, _text: str) -> None:
+                        try:
+                            await _message_chunker.chunk_message(
+                                message_id=_mid, content=_text,
+                            )
+                        except Exception as _ex:  # noqa: BLE001
+                            logger.warning(
+                                "chunk_bg_failed mid=%s err=%s", _mid, _ex,
+                            )
+                    asyncio.create_task(_chunk_bg(mid, text))
+
+            _sdb._on_message_written = _on_message_fanout  # type: ignore[attr-defined]
+            logger.info(
+                "p4_vector_worker_ready",
+                facts_extract=config.memory.v2.facts_extract,
+            )
         except Exception as exc:
             logger.warning("p4_vector_worker_start_failed", error=str(exc))
+    # 记忆系统升级 WI-M1.7: reflection 低频定时任务。flag reflection 开 →
+    # 注册一个后台 task，每 _REFLECTION_INTERVAL_H 小时调 ReflectionWorker
+    # .run_once()（产物写进 facts 表 category=reflection）。flag 关 → 不注册
+    # → 空闲零开销（R11）。无可用 LLM → run_once 内部跳过本次、不报错。
+    if (
+        config.memory.v2.reflection
+        and _fact_extractor is not None
+        and _facts_store is not None
+        and _summarizer_state_db_path is not None
+    ):
+        _reflection_llm = _make_str_llm_call(local_llm, max_tokens=256)
+        if _reflection_llm is None:
+            logger.info("p4_reflection_skipped", reason="no_llm_provider")
+        else:
+            async def _reflection_loop() -> None:
+                from deskpet.memory.reflection import ReflectionWorker
+                _interval_s = 6.0 * 3600.0  # 每 6h 跑一次
+                _worker = ReflectionWorker(
+                    _summarizer_state_db_path,
+                    _facts_store,
+                    _reflection_llm,
+                )
+                # 启动后先等一会，避开冷启动高峰。
+                await asyncio.sleep(180.0)
+                while True:
+                    try:
+                        _fid = await _worker.run_once()
+                        logger.info("reflection_run_once", fact_id=_fid)
+                    except Exception as _rex:  # noqa: BLE001
+                        logger.warning("reflection_run_failed err=%s", _rex)
+                    await asyncio.sleep(_interval_s)
+
+            asyncio.create_task(_reflection_loop())
+            logger.info("p4_reflection_worker_scheduled")
     # OpenSpec 2026-05-16-async-image-gen: start the ImageGenerationWorker
     # unless async disabled (then generate_image runs legacy sync).
     _iw = service_context.get("image_worker")
@@ -1967,6 +2221,48 @@ async def control_channel(ws: WebSocket):
                     await ws.send_json({
                         "type": "memory_summarize_response",
                         "payload": {"ok": False, "error": str(exc)},
+                    })
+
+            elif msg_type == "memory_thumbs_up":
+                # 记忆系统升级 WI-M1.1：评估反馈回路。前端历史/消息面板
+                # 点 👍/👎 → 这里把一行落进 memory_user_feedback，供 eval
+                # CLI 离线分析「召回质量差的 query」。
+                # payload: { msg_id:int, query:str, helpful:bool }
+                # flag feedback_loop 关 → 不落库、不建 v2 表（Strangler-Fig：
+                # MR-0 要求 flag 全关时 state.db 无任何 v2 表）。
+                payload = raw.get("payload", {}) or {}
+                if not config.memory.v2.feedback_loop:
+                    await ws.send_json({
+                        "type": "memory_thumbs_up_response",
+                        "payload": {"ok": False, "reason": "feedback_loop_disabled"},
+                    })
+                    continue
+                if _summarizer_state_db_path is None:
+                    await ws.send_json({
+                        "type": "memory_thumbs_up_response",
+                        "payload": {"ok": False, "reason": "state_db_unavailable"},
+                    })
+                    continue
+                try:
+                    from deskpet.memory.eval.feedback import FeedbackStore
+                    _msg_id = int(payload.get("msg_id"))
+                    _helpful = bool(payload.get("helpful", True))
+                    _store = FeedbackStore(_summarizer_state_db_path)
+                    _row_id = await _store.record(
+                        source_msg_id=_msg_id,
+                        value=1 if _helpful else -1,
+                        context_query=payload.get("query") or None,
+                        session_id=session_id,
+                    )
+                    await ws.send_json({
+                        "type": "memory_thumbs_up_response",
+                        "payload": {"ok": True, "feedback_id": _row_id},
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("memory_thumbs_up_failed: %s", exc)
+                    await ws.send_json({
+                        "type": "memory_thumbs_up_response",
+                        "payload": {"ok": False, "reason": str(exc)},
                     })
 
             elif msg_type == "memory_archive_list":

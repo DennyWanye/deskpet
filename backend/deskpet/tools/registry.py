@@ -135,6 +135,27 @@ class ToolSpec:
         return dict(self.schema.get("parameters", {}))
 
 
+def _run_coro_sync(coro: Any) -> Any:
+    """把一个 coroutine 在 sync 上下文里跑到底，返回其结果。
+
+    记忆系统升级 WI-M1.6：``dispatch()`` 是 sync 的，但 file 工具 handler
+    改成了 async。无 running loop（测试 / smoke / 遗留 sync 调用）→ 直接
+    ``asyncio.run``；万一在 running loop 里被调到（不应发生 —— 生产 async
+    路走 V2 ``execute_tool``）→ 丢进独立线程各自起 loop 跑，避免
+    "loop already running"。
+    """
+    import asyncio as _asyncio
+
+    try:
+        _asyncio.get_running_loop()
+    except RuntimeError:
+        return _asyncio.run(coro)
+    import concurrent.futures as _cf
+
+    with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+        return _ex.submit(lambda: _asyncio.run(coro)).result()
+
+
 class ToolRegistry:
     """Process-wide singleton for tool registration + dispatch.
 
@@ -339,6 +360,14 @@ class ToolRegistry:
 
         try:
             result = spec.handler(dict(args or {}), task_id)
+            # 记忆系统升级 WI-M1.6：file_read/file_write handler 改成
+            # async（直接 await record_action）。sync 的 dispatch() 路径
+            # （遗留 fallback + 测试 + smoke 脚本）需把 coroutine 跑到底。
+            # 生产 code-mode 走 V2 registry.execute_tool（原生 async 分流），
+            # 不经此处。
+            import inspect as _inspect2
+            if _inspect2.iscoroutine(result):
+                result = _run_coro_sync(result)
         except Exception as exc:  # noqa: BLE001 — everything caught by design
             retriable = _classify_retriable(exc)
             err = f"{type(exc).__name__}: {exc}"

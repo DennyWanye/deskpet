@@ -311,6 +311,23 @@ class SessionDB:
 
         return msg_id
 
+    async def get_message_role(self, msg_id: int) -> Optional[str]:
+        """返回单条消息的 role（按主键查，O(1)）。msg 不存在 → None。
+
+        记忆系统升级 WI-M1.2：`_on_message_written` hook 是 2 参数
+        `(msg_id, content)`（保持向后兼容、不动既有 9 处 hook 调用点），
+        facts 抽取需要 role —— fanout callable 用本方法按 msg_id 反查。
+        """
+        if not self._initialized:
+            await self.initialize()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT role FROM messages WHERE id = ?", (int(msg_id),)
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+        return str(row[0]) if row else None
+
     async def get_messages(
         self,
         session_id: str,

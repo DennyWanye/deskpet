@@ -66,6 +66,9 @@ class PerItemResult:
     hit_at_10: bool
     reciprocal_rank: float
     returned_ids: list[int]
+    # 记忆系统升级 WI-M0.2 / D11: 召回结果渲染进 system prompt 的文本
+    # token 估算（仅 L3/facts 段，不含 L1 静态档案、不含对话历史）。
+    rendered_tokens: int = 0
 
 
 @dataclass
@@ -76,6 +79,9 @@ class EvalReport:
     hit_at_10: float
     mrr: float
     duration_ms: float
+    # 记忆系统升级 WI-M0.2 / D11: 平均每 query 召回结果渲染进 system
+    # prompt 的文本 token。门控指标 —— 召回链路改动后增幅须 ≤ +30%。
+    token_per_query: float = 0.0
     per_item: list[PerItemResult] = field(default_factory=list)
     config: dict[str, Any] = field(default_factory=dict)
 
@@ -86,6 +92,7 @@ class EvalReport:
             "hit@5": round(self.hit_at_5, 4),
             "hit@10": round(self.hit_at_10, 4),
             "mrr": round(self.mrr, 4),
+            "token_per_query": round(self.token_per_query, 2),
             "duration_ms": round(self.duration_ms, 2),
         }
 
@@ -143,6 +150,7 @@ class MetricsRunner:
             hit_at_5=sum(1 for r in per_item if r.hit_at_5) / n,
             hit_at_10=sum(1 for r in per_item if r.hit_at_10) / n,
             mrr=sum(r.reciprocal_rank for r in per_item) / n,
+            token_per_query=sum(r.rendered_tokens for r in per_item) / n,
             duration_ms=elapsed_ms,
             per_item=per_item,
             config=self._config_snapshot,
@@ -190,6 +198,7 @@ class MetricsRunner:
             hit_at_10=(1 <= rank <= 10),
             reciprocal_rank=(1.0 / rank) if rank > 0 else 0.0,
             returned_ids=returned_ids[:top_k],
+            rendered_tokens=_rendered_tokens(hits[:top_k]),
         )
 
     async def _open_run(self, qa_size: int) -> int:
@@ -220,6 +229,39 @@ class MetricsRunner:
                 ),
             )
             await db.commit()
+
+
+def _rendered_tokens(hits: Iterable[Any]) -> int:
+    """Estimate the token cost of rendering ``hits`` into the system prompt.
+
+    记忆系统升级 WI-M0.2 / PRD D11: 量的是 L3/facts 召回段渲染进 system
+    prompt 的文本 token —— 不含 L1 静态档案、不含对话历史。复刻
+    ``assembler/components/memory.py`` 的渲染（``_render_l3_only``）与
+    粗略 tokenizer（``_approx_tokens``: 1 token ≈ 4 chars），口径与 agent
+    一致。空召回 → 0 token（不渲染段头）。
+    """
+    lines: list[str] = []
+    for h in hits:
+        text = getattr(h, "text", None)
+        if text is None and isinstance(h, dict):
+            text = h.get("text")
+        text = (str(text) if text else "").strip()
+        if not text:
+            continue
+        if len(text) > 240:
+            text = text[:240] + "…"
+        src = getattr(h, "source", None)
+        if src is None and isinstance(h, dict):
+            src = h.get("source")
+        score = getattr(h, "score", None)
+        if score is None and isinstance(h, dict):
+            score = h.get("score")
+        score_str = f"{score:.3f}" if isinstance(score, (int, float)) else "?"
+        lines.append(f"- [{src or '?'} {score_str}] {text}")
+    if not lines:
+        return 0
+    block = "## 相关记忆片段 (L3, RRF recall)\n\n" + "\n".join(lines)
+    return max(1, len(block) // 4)
 
 
 def _extract_message_id(hit: Any) -> Optional[int]:

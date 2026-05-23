@@ -58,12 +58,15 @@ policies:
 
   code:
     # Coding/debugging — scoped tool list, workspace is high value.
+    # 记忆系统升级 WI-M1.6：workspace_memory 组件注入本 session 文件
+    # 工作记忆；workspace_recall 工具让 agent 主动查改过的文件。
     must: [memory]
-    prefer: [persona, tool, workspace]
+    prefer: [persona, tool, workspace, workspace_memory]
     tools:
       - file_read
       - file_write
       - file_search
+      - workspace_recall
       - todo_add
       - todo_list
     memory:
