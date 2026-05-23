@@ -2,6 +2,25 @@
 
 本地部署的桌面语音宠物：Live2D 桌宠 + 全本地语音交互管线（VAD → ASR → LLM → TTS）。
 
+---
+
+> ## 🔑 开发期登录测试账号（**仅 DEV 环境，不要 push 到 public**）
+>
+> 启动桌宠 → onboarding 登录流程 → relay 中转站会下发 LLM API key（写入 OS keychain）→
+> 后端通过 `DESKPET_CLOUD_API_KEY` env 拿到 key 调真实云端 LLM（默认 gpt-5.5 via chinzy）。
+>
+> **测试账号**：
+> - 邮箱：`<dev-test@example.com>`
+> - 密码：`<redacted-see-LOCAL-DEV-CREDENTIALS.md>`
+>
+> ⚠️ **安全说明**：
+> - 这是开发期共享测试账号，**不**包含真实用户数据。
+> - 即便如此，**不要把本仓库 push 到 public GitHub**（git 历史会永远存这段）。
+> - 若需要把仓库开源，先 `git filter-repo` 清除这段，并改用 `LOCAL-DEV-CREDENTIALS.md`（加入 .gitignore）。
+> - 子代理 / windows-mcp E2E 测试要走完整 LLM 链路时用这个账号登录。
+
+---
+
 **技术栈：** Tauri 2 + React + PixiJS v7 + pixi-live2d-display（前端）· Python FastAPI + faster-whisper + Silero VAD + edge-tts + Ollama（后端）。
 
 ---
