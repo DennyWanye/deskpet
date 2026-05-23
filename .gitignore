@@ -93,3 +93,8 @@ docs/EVIDENCE/screenshot_*.png
 # Regeneratable from the bundle scripts; not source.
 codex-installer-for-friend.zip
 .dev-userdata/
+
+# 中转站 device key —— 临时人工测试用，绝不入库
+.relay_api_key
+.relay_base_url
+.relay_model
