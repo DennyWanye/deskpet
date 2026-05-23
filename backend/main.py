@@ -354,12 +354,24 @@ try:
     )
     deskpet_tool_registry_v2.set_permission_gate(permission_gate_v2)
     # WI-T3.1 last-mile wiring: provider 模式注入 ToolsConfig 到 registry。
-    # flag 全 OFF 默认 → execute_tool envelope wrapping 是 no-op (字节级一致)；
-    # 用户/管理员开任一 flag (artifact_envelope/frontend_artifact_card/...)
-    # 后 runtime 立即生效，无需重启。
+    # 2026-05-23 测试阶段决策：config.toml 默认全 ON（不走灰度），
+    # 用户/管理员可在 config.toml 改 flag 个别关闭。
     deskpet_tool_registry_v2.set_tools_config_provider(
         lambda: getattr(config, "tools", None)
     )
+
+    # WI-T1.5 last-mile: 解析 default_artifact_dir 空字符串 → 默认
+    # <user_data>/artifacts/。这样 config.toml 用户留空也能拿到合理默认；
+    # 显式填路径则按用户配置走（office_paths.artifact_default_path 直接读）。
+    if hasattr(config, "tools") and config.tools.last_mile.default_artifact_dir == "":
+        from pathlib import Path as _PathLM
+        config.tools.last_mile.default_artifact_dir = str(
+            _PathLM(_paths.user_data_dir()) / "artifacts"
+        )
+        logger.info(
+            "last_mile.default_artifact_dir resolved to %s",
+            config.tools.last_mile.default_artifact_dir,
+        )
     # WI-T2.2 P0 修：按 cfg.tools.verifier.emit_receipts 构造 ReceiptStore
     # 并通过 provider 注入。flag OFF 时 box[0]=None 永不产 receipt（BC）；
     # flag ON 时每次 execute_tool 都 emit + 写盘。
