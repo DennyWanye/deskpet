@@ -244,6 +244,25 @@ fts_weight = 0.3
 recency_weight = 0.15
 salience_weight = 0.05
 
+# 记忆系统升级 — memory-v2 各模块 feature flag。全部默认 false → 行为与
+# 第一代"三层 + RRF"逐字节一致。每个 flag 单独控制一个 v2 模块的接入
+# （Strangler-Fig：关 flag 即回退第一代）。详见
+# plans/2026-05-22-memory-system-upgrade/00-PRD.md。
+[memory.v2]
+feedback_loop      = false   # WI-M1.1 用户 thumbs-up 回路
+facts_extract      = false   # WI-M1.2 写入端事实抽取
+rerank             = false   # WI-M1.3 cross-encoder 重排
+enhanced_retriever = false   # WI-M1.4 facts 进 RRF（依赖 facts_extract）
+chunking           = false   # WI-M1.5 长消息切块
+query_rewrite      = false   # WI-M1.5 短查询改写
+workspace_memory   = false   # WI-M1.6 code 工作记忆
+reflection         = false   # WI-M1.7 反思 / skill memory
+
+[memory.v2.facts]
+min_user_chars = 8           # 字数采样门（取代 facts.py 硬编码 <8）
+facts_weight   = 0.2         # facts 路进 RRF 的权重
+model_override = ""          # 留空 = 用主 LLM
+
 # P4-S6 + P4-S7: DeskPet agent loop knobs. `max_iterations` caps the
 # ReAct while-loop; `context_window_tokens` feeds the ContextAssembler
 # budget allocator. `interrupt_enabled` hooks ASR hot-words ("等一下/停")

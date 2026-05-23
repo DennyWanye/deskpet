@@ -34,6 +34,9 @@ from deskpet.agent.assembler.components.skill import SkillComponent
 from deskpet.agent.assembler.components.time_component import TimeComponent
 from deskpet.agent.assembler.components.tool import ToolComponent
 from deskpet.agent.assembler.components.workspace import WorkspaceComponent
+from deskpet.agent.assembler.components.workspace_memory import (
+    WorkspaceMemoryComponent,
+)
 from deskpet.agent.assembler.policy import load_policies
 from deskpet.agent.assembler.registry import ComponentRegistry
 from deskpet.agent.assembler.tts_prenarration import TTSPreNarrator
@@ -61,6 +64,7 @@ __all__ = [
     "TimeComponent",
     "ToolComponent",
     "WorkspaceComponent",
+    "WorkspaceMemoryComponent",
     "load_policies",
 ]
 
@@ -73,13 +77,17 @@ def build_default_assembler(
     llm_model: str = "claude-haiku-4-5",
     context_window: int = 200_000,
     budget_ratio: float = 0.6,
+    workspace_memory_store=None,
 ) -> ContextAssembler:
     """One-shot factory for the common case.
 
-    Wires: 6 built-in components + packaged default.yaml policies +
+    Wires: 7 built-in components + packaged default.yaml policies +
     classifier with provided embedder/LLM + default budget allocator.
     Caller still supplies memory_manager / tool_registry per-turn
     via :meth:`ContextAssembler.assemble`.
+
+    记忆系统升级 WI-M1.6：``workspace_memory_store`` 由 main.py 在
+    ``memory.v2.workspace_memory`` flag 开时注入；None → 组件空转。
     """
     registry = ComponentRegistry()
     registry.register(MemoryComponent())
@@ -88,6 +96,7 @@ def build_default_assembler(
     registry.register(PersonaComponent())
     registry.register(TimeComponent())
     registry.register(WorkspaceComponent())
+    registry.register(WorkspaceMemoryComponent(store=workspace_memory_store))
 
     policies = load_policies()
 

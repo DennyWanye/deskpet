@@ -421,6 +421,18 @@ class Embedder:
         device = self._resolved_device()
         # Use the same Python interpreter that's running the backend.
         # Inherit env so HF_HOME / CUDA_VISIBLE_DEVICES propagate.
+        # 记忆升级修复：production cwd 是 backend/ 故 `python -m
+        # deskpet.memory.embedder_worker` 能从 cwd 解析到 deskpet 包；
+        # 但当 backend 从其它 cwd 启（测试驱动、`python -m` 脚本从仓库
+        # 根跑等）时子进程找不到 deskpet → silently fall back to mock。
+        # 显式把 backend 根（本文件的 parents[2]）塞进子进程 PYTHONPATH。
+        import os as _os
+        _backend_root = str(Path(__file__).resolve().parents[2])
+        _child_env = dict(_os.environ)
+        _existing_pp = _child_env.get("PYTHONPATH", "")
+        _child_env["PYTHONPATH"] = (
+            _backend_root + (_os.pathsep + _existing_pp if _existing_pp else "")
+        )
         log.info(
             "Spawning BGE-M3 subprocess worker (path=%s device=%s)",
             self._model_path, device,
@@ -451,6 +463,7 @@ class Embedder:
             # are lost into Tauri's stderr sink and we can't diagnose.
             stderr=asyncio.subprocess.PIPE,
             limit=16 * 1024 * 1024,  # 16 MB stdout buffer per readline
+            env=_child_env,
         )
 
         # Drain worker stderr into backend log on a background task so

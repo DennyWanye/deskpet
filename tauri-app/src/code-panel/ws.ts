@@ -12,6 +12,7 @@
  * (already implemented in process_manager.rs).
  */
 import { invoke } from "@tauri-apps/api/core";
+import { BACKEND_PORT } from "../backendPort";
 import { useSessionsStore } from "../stores/sessionsStore";
 // P5-S2 Phase 5 — code session binding events
 import { useProvidersStore } from "./providersStore";
@@ -91,7 +92,7 @@ async function open_socket() {
     window.location?.hash?.startsWith("#/message-panel")
       ? "message-panel-main"
       : "code-panel-main";
-  const url = `ws://127.0.0.1:8100/ws/control?secret=${encodeURIComponent(
+  const url = `ws://127.0.0.1:${BACKEND_PORT}/ws/control?secret=${encodeURIComponent(
     secret,
   )}&session_id=${_ctrlSid}`;
   try {

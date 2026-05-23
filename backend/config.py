@@ -147,6 +147,32 @@ class VoiceConfig:
     tts_cooldown_ms: int = 300
 
 @dataclass
+class MemoryV2FactsConfig:
+    """``[memory.v2.facts]`` — facts 抽取调参（记忆系统升级）。"""
+    min_user_chars: int = 8       # 字数采样门，取代 facts.py 硬编码 <8
+    facts_weight: float = 0.2     # facts 路进 RRF 的权重
+    model_override: str = ""      # 留空 = 用主 LLM
+
+
+@dataclass
+class MemoryV2Config:
+    """``[memory.v2]`` — memory-v2 各模块的 feature flag。
+
+    全部默认 False → 行为与第一代"三层 + RRF"逐字节一致。每个 flag 单独
+    控制一个 v2 模块的接入（Strangler-Fig：关 flag 即回退第一代）。
+    """
+    feedback_loop: bool = False       # WI-M1.1 用户 thumbs-up 回路
+    facts_extract: bool = False       # WI-M1.2 写入端事实抽取
+    rerank: bool = False              # WI-M1.3 cross-encoder 重排
+    enhanced_retriever: bool = False  # WI-M1.4 facts 进 RRF
+    chunking: bool = False            # WI-M1.5 长消息切块
+    query_rewrite: bool = False       # WI-M1.5 短查询改写
+    workspace_memory: bool = False    # WI-M1.6 code 工作记忆
+    reflection: bool = False          # WI-M1.7 反思 / skill memory
+    facts: MemoryV2FactsConfig = field(default_factory=MemoryV2FactsConfig)
+
+
+@dataclass
 class MemoryConfig:
     # P3-S7: empty string = "auto-resolve to <user_data_dir>/data/memory.db".
     # Previously defaulted to "./data/memory.db" which was CWD-relative and
@@ -155,6 +181,9 @@ class MemoryConfig:
     # explicit absolute paths in config.toml pass through untouched.
     db_path: str = ""
     embedding_model: str = "bge-m3"
+    # 记忆系统升级 —— [memory.v2] 子表。_load_section 不递归解析嵌套
+    # dataclass，故 load_config 把 v2 子表 pop 出来单独构建（见 _load_memory_v2）。
+    v2: MemoryV2Config = field(default_factory=MemoryV2Config)
 
 
 @dataclass(frozen=True)
@@ -247,6 +276,20 @@ def _load_section(cls, raw_dict: dict):
             cls.__name__, sorted(unknown),
         )
     return cls(**{k: v for k, v in raw_dict.items() if k in known})
+
+
+def _load_memory_v2(raw_v2: dict) -> MemoryV2Config:
+    """Build MemoryV2Config from the raw ``[memory.v2]`` dict.
+
+    ``_load_section`` is flat (no nested-dataclass recursion), so the
+    ``[memory.v2.facts]`` sub-sub-table is popped + built separately.
+    Missing section / keys → all flags default False (第一代行为不变)。
+    """
+    raw_facts = dict(raw_v2.pop("facts", {}) or {})
+    facts = _load_section(MemoryV2FactsConfig, raw_facts)
+    v2 = _load_section(MemoryV2Config, raw_v2)
+    v2.facts = facts
+    return v2
 
 
 def _bundle_default_config_path() -> Path | None:
@@ -424,6 +467,16 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     config = AppConfig()
     if "backend" in raw:
         config.backend = _load_section(BackendConfig, raw["backend"])
+    # DESKPET_BACKEND_PORT env override — lets a second checkout / git
+    # worktree run its own dev backend on a different port without
+    # editing config.toml. The Tauri shell (process_manager.rs) reads
+    # the SAME env var so both halves of the handshake agree.
+    _port_override = os.environ.get("DESKPET_BACKEND_PORT")
+    if _port_override:
+        try:
+            config.backend.port = int(_port_override.strip())
+        except ValueError:
+            pass
     if "llm" in raw:
         raw_llm = raw["llm"]
         raw_local = raw_llm.pop("local", None)
@@ -510,7 +563,12 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     if "voice" in raw:
         config.voice = _load_section(VoiceConfig, raw["voice"])
     if "memory" in raw:
-        config.memory = _load_section(MemoryConfig, raw["memory"])
+        # [memory.v2] / [memory.v2.facts] 是嵌套子表，_load_section 只做
+        # 平铺解析 —— 先把 v2 pop 出来单独构建，再装回。
+        raw_mem = dict(raw["memory"])
+        raw_v2 = dict(raw_mem.pop("v2", {}) or {})
+        config.memory = _load_section(MemoryConfig, raw_mem)
+        config.memory.v2 = _load_memory_v2(raw_v2)
     # P3-S7: always funnel memory.db_path through the AppData resolver, so
     # empty/relative values become absolute user_data_dir paths and absolute
     # ones pass through. This also catches the AppConfig() defaults when

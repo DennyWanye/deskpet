@@ -24,6 +24,7 @@ import type {
   MemoryL1ListResponse,
   MemoryListResponse,
   MemorySearchResponse,
+  MemoryThumbsUpResponse,
   SkillDescriptor,
   SkillsListResponse,
   StoredTurn,
@@ -56,6 +57,11 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
   const [status, setStatus] = useState<string | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [scope, setScope] = useState<MemoryScope>("session");
+  // WI-M1.1 评估反馈回路：记录每条 turn 已给的反馈（1=👍 / -1=👎），
+  // 用于按钮高亮 + 防重复点。
+  const [feedbackGiven, setFeedbackGiven] = useState<Record<number, 1 | -1>>(
+    {},
+  );
 
   // --- P4-S11 L1 file-memory state --------------------------------------
   const [l1Target, setL1Target] = useState<L1Target>("memory");
@@ -96,6 +102,19 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
             setStatus(`Deleted turn #${m.payload.id}`);
           } else {
             setStatus(`Turn #${m.payload.id} already gone`);
+          }
+          break;
+        }
+        case "memory_thumbs_up_response": {
+          const m = msg as MemoryThumbsUpResponse;
+          if (m.payload.ok) {
+            setStatus(`反馈已记录 (#${m.payload.feedback_id})`);
+          } else {
+            setStatus(
+              m.payload.reason === "feedback_loop_disabled"
+                ? "反馈回路未启用（[memory.v2] feedback_loop=false）"
+                : `反馈记录失败：${m.payload.reason ?? "unknown"}`,
+            );
           }
           break;
         }
@@ -222,6 +241,25 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
   // --- Handlers ---------------------------------------------------------
   const handleDelete = (id: number) => {
     getChannel()?.send({ type: "memory_delete", payload: { id } });
+  };
+
+  // WI-M1.1：对某条 assistant 回复点 👍/👎。query 取该回复前最近一条
+  // user turn 的内容（best-effort，召回质量分析需要 query 上下文）。
+  const handleFeedback = (turnIndex: number, helpful: boolean) => {
+    const turn = turns[turnIndex];
+    if (!turn) return;
+    let query = "";
+    for (let i = turnIndex - 1; i >= 0; i--) {
+      if (turns[i].role === "user") {
+        query = turns[i].content;
+        break;
+      }
+    }
+    getChannel()?.send({
+      type: "memory_thumbs_up",
+      payload: { msg_id: turn.id, query, helpful },
+    });
+    setFeedbackGiven((prev) => ({ ...prev, [turn.id]: helpful ? 1 : -1 }));
   };
   const handleClearSession = () => {
     getChannel()?.send({
@@ -434,7 +472,7 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
             {turns.length === 0 && !loading && (
               <div style={emptyStyle}>(no turns)</div>
             )}
-            {turns.map((t) => (
+            {turns.map((t, idx) => (
               <div
                 key={t.id}
                 data-testid={`memory-turn-${t.id}`}
@@ -455,6 +493,40 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
                   )}
                   {t.content}
                 </span>
+                {/* WI-M1.1：只给 assistant 回复挂 👍/👎 —— 用户对桌宠
+                    回复的满意度才是召回质量信号。 */}
+                {t.role === "assistant" && (
+                  <>
+                    <button
+                      data-testid={`memory-feedback-up-${t.id}`}
+                      onClick={() => handleFeedback(idx, true)}
+                      style={{
+                        ...btnStyle(feedbackGiven[t.id] === 1 ? "#16a34a" : "#334155"),
+                        padding: "1px 6px",
+                        fontSize: "10px",
+                        flexShrink: 0,
+                      }}
+                      title="这条回复有帮助"
+                      aria-label={`turn ${t.id} 有帮助`}
+                    >
+                      👍
+                    </button>
+                    <button
+                      data-testid={`memory-feedback-down-${t.id}`}
+                      onClick={() => handleFeedback(idx, false)}
+                      style={{
+                        ...btnStyle(feedbackGiven[t.id] === -1 ? "#dc2626" : "#334155"),
+                        padding: "1px 6px",
+                        fontSize: "10px",
+                        flexShrink: 0,
+                      }}
+                      title="这条回复没帮助"
+                      aria-label={`turn ${t.id} 没帮助`}
+                    >
+                      👎
+                    </button>
+                  </>
+                )}
                 <button
                   data-testid={`memory-delete-${t.id}`}
                   onClick={() => handleDelete(t.id)}

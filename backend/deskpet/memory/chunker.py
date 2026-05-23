@@ -112,8 +112,36 @@ class MessageChunker:
     deleted before re-inserting.
     """
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, *, embedder: Any | None = None) -> None:
         self._db_path = Path(db_path)
+        # 记忆系统升级 WI-M1.5：embedder 注入 → 每个 chunk 独立 embed 进
+        # messages_chunks.embedding，召回端走 chunk 向量。None/mock → 不写
+        # 向量（chunk 行仍落库，只是无向量、召回端跳过）。
+        self._embedder = embedder
+
+    async def _embed_chunks(self, chunks: list[str]) -> list[Optional[bytes]]:
+        """对一批 chunk 文本算向量 bytes。无 embedder / mock / 失败 → 全 None。"""
+        emb = self._embedder
+        if emb is None:
+            return [None] * len(chunks)
+        try:
+            if hasattr(emb, "is_mock") and emb.is_mock():
+                return [None] * len(chunks)
+            arr = await emb.encode(chunks)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("MessageChunker embed failed: %s", exc)
+            return [None] * len(chunks)
+        try:
+            import numpy as _np
+
+            if arr is None or len(arr) != len(chunks):
+                return [None] * len(chunks)
+            return [
+                _np.asarray(row, dtype=_np.float32).tobytes() for row in arr
+            ]
+        except Exception as exc:  # noqa: BLE001
+            log.debug("MessageChunker embed serialize failed: %s", exc)
+            return [None] * len(chunks)
 
     async def chunk_message(
         self,
@@ -132,6 +160,7 @@ class MessageChunker:
             return []
         await ensure_memory_v2_tables(self._db_path)
         now = time.time()
+        embeddings = await self._embed_chunks(chunks)  # WI-M1.5
         chunk_ids: list[int] = []
         async with aiosqlite.connect(self._db_path) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
@@ -143,14 +172,64 @@ class MessageChunker:
             for idx, ch in enumerate(chunks):
                 cur = await conn.execute(
                     "INSERT INTO messages_chunks("
-                    "message_id, chunk_index, text, created_at"
-                    ") VALUES (?, ?, ?, ?)",
-                    (int(message_id), idx, ch, now),
+                    "message_id, chunk_index, text, embedding, created_at"
+                    ") VALUES (?, ?, ?, ?, ?)",
+                    (int(message_id), idx, ch, embeddings[idx], now),
                 )
                 chunk_ids.append(int(cur.lastrowid or 0))
                 await cur.close()
             await conn.commit()
         return chunk_ids
+
+    async def vector_search(
+        self, query_embedding: Any, *, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """记忆系统升级 WI-M1.5：chunk 向量召回 → 返回 parent message。
+
+        对所有带 ``embedding`` 的 chunk 做 brute-force cosine，按 parent
+        ``message_id`` 去重（同一条消息多个 chunk 命中 → 取最高分那个），
+        每行附 ``_score`` + 命中 chunk 的 ``text``。embedder mock 时 chunk
+        无向量 → 返回空，调用方据此跳过 chunk 路。
+        """
+        if query_embedding is None:
+            return []
+        await ensure_memory_v2_tables(self._db_path)
+        import numpy as np
+
+        q = np.asarray(query_embedding, dtype=np.float32).ravel()
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0.0:
+            return []
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute(
+                "SELECT message_id, text, embedding FROM messages_chunks "
+                "WHERE embedding IS NOT NULL"
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+        best: dict[int, dict[str, Any]] = {}
+        for r in rows:
+            blob = r["embedding"]
+            if not blob:
+                continue
+            vec = np.frombuffer(blob, dtype=np.float32)
+            if vec.shape != q.shape:
+                continue
+            v_norm = float(np.linalg.norm(vec))
+            if v_norm == 0.0:
+                continue
+            cos = float(np.dot(q, vec) / (q_norm * v_norm))
+            mid = int(r["message_id"])
+            cur_best = best.get(mid)
+            if cur_best is None or cos > cur_best["_score"]:
+                best[mid] = {
+                    "message_id": mid,
+                    "text": r["text"],
+                    "_score": cos,
+                }
+        ranked = sorted(best.values(), key=lambda d: -d["_score"])
+        return ranked[: int(limit)]
 
     async def chunks_for_message(self, message_id: int) -> list[dict[str, Any]]:
         await ensure_memory_v2_tables(self._db_path)

@@ -116,6 +116,12 @@ export interface MemoryDeleteAck {
   payload: { id: number; deleted: boolean };
 }
 
+// 记忆系统升级 WI-M1.1：评估反馈回路。点 👍/👎 后端落 memory_user_feedback。
+export interface MemoryThumbsUpResponse {
+  type: "memory_thumbs_up_response";
+  payload: { ok: boolean; feedback_id?: number; reason?: string };
+}
+
 export interface MemoryClearAck {
   type: "memory_clear_ack";
   payload: { scope: "session" | "all"; session_id?: string; removed?: number };
@@ -394,6 +400,7 @@ export type IncomingMessage =
   | ActionTriggerMessage
   | MemoryListResponse
   | MemoryDeleteAck
+  | MemoryThumbsUpResponse
   | MemoryClearAck
   | MemoryExportResponse
   | ProviderTestConnectionResult

@@ -40,6 +40,45 @@ logger = logging.getLogger(__name__)
 _APP_NAME = "deskpet"
 
 
+# ---------------------------------------------------------------------
+# 记忆系统升级 WI-M1.6 — 工作记忆注入点
+# ---------------------------------------------------------------------
+# file_write / file_read handler 改成 async 后，可直接 await
+# WorkspaceMemoryStore.record_action（registry dispatch 用
+# iscoroutinefunction 分流，async handler 直接 await，不进 worker thread
+# → 不必 run_coroutine_threadsafe，无死锁）。
+#
+# 模块级函数没有依赖注入途径 —— main.py 在 workspace_memory flag 开时
+# 调 set_workspace_store() 把实例塞进来。flag 关 → 保持 None → handler
+# 跳过记录（Strangler-Fig：flag 关时 workspace_state 表不会被建）。
+_workspace_store: Any | None = None
+
+
+def set_workspace_store(store: Any | None) -> None:
+    """main.py 在 workspace_memory flag 开时注入 WorkspaceMemoryStore。"""
+    global _workspace_store
+    _workspace_store = store
+
+
+async def _record_workspace_action(
+    *, session_id: str, path: str, action: str, content: str | None,
+) -> None:
+    """best-effort 记一次文件动作。store 未注入 / 出错 → 静默跳过，
+    绝不影响 file 工具主路径。"""
+    store = _workspace_store
+    if store is None:
+        return
+    try:
+        await store.record_action(
+            session_id=session_id or "default",
+            path=path,
+            action=action,
+            content=content,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("workspace record_action failed: %s", exc)
+
+
 def _workspace_root() -> Path:
     override = os.environ.get("DESKPET_WORKSPACE_DIR")
     if override:
@@ -121,7 +160,9 @@ _SCHEMA_READ: dict[str, Any] = {
 }
 
 
-def _handle_file_read(args: dict[str, Any], task_id: str) -> str:
+async def _handle_file_read(args: dict[str, Any], task_id: str) -> str:
+    # WI-M1.6: handler 改 async —— 成功读后直接 await record_action 记
+    # 工作记忆（registry dispatch 对 async handler 直接 await）。
     target = _resolve_within_workspace(str(args.get("path", "")))
     if target is None:
         return _err("path outside workspace", retriable=False)
@@ -144,11 +185,16 @@ def _handle_file_read(args: dict[str, Any], task_id: str) -> str:
                 lines.append(line)
     except OSError as exc:
         return _err(f"read failed: {exc}", retriable=True)
+    rel_path = str(target.relative_to(_workspace_root())).replace("\\", "/")
+    content = "".join(lines)
+    await _record_workspace_action(
+        session_id=task_id, path=rel_path, action="read", content=content,
+    )
     return json.dumps(
         {
-            "content": "".join(lines),
+            "content": content,
             "lines_read": len(lines),
-            "path": str(target.relative_to(_workspace_root())).replace("\\", "/"),
+            "path": rel_path,
         },
         ensure_ascii=False,
     )
@@ -186,7 +232,8 @@ _SCHEMA_WRITE: dict[str, Any] = {
 }
 
 
-def _handle_file_write(args: dict[str, Any], task_id: str) -> str:
+async def _handle_file_write(args: dict[str, Any], task_id: str) -> str:
+    # WI-M1.6: handler 改 async —— 成功写后 await record_action 记工作记忆。
     target = _resolve_within_workspace(str(args.get("path", "")))
     if target is None:
         return _err("path outside workspace", retriable=False)
@@ -203,10 +250,14 @@ def _handle_file_write(args: dict[str, Any], task_id: str) -> str:
             written = f.write(content)
     except OSError as exc:
         return _err(f"write failed: {exc}", retriable=True)
+    rel_path = str(target.relative_to(_workspace_root())).replace("\\", "/")
+    await _record_workspace_action(
+        session_id=task_id, path=rel_path, action="write", content=content,
+    )
     return json.dumps(
         {
             "bytes_written": written,
-            "path": str(target.relative_to(_workspace_root())).replace("\\", "/"),
+            "path": rel_path,
             "mode": mode,
         },
         ensure_ascii=False,
@@ -333,9 +384,75 @@ def _handle_file_grep(args: dict[str, Any], task_id: str) -> str:
 
 
 # ---------------------------------------------------------------------
+# workspace_recall (记忆系统升级 WI-M1.6)
+# ---------------------------------------------------------------------
+_SCHEMA_WORKSPACE_RECALL: dict[str, Any] = {
+    "name": "workspace_recall",
+    "description": (
+        "Recall files you've already read or written earlier in THIS "
+        "task — search by path or content keyword. Use this before "
+        "re-reading a file to check if you already know it. Returns "
+        "path / last_action / content_summary for each match."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Path fragment or content keyword to search.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results. Default 10.",
+                "default": 10,
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
+async def _handle_workspace_recall(args: dict[str, Any], task_id: str) -> str:
+    """WI-M1.6: 查回本 task 改过/读过的文件。store 未注入（flag 关）→
+    返回 reason=workspace_memory_disabled。"""
+    store = _workspace_store
+    if store is None:
+        return json.dumps(
+            {"matches": [], "count": 0, "reason": "workspace_memory_disabled"},
+            ensure_ascii=False,
+        )
+    query = str(args.get("query", "") or "")
+    if not query.strip():
+        return _err("query is required", retriable=False)
+    limit = int(args.get("limit", 10) or 10)
+    try:
+        rows = await store.recall(
+            query, session_id=task_id or "default", limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"workspace_recall failed: {exc}", retriable=True)
+    matches = [
+        {
+            "path": r.get("path"),
+            "last_action": r.get("last_action"),
+            "content_summary": r.get("content_summary"),
+            "byte_size": r.get("byte_size"),
+        }
+        for r in rows
+    ]
+    return json.dumps(
+        {"matches": matches, "count": len(matches)}, ensure_ascii=False,
+    )
+
+
+# ---------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------
 registry.register("file_read", "file", _SCHEMA_READ, _handle_file_read)
 registry.register("file_write", "file", _SCHEMA_WRITE, _handle_file_write)
 registry.register("file_glob", "file", _SCHEMA_GLOB, _handle_file_glob)
 registry.register("file_grep", "file", _SCHEMA_GREP, _handle_file_grep)
+registry.register(
+    "workspace_recall", "file",
+    _SCHEMA_WORKSPACE_RECALL, _handle_workspace_recall,
+)

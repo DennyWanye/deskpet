@@ -35,15 +35,26 @@ def _setup_logging() -> None:
 
 
 async def _resolve_state_db() -> Path:
-    """Resolve state.db path the same way main.py does."""
+    """Resolve state.db path the same way main.py does.
+
+    记忆系统升级修复：① ``config`` / ``providers`` 是 backend 根目录的
+    顶层模块，不在 ``deskpet`` 包下 —— 旧代码 ``from deskpet.config import``
+    永远 ImportError 被静默吞掉，CLI 退回 platformdirs、定位不到隔离环境
+    的 state.db。② 改用 ``paths.user_data_dir()`` —— 它认
+    ``DESKPET_USER_DATA_DIR`` env，eval CLI 因此能对准 worktree dev 库。
+    """
     try:
-        from deskpet.config import load_config  # type: ignore
-        config = load_config()
-        if config.memory.db_path:
-            return Path(config.memory.db_path).resolve().parent / "state.db"
+        from config import load_config  # type: ignore
+        cfg = load_config()
+        if cfg.memory.db_path:
+            return Path(cfg.memory.db_path).resolve().parent / "state.db"
     except Exception:
         pass
-    # Fallback to platformdirs
+    try:
+        import paths  # type: ignore
+        return paths.user_data_dir() / "data" / "state.db"
+    except Exception:
+        pass
     try:
         import platformdirs
         return Path(
@@ -56,16 +67,16 @@ async def _resolve_state_db() -> Path:
 async def _make_llm_call():
     """Return an async ``(prompt: str) -> str`` bound to the live provider."""
     try:
-        from deskpet.providers.openai_compatible import (  # type: ignore
+        from providers.openai_compatible import (  # type: ignore
             OpenAICompatibleProvider,
         )
-        from deskpet.config import load_config  # type: ignore
+        from config import load_config  # type: ignore
     except ImportError:
         return _stub_llm
 
-    config = load_config()
+    cfg = load_config()
     # Pick the first provider in the chain — eval doesn't need fallback.
-    providers = getattr(config.llm, "providers", None) or []
+    providers = getattr(cfg.llm, "providers", None) or []
     if not providers:
         return _stub_llm
     p = providers[0]
@@ -147,6 +158,28 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_feedback(args: argparse.Namespace) -> int:
+    """记忆系统升级 WI-M1.1：dump 用户反馈（memory_user_feedback）汇总。
+
+    验证 DoD「eval CLI 能读到反馈数据」—— 前端点 👍/👎 写进表后，本命令
+    能把 up/down/net 汇总 + 召回 trouble spot 读出来。
+    """
+    from deskpet.memory.eval.feedback import FeedbackStore
+    db = await _resolve_state_db()
+    if not db.exists():
+        print(f"state.db not found at {db}", file=sys.stderr)
+        return 2
+    store = FeedbackStore(db)
+    summary = await store.summary()
+    negatives = await store.top_negative_messages(limit=10)
+    print(json.dumps({
+        "db": str(db),
+        "summary": summary,
+        "top_negative": negatives,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main() -> int:
     _setup_logging()
     parser = argparse.ArgumentParser(
@@ -164,6 +197,8 @@ def main() -> int:
     p_run = sub.add_parser("run", help="replay QA against retriever")
     p_run.add_argument("--top-k", default="20")
     p_run.set_defaults(func=_cmd_run)
+    p_fb = sub.add_parser("feedback", help="dump user thumbs feedback summary")
+    p_fb.set_defaults(func=_cmd_feedback)
 
     args = parser.parse_args()
     return asyncio.run(args.func(args))
