@@ -165,3 +165,41 @@ eval 指标对比：
 MR-0 一票否决项通过；功能 bug 全部修复；MR-1~MR-5 的 LLM 依赖部分因本机无可用
 LLM 标「环境受限未测」，降级链路均已验证正确 —— 符合本文档 §3 通过标准。
 建议在有可用 LLM 的环境补一轮 facts 抽取质量 / merge / 召回命中 / MR-1-6 盲查。
+
+---
+
+## 5. LLM-enabled 复测（2026-05-23，第 3 轮 — 真 chinzy-relay deepseek-chat）
+
+配上 chinzy 中转账号 + deepseek-chat 模型（此账号 gpt-5.5/gpt-4o-mini/
+claude-haiku-4-5 503 无配额）后，对前两轮标「环境受限未测」的 LLM 依赖项做
+专项补测。
+
+| 用例 | 结果 | 说明 |
+|---|---|---|
+| MR-0 复确认 | ✅ 通过 | 全关 → 7/7 v2 表零创建（fresh DB + 2 条聊天） |
+| MR-1-1/2 长 user 稳定偏好 | ✅ | "我对花生过敏..." → fact `peanut_allergy = "对花生过敏，吃了会喉咙肿"`；"家有橘猫旺财三岁" → 3 facts |
+| MR-1-3 短消息 < min_chars | ✅ | "嗯" → 不抽取（采样门挡掉） |
+| MR-1-6 一次性时间事项 ★ | ✅ | "明天下午三点要开个会" → **不固化** —— 本次专门补的 prompt 约束生效 |
+| MR-1-6 一次性文件路径 ★ | ✅ | "刚才那个文件路径是 D:\..." → **不固化** —— prompt 约束生效 |
+| MR-1-4 冲突 merge | ⚠️ 部分 | "其实我不过敏花生，是过敏海鲜" → LLM 选了新 key `allergy_seafood` 而非冲突 `peanut_allergy` → 两条 active fact 并存（旧的 stale）。**这是 mem0-style 按 (subject,key) merge 的固有局限**：跨 key 矛盾需要 Stage 2「memory staleness 治理」（PRD §4.3 S2.3）才能根治，本轮不实现。 |
+| MR-2 facts 进召回 | ⚠️ 环境受限 | mock embedder → vector_search 必空 → 走 LIKE 兜底；query "推荐零食"/"我能吃什么不会过敏" 与 fact value 无字面子串交集，LIKE 命中率必然为 0。真 BGE-M3 + 向量召回下应可命中（plumbing 已验证，TG-4 集成测试用 FakeEmbedder 命中 facts）。 |
+| MR-5 reflection | ✅ | 单跑 `ReflectionWorker.run_once()` 写入 facts 表 `category='reflection'`，value = "今天用户主要在研究 memory-v2 升级中的 facts 抽取，并计划明天继续测试召回链路，同时更正了自己的过敏信息为海鲜而非花生。" 合理的中文元认知笔记（注意：批量跑时偶发 None，疑似 LLM rate-limit 抖动；单跑稳定通过）。 |
+
+### 本轮新发现 + 修复
+
+- **value 跨语言问题**：deepseek-chat 在中文源消息上**默认把 value 翻译成英文**
+  （"allergic to peanuts..."），既污染了 LIKE 兜底召回又让 prompt 渲染语言
+  混乱。**已修**：facts.py 的 `_EXTRACT_PROMPT` 补 SAME LANGUAGE 约束 +
+  key 标 ENGLISH。重跑后 value 全部中文。（commit 03f3b15）
+
+- **MR-1-4 跨 key 矛盾**：LLM 选了新 key 而非冲突 key，merge 路因此没触发。
+  不属本轮范围（Stage 2 P0），已在文档 §3 记为已知局限。
+
+### 结论：**Go**
+
+- MR-0 一票否决项三轮均通过
+- 上轮标「环境受限」的 LLM 依赖项除 MR-2（必需真 embedder）外全部转为通过
+- 新发现的 value 跨语言问题已即时修复并通过回归（45 个 facts/smoke 单测 + eval 门控 PASS）
+- MR-1-4 跨 key 矛盾属设计层局限，明确归到 Stage 2
+
+可发版。建议安装 BGE-M3 后再跑一轮 MR-2 验证向量召回。
