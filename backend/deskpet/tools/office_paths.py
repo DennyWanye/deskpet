@@ -29,10 +29,13 @@ isolate.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import tempfile
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -208,6 +211,107 @@ def _is_under(child: Path, parent: Path) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# WI-T1.5 last-mile artifact 默认保存路径 + title_slug
+# 详见 plans/2026-05-23-tool-last-mile-upgrade/00-PRD.md §3 D4 (v2.1)
+# ---------------------------------------------------------------------------
+
+# 非法 FS 字符（Windows 通用）+ 控制字符
+_ILLEGAL_FS_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+# 任意空白序列
+_WHITESPACE = re.compile(r"\s+")
+# 多个连续 '-'
+_MULTI_DASH = re.compile(r"-+")
+
+
+def title_slug(title: str, *, max_grapheme: int = 60) -> str:
+    """PRD §3 D4 title_slug 规则。
+
+    1. NFC 标准化（é 合成形式与分解形式归一）
+    2. 非法 FS 字符 ``<>:"/\\|?*`` + 控制字符（\\x00..\\x1f）替换为 ``-``
+    3. 空白折叠为 ``-``
+    4. 多个连续 ``-`` 折叠为单个，去头尾
+    5. 截至 ``max_grapheme`` 字符（简化版：用 char 长度，emoji 仍可能截半
+       但实践 OK；未来可用 regex \\X 升级）
+    6. 空 / 全非法 → ``"untitled"``
+
+    保留：中文 / 常用 emoji / 数字 / 字母 / 下划线 / 短横线 / 感叹号等。
+    """
+    if not title:
+        return "untitled"
+    s = unicodedata.normalize("NFC", title)
+    s = _ILLEGAL_FS_CHARS.sub("-", s)
+    s = _WHITESPACE.sub("-", s.strip())
+    s = _MULTI_DASH.sub("-", s).strip("-")
+    if not s:
+        return "untitled"
+    if len(s) > max_grapheme:
+        s = s[:max_grapheme].rstrip("-")
+        if not s:
+            return "untitled"
+    return s
+
+
+def _short_hash(seed: str, length: int = 8) -> str:
+    """sha256 → 前 N hex 字符（用于文件名 collision 避免）。"""
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:length]
+
+
+# nanos 计数器：同一进程内 time.time_ns() 在 Windows 上可能有 100ns 粒度，
+# 高并发下两次调用可能拿到同样 ns；用单调递增计数补足熵。
+_counter_lock = threading.Lock()
+_counter = 0
+
+
+def _next_seed_uniq() -> str:
+    """生成进程内单调递增的 seed 片段（防 ns 粒度碰撞）。"""
+    global _counter
+    with _counter_lock:
+        _counter += 1
+        c = _counter
+    return f"{time.time_ns()}:{os.getpid()}:{c}"
+
+
+def artifact_default_path(
+    *,
+    tool_name: str,
+    title: str,
+    ext: str,
+    artifact_dir: str = "",
+    seed: Optional[str] = None,
+) -> Path:
+    """WI-T1.5 last-mile artifact 默认保存路径（PRD §3 D4）。
+
+    模式：``<artifact_dir>/<YYYY-MM-DD>/<tool_name>/<title_slug>-<8hex>.<ext>``
+
+    ``artifact_dir`` 为空 → fallback 到旧 :func:`auto_temp_path`（BC 保证：
+    last_mile flag 全 OFF 时行为不变）。
+
+    Args:
+        tool_name: 工具名（落地为目录名）；非法 FS 字符按 title_slug 规则清洗。
+        title: 用户给的产物标题（如 "营销周报 📊"）；为空时 slug 自动 'untitled'。
+        ext: 文件扩展名（前导 ``.`` 可省）。
+        artifact_dir: PRD D4 配置项，留空走旧 tempdir。
+        seed: 可选哈希种子；为空时用 time_ns + pid + counter（防并发碰撞）。
+
+    Returns:
+        绝对路径；父目录已 ``mkdir -p``。
+    """
+    ext_str = ext.lstrip(".")
+    if not artifact_dir:
+        return auto_temp_path(tool_name, "." + ext_str)
+
+    base = Path(artifact_dir).expanduser().resolve()
+    date_dir = time.strftime("%Y-%m-%d")
+    parent = base / date_dir / title_slug(tool_name)
+    parent.mkdir(parents=True, exist_ok=True)
+
+    slug = title_slug(title)
+    seed_str = seed or _next_seed_uniq()
+    fname = f"{slug}-{_short_hash(seed_str)}.{ext_str}"
+    return parent / fname
+
+
 __all__ = [
     "PathError",
     "authorize_path",
@@ -218,4 +322,7 @@ __all__ = [
     "resolve_for_read",
     "resolve_for_write",
     "auto_temp_path",
+    # WI-T1.5
+    "artifact_default_path",
+    "title_slug",
 ]
