@@ -899,11 +899,19 @@ def ppt_create(
         except Exception:  # noqa: BLE001
             pass
         prs.save(out_path)
+        # WI-T1.2 D1：显式 emit artifacts[]（一等公民路径，前端按 kind=file
+        # 渲染 ArtifactCard；保留 path 字段保 BC）。
         return {
             "ok": True,
             "path": str(out_path),
             "slide_count": total,
             "theme": theme_obj.name,
+            "artifacts": [{
+                "kind": "file",
+                "path": str(out_path),
+                "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "title": Path(str(out_path)).name,
+            }],
         }
     except Exception as exc:  # noqa: BLE001
         log.warning("ppt_create failed: %s", exc, exc_info=True)
