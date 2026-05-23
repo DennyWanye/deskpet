@@ -3,6 +3,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+mod artifact_ops;
 mod backend_launch;
 mod click_through;
 mod commands;
@@ -29,6 +30,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // P3-S2: dialog plugin for the "no NVIDIA GPU" fatal-error path.
         .plugin(tauri_plugin_dialog::init())
+        // WI-T1.3 last-mile: clipboard for artifact_copy_path command.
+        .plugin(tauri_plugin_clipboard_manager::init())
         // W5 (R17): self-update — endpoints + pubkey live in tauri.conf.json.
         // On first launch the plugin fetches latest.json; if it advertises a
         // newer version the built-in dialog prompts the user.
@@ -51,6 +54,11 @@ pub fn run() {
             process_manager::clear_startup_error,
             // P3-S8/S9: user-data filesystem commands (open log dir,
             // open AppData dir, purge everything).
+            // WI-T1.3 last-mile artifact actions (PRD §3 D3)
+            artifact_ops::artifact_open,
+            artifact_ops::artifact_show_in_folder,
+            artifact_ops::artifact_copy_path,
+            artifact_ops::artifact_save_as,
             user_data::open_log_dir,
             user_data::open_app_data_dir,
             user_data::purge_user_data,
