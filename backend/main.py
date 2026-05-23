@@ -360,6 +360,38 @@ try:
     deskpet_tool_registry_v2.set_tools_config_provider(
         lambda: getattr(config, "tools", None)
     )
+    # WI-T2.2 P0 修：按 cfg.tools.verifier.emit_receipts 构造 ReceiptStore
+    # 并通过 provider 注入。flag OFF 时 _receipt_store_singleton=None 永不
+    # 产 receipt（BC）；flag ON 时每次 execute_tool 都 emit + 写盘。
+    _receipt_store_singleton: Any = None
+    def _get_receipt_store() -> Any:
+        nonlocal _receipt_store_singleton
+        cfg = getattr(config, "tools", None)
+        emit = bool(getattr(getattr(cfg, "verifier", None),
+                            "emit_receipts", False))
+        if not emit:
+            return None
+        if _receipt_store_singleton is None:
+            try:
+                from deskpet.tools.receipt_store import ReceiptStore
+                from pathlib import Path as _PathRS
+                retention = int(getattr(
+                    getattr(cfg, "last_mile", None),
+                    "artifact_dir_retention_days", 7,
+                ))
+                _receipt_store_singleton = ReceiptStore(
+                    _PathRS(_paths.user_data_dir()),
+                    retention_days=min(retention, 7),
+                )
+                # 启动期自清理 (PRD D5)
+                deleted = _receipt_store_singleton.cleanup_expired()
+                if deleted > 0:
+                    logger.info("receipt_store: cleaned %d expired files", deleted)
+            except Exception as _rs_exc:  # noqa: BLE001
+                logger.warning("ReceiptStore init failed: %s", _rs_exc)
+                return None
+        return _receipt_store_singleton
+    deskpet_tool_registry_v2.set_receipt_store_provider(_get_receipt_store)
     # P4-S25: persist auto_mode across restart. Path lives under the
     # user data dir so it follows the user's profile (dev mode uses
     # `<repo>/userdata/`, prod uses `%APPDATA%/deskpet/`). Loading

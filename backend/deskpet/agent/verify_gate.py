@@ -336,16 +336,57 @@ class VerifyGate:
         claim: Claim,
         ledger: list[ToolReceipt],
     ) -> bool:
-        """简化匹配：ledger 中存在 ok=True 的 receipt 即认为 claim 有据。
-        更严格的 tool_name + path/sha256 匹配留 WI-T2.4b 增强（需要 receipt
-        携带 artifacts.path 元数据，本期 receipt.artifacts 只存 sha256）。
+        """**严格匹配**（修 v2 评审 P0-2）：claim.pattern 的 tool_hint 必须
+        在 ledger 中能找到**同名且 ok=True** 的 receipt。
+
+        这比"任一 ok receipt 即放行"严格 N 倍，是 fake-completion 防护的
+        核心。具体语义：
+          - claim 由 RegexExtractor 提取，带 pattern_id + tool hint
+          - 通过 pattern_id 反查 ClaimPattern.tool_hint（list of tool_name）
+          - ledger 里至少一条 receipt.tool_name ∈ tool_hint 且 ok=True → 匹配
+          - tool_hint 为空（少数通用 path/url pattern）→ 放宽为任一 ok receipt
+            （但要求 receipt 是 file-类工具）
+
+        Path 级精确匹配 (claim.path 与 receipt artifact path 对账) 由
+        outcome_verifier.FileExistsVerifier 在 file_exists 层兜底，而非
+        VerifyGate 层 — VerifyGate 只保证"工具确实被调过"，不保证产物路径
+        正确（PRD D7 责任划分）。
         """
+        tool_hints = self._tool_hints_for_pattern(claim.pattern_id)
+        # 兜底：pattern_id 未注册（pattern 已被 unload）— 严格 mode 拒
+        if tool_hints is None:
+            return False
+
         for r in ledger:
             if not r.ok:
                 continue
-            # 简化：任一成功 receipt 即认为存在对账（false negative 偏低）
-            return True
+            if tool_hints:
+                if r.tool_name in tool_hints:
+                    return True
+            else:
+                # 无 hint → 任一 ok file-生成工具放行（保守扩展）
+                if r.tool_name in {"ppt_create", "excel_create", "doc_create",
+                                   "pdf_export", "generate_image",
+                                   "file_write"}:
+                    return True
         return False
+
+    def _tool_hints_for_pattern(
+        self, pattern_id: str
+    ) -> Optional[list[str]]:
+        """从 extractor 反查 pattern_id 对应的 tool_hint list。"""
+        if isinstance(self.extractor, RegexExtractor):
+            for p in self.extractor.patterns:
+                if p.id == pattern_id:
+                    return list(p.tool_hint)
+        elif isinstance(self.extractor, CascadeExtractor):
+            primary = self.extractor.primary
+            if isinstance(primary, RegexExtractor):
+                for p in primary.patterns:
+                    if p.id == pattern_id:
+                        return list(p.tool_hint)
+        # 未知 pattern → 兜底返空 list（无 hint，按通用 file 工具放行）
+        return []
 
     def consult_ephemeral_subagent(
         self,
