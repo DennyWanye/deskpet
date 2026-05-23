@@ -203,3 +203,71 @@ claude-haiku-4-5 503 无配额）后，对前两轮标「环境受限未测」�
 - MR-1-4 跨 key 矛盾属设计层局限，明确归到 Stage 2
 
 可发版。建议安装 BGE-M3 后再跑一轮 MR-2 验证向量召回。
+
+---
+
+## 6. 真 BGE-M3 + LLM retry 复测（2026-05-23，第 4 轮）
+
+装了 BGE-M3 真 embedder（4.3GB 模型）+ 给 reflection LLM 加 5 次重试后，
+对前几轮 mock 环境受限项做最终验证。
+
+| 用例 | 结果 | 说明 |
+|---|---|---|
+| MR-0 三复确认 | ✅ 通过 | fresh DB + flag 全关 → 7/7 v2 表零创建 |
+| MR-1-1/2 稳定偏好抽取 | ✅ | LLM 把"花生过敏 / 零食避花生"拆 2 facts；"橘猫旺财三岁"拆 3 facts |
+| MR-1-3 短消息采样门 | ✅ | "嗯" → 不抽取 |
+| MR-1-6 临时信息防误抽 ★ | ✅✅ | "明天三点开会" / "刚才文件路径..." 实测**未固化**（prompt 约束生效）|
+| MR-1-4 跨 key 矛盾 | ⚠️ Stage 2 | LLM 选新 key（mem0-style 固有局限）—— 已归 followup A1 |
+| MR-2 facts 进召回 ★ | ✅ 全部命中 | 3 query × 10 hits 中 6 是 facts。BGE-M3 向量召回工作正常（语义相似度过敏-零食 0.5750，过敏-天气 0.3493 有显著区分） |
+| MR-5 reflection | ✅ | fact_id=6，note="用户今天主要在研究 memory-v2 升级和 facts 抽取，同时更正了过敏信息（花生→海鲜），还提到了家里的橘猫旺财和明天的会议准备。" 合理中文元认知 |
+| MR-6 / MR-7 / MR-8 | ✅ | 前几轮已通过，本轮不重复 |
+
+### 本轮发现的真 bug + 修复
+
+1. **`embedder.py` PYTHONPATH 未传给子进程** —— BGE-M3 worker 用
+   `python -m deskpet.memory.embedder_worker` 启动；production cwd 是
+   `backend/` 故能找到 `deskpet` 包，但从其它 cwd 跑（测试驱动 / 脚本
+   从仓库根跑）子进程 `ModuleNotFoundError: deskpet` → spawn 失败 →
+   静默 fall back to mock → facts 落库无 embedding → MR-2 永久 0 命中。
+   **已修**：spawn 时显式塞 `PYTHONPATH=<backend_root>`。
+
+2. **测试驱动每个 MR 重 spawn embedder** —— BGE-M3 首次 spawn 概率性
+   "worker died during model load"（FlagEmbedding/torch 重 import）；
+   一旦 2/2 失败就 fall back mock。**已改驱动**：MR-1/2/5 共享一个
+   embedder 实例（与 production 一致）。
+
+3. **chinzy deepseek-chat 同 prompt 偶发返回空内容** —— 让 MR-5
+   reflection 偶发 None。**已加 5 次重试 + 指数退避**到测试驱动，覆盖
+   抖动窗口；production 代码侧的 LLM 调用本来就是 best-effort 失败隔离，
+   不强制修复 production。
+
+### eval baseline 升级
+
+| 指标 | mock baseline | BGE-M3 baseline | 提升 |
+|---|---|---|---|
+| hit@1 | 0.0000 | **0.3429** | +∞ |
+| hit@5 | 0.1143 | **0.4286** | ~3.75x |
+| hit@10 | 0.2000 | **0.8286** | 4.14x |
+| MRR | 0.0620 | **0.4253** | ~6.86x |
+| token_per_query | 198.23 | 195.86 | 持平（渲染同源）|
+
+`deskpet/memory/eval/zh_baseline.json` 已更新；`scripts.eval_gate` 现在
+门控的是 BGE-M3 真实基线，回归任一项即 FAIL。
+
+### 完整回归
+
+- backend pytest: **1799 passed, 13 skipped, 0 fail**
+- frontend vitest: **279 passed (20 files)**
+- frontend tsc: 0 error
+- eval_gate: **PASS**
+- main.py flag 全开 boot：`EnhancedRetriever` 接管，所有 v2 组件就绪
+- main.py flag 全关 boot：裸 `Retriever`，无 v2 表创建
+
+### 结论：**Go**
+
+- MR-0 四轮均通过（一票否决）
+- 上几轮"环境受限未测"的 LLM-依赖项全部转通过
+- 新发现 2 个真 bug（embedder PYTHONPATH / 共享实例）已修复并验证
+- 残留 1 个 Stage 2 项（MR-1-4 跨 key 矛盾）明确归 followup
+
+可发版（PR #2 等手工 merge MemoryPanel.tsx 冲突即可合）。
