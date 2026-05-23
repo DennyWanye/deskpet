@@ -186,6 +186,59 @@ class MemoryConfig:
     v2: MemoryV2Config = field(default_factory=MemoryV2Config)
 
 
+class ConfigError(ValueError):
+    """启动期 invariant 违反；错误码见 PRD §3 D10 表（VG-INVARIANT-{0..6}）。
+
+    Distinct from generic ``ValueError`` so callers (load_config 调用方)
+    可以单独 catch + 给用户友好提示。
+    """
+
+
+@dataclass
+class ToolsLastMileConfig:
+    """``[tools.last_mile]`` — D1-D4 / D9 flag。
+
+    全 False / 默认值时与现状字节级一致（PRD §3 D10 末段 + TG-12 T12-1）：
+      - ``artifact_envelope=False`` 时 tool_result 不得 emit ``artifacts`` 键。
+      - ``frontend_artifact_card=False`` 时 MessageBubble DOM 树未变化。
+    """
+    artifact_envelope: bool = False         # D1 信封包装
+    frontend_artifact_card: bool = False    # D2 前端新卡片
+    tauri_artifact_ops: bool = False        # D3 Tauri shell 桥
+    default_artifact_dir: str = ""          # D4 空 = 走旧 tempdir
+    outline_preview_default: bool = False   # D9 PPT outline 预览
+    artifact_dir_retention_days: int = 30
+
+
+@dataclass
+class ToolsVerifierConfig:
+    """``[tools.verifier]`` — D5-D8 flag + D6/D11 协作配置。
+
+    invariant 见 PRD §3 D10 + _validate_flag_invariants：
+      - ``verify_gate_mode != "off"`` 必须 ``emit_receipts=True``，否则 ledger
+        永远空，所有 claim 都 unmatched，会无脑阻塞所有 end_turn。
+      - ``ephemeral_subagent_model`` 缺省时默认 ``"haiku"``（N5）。
+    """
+    emit_receipts: bool = False
+    verify_gate_mode: str = "off"                  # off | shadow | strict
+    extractor_fallback_enabled: bool = True        # D6 二级 LLM fallback
+    ephemeral_subagent_model: str = "haiku"        # D6 第 3 次失败救援模型
+    run_build: bool = False                        # D7 build verifier
+    run_tests: bool = False                        # D7 test verifier
+    claim_patterns_file: str = "verify/claim_patterns.yaml"
+
+
+@dataclass
+class ToolsConfig:
+    """``[tools]`` 父表，含 last_mile / verifier 两个子表。
+
+    _load_section 平铺解析，无法直接处理嵌套子 dataclass —— load_config 把
+    子表 pop 出来单独构建（_load_tools，同 _load_memory_v2 模式）。
+    """
+    last_mile: ToolsLastMileConfig = field(default_factory=ToolsLastMileConfig)
+    verifier: ToolsVerifierConfig = field(default_factory=ToolsVerifierConfig)
+
+
 @dataclass(frozen=True)
 class BillingConfig:
     """P2-1-S8 BillingLedger config.
@@ -227,6 +280,9 @@ class AppConfig:
     voice: VoiceConfig = field(default_factory=VoiceConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     billing: BillingConfig = field(default_factory=BillingConfig)
+    # 工具调用 last-mile 升级（plans/2026-05-23-tool-last-mile-upgrade/）。
+    # 全 flag 默认 OFF；OFF 状态与现状字节级一致（PRD §3 G5 + TG-12）。
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
     # P4-S15: capture the raw TOML so layers that don't have a dataclass
     # yet (P4 [mcp], [agent], [context.assembler], [memory.l3], [tools.web])
     # can read their config without us having to migrate all of them at once.
@@ -276,6 +332,113 @@ def _load_section(cls, raw_dict: dict):
             cls.__name__, sorted(unknown),
         )
     return cls(**{k: v for k, v in raw_dict.items() if k in known})
+
+
+# ─── tools last-mile 加载 + invariant 校验 ─────────────────────
+#
+# 详情见 plans/2026-05-23-tool-last-mile-upgrade/00-PRD.md §3 D10 表。
+# Stage 0 WI-T0.3 落地。
+
+_VALID_VERIFY_GATE_MODES: frozenset[str] = frozenset({"off", "shadow", "strict"})
+
+# 已注册 ephemeral subagent 模型白名单。运行时 llm_registry 才能 full lookup，
+# 启动期用保守白名单挡明显错的 (TG-1 T1-11)。后续 WI-T2.4b 可在 registry
+# 构造后调 register_ephemeral_model() 动态扩。
+_KNOWN_EPHEMERAL_MODELS: frozenset[str] = frozenset({
+    "haiku", "sonnet", "opus",
+    "claude-haiku", "claude-sonnet", "claude-opus",
+})
+
+
+def _load_tools(raw_tools: dict) -> ToolsConfig:
+    """Build ToolsConfig from raw ``[tools]`` dict.
+
+    ``[tools.last_mile]`` / ``[tools.verifier]`` 是子表；_load_section 平铺
+    解析，故 pop 出子表单独构建后装回（同 _load_memory_v2 模式）。
+    """
+    raw = dict(raw_tools)
+    raw_lm = dict(raw.pop("last_mile", {}) or {})
+    raw_v = dict(raw.pop("verifier", {}) or {})
+    last_mile = _load_section(ToolsLastMileConfig, raw_lm)
+    verifier = _load_section(ToolsVerifierConfig, raw_v)
+    return ToolsConfig(last_mile=last_mile, verifier=verifier)
+
+
+def _validate_flag_invariants(cfg: AppConfig) -> None:
+    """PRD §3 D10 flag 组合 invariant 启动期校验。
+
+    冲突分两类：
+      - **致命**：raise ConfigError（拒启动），错误码 VG-INVARIANT-{0,1,5,6}。
+      - **软**：warn log + 就地修正字段（让用户能继续启动，但日志提示）。
+
+    被 load_config 在 return 前调用；测试见 TG-1 T1-3/T1-7~T1-11。
+    """
+    lm = cfg.tools.last_mile
+    v = cfg.tools.verifier
+
+    # VG-INVARIANT-0: verify_gate_mode 取值合法
+    if v.verify_gate_mode not in _VALID_VERIFY_GATE_MODES:
+        raise ConfigError(
+            f"VG-INVARIANT-0: verify_gate_mode={v.verify_gate_mode!r} "
+            f"must be one of {sorted(_VALID_VERIFY_GATE_MODES)}"
+        )
+
+    # VG-INVARIANT-1: verify_gate_mode != off 必须 emit_receipts=true
+    if v.verify_gate_mode != "off" and not v.emit_receipts:
+        raise ConfigError(
+            f"VG-INVARIANT-1: verify_gate_mode={v.verify_gate_mode!r} "
+            f"requires emit_receipts=true, otherwise ledger is always empty "
+            f"and end_turn is always blocked."
+        )
+
+    # VG-INVARIANT-6: artifact_dir_retention_days 1..365
+    days = lm.artifact_dir_retention_days
+    if days < 1 or days > 365:
+        raise ConfigError(
+            f"VG-INVARIANT-6: artifact_dir_retention_days={days} "
+            f"out of range [1, 365]"
+        )
+
+    # 软冲突：run_build=true 且 verify_gate_mode=off → 自动转 shadow
+    if v.run_build and v.verify_gate_mode == "off":
+        logger.warning(
+            "config [tools.verifier]: run_build=true with "
+            "verify_gate_mode='off' is incoherent; auto-promoting "
+            "verify_gate_mode='shadow'."
+        )
+        v.verify_gate_mode = "shadow"
+
+    # 软冲突：frontend_artifact_card=true 但 artifact_envelope=false
+    if lm.frontend_artifact_card and not lm.artifact_envelope:
+        logger.warning(
+            "config [tools.last_mile]: frontend_artifact_card=true requires "
+            "artifact_envelope=true; auto-disabling frontend_artifact_card."
+        )
+        lm.frontend_artifact_card = False
+
+    # 软冲突：tauri_artifact_ops=true 但 frontend_artifact_card=false (允许)
+    if lm.tauri_artifact_ops and not lm.frontend_artifact_card:
+        logger.warning(
+            "config [tools.last_mile]: tauri_artifact_ops=true with "
+            "frontend_artifact_card=false; Rust commands reachable but no "
+            "UI button will invoke them (test scenario only)."
+        )
+
+    # VG-INVARIANT-5 (N5): ephemeral_subagent_model 白名单 / 默认填充
+    if v.verify_gate_mode != "off":
+        m = (v.ephemeral_subagent_model or "").strip()
+        if not m:
+            logger.warning(
+                "config [tools.verifier]: ephemeral_subagent_model is empty "
+                "with verify_gate_mode != 'off'; defaulting to 'haiku'."
+            )
+            v.ephemeral_subagent_model = "haiku"
+        elif m not in _KNOWN_EPHEMERAL_MODELS and not m.startswith("claude-"):
+            raise ConfigError(
+                f"VG-INVARIANT-5: unknown ephemeral_subagent_model={m!r}; "
+                f"expected one of {sorted(_KNOWN_EPHEMERAL_MODELS)} or a "
+                f"'claude-*' model id."
+            )
 
 
 def _load_memory_v2(raw_v2: dict) -> MemoryV2Config:
@@ -580,8 +743,15 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     # to the same directory as memory.db so the two SQLite files stay together.
     db_dir = resolved_mem.parent
     config.billing = BillingConfig.from_toml(raw, db_dir=db_dir)
+    # 工具调用 last-mile 升级 — [tools.last_mile] / [tools.verifier] 嵌套
+    # 子表（同 [memory.v2] 模式：_load_section 平铺，子表单独 dispatch）。
+    if "tools" in raw:
+        config.tools = _load_tools(raw["tools"])
     # P4-S15: stash the raw parsed TOML so consumers (MCP bootstrap, agent
     # bootstrap, etc.) can pick out their sections without us bolting on
     # a dataclass for each one.
     config.raw = dict(raw)
+    # 启动期 invariant 校验（PRD §3 D10）：致命错 raise ConfigError，
+    # 软冲突 warn log + 就地修正。在 return 前调，确保 config.raw 也已就位。
+    _validate_flag_invariants(config)
     return config
