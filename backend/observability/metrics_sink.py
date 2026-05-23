@@ -49,6 +49,13 @@ VALID_EVENTS = frozenset({
     "llm_call_failed",
     "skill_invoked",
     "crash",
+    # WI-T1.7 last-mile artifact button clicks (PRD §5 G1 度量).
+    "artifact_action",
+    # WI-T2.4 verify metrics (PRD §5 健康区间).
+    "verify_extractor.fallback_used",
+    "verify.ephemeral_rescued",
+    "verify.sig_invalid_filtered",
+    "verifier.skipped_due_to_missing_toolchain",
 })
 
 # Whitelisted ``detail`` keys. A caller can ONLY write these fields —
@@ -71,6 +78,12 @@ _ALLOWED_DETAIL_KEYS = frozenset({
     "attempt",       # retry attempt number
     "ratio",         # generic fraction
     "ok",            # generic bool
+    # WI-T1.7 last-mile artifact_action detail keys (脱敏:无 path / 无 url).
+    "action_id",     # open / show_in_folder / copy_path / save_as / preview
+    "tool_name",     # ppt_create / excel_create / doc_create / ...
+    # WI-T2.4/T2.5 verify metric details (无敏感内容).
+    "verifier",      # file_exists / git_diff / build / test
+    "missing",       # missing toolchain name (npm / pytest / git)
 })
 
 # Max length of any *surviving* string value — defence-in-depth second
