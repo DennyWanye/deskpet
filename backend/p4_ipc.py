@@ -43,6 +43,10 @@ P4_IPC_MESSAGE_TYPES = frozenset(
         # Phase 1.1.6（context-1m-rearch）: SettingsPanel「模型上下文」卡片。
         "model_context_get",
         "model_context_set",
+        # Stage 2 WI-S2.1a / E3 v2 — MemoryPanel facts view + 🗑 + undo
+        "memory_facts_list",
+        "memory_forget",
+        "memory_forget_undo",
     }
 )
 
@@ -75,6 +79,12 @@ async def handle(
             await _handle_model_context_get(ws, payload)
         elif msg_type == "model_context_set":
             await _handle_model_context_set(ws, payload)
+        elif msg_type == "memory_facts_list":
+            await _handle_memory_facts_list(ws, payload, service_context)
+        elif msg_type == "memory_forget":
+            await _handle_memory_forget_ws(ws, payload, service_context)
+        elif msg_type == "memory_forget_undo":
+            await _handle_memory_forget_undo(ws, payload, service_context)
         else:
             # Shouldn't happen — membership check is done by caller.
             await _send_error(ws, f"unknown P4 message type: {msg_type}")
@@ -355,6 +365,177 @@ async def _handle_embedder_status(
             },
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 / WI-S2.1a — MemoryPanel facts view + memory_forget UI bridge
+# ---------------------------------------------------------------------------
+async def _handle_memory_facts_list(
+    ws: Any, payload: dict[str, Any], sc: Any,
+) -> None:
+    """返回 active facts 给前端 facts view 渲染。
+
+    payload: ``{limit?: int, subject?: str, category?: str}``
+    Response: ``{type: "memory_facts_list_response", payload: {facts: [...]}}``
+    """
+    facts_store = _get_service(sc, "facts_store")
+    if facts_store is None:
+        await ws.send_json({
+            "type": "memory_facts_list_response",
+            "payload": {
+                "facts": [],
+                "reason": "facts_store_not_registered",
+            },
+        })
+        return
+    raw_limit = payload.get("limit")
+    try:
+        limit = max(1, min(int(raw_limit) if raw_limit is not None else 200, 500))
+    except (TypeError, ValueError):
+        limit = 200
+    subject = payload.get("subject")
+    category = payload.get("category")
+    try:
+        rows = await facts_store.list_active(
+            subject=str(subject) if subject else None,
+            category=str(category) if category else None,
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("p4_ipc.memory_facts_list_failed", error=str(exc))
+        rows = []
+    # 序列化 BLOB embedding 列（前端用不上 + JSON 不好放二进制）。
+    out_rows: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d.pop("embedding", None)
+        out_rows.append(d)
+    await ws.send_json({
+        "type": "memory_facts_list_response",
+        "payload": {"facts": out_rows},
+    })
+
+
+async def _handle_memory_forget_ws(
+    ws: Any, payload: dict[str, Any], sc: Any,
+) -> None:
+    """前端点 🗑 按钮的桥接 —— UI 已确认过来源，直调工具实现。
+
+    payload: ``{fact_id?: int, query?: str}``
+    Response: ``{type: "memory_forget_response", payload: {status, op_id?, forgotten_ids?, reason?}}``
+    """
+    facts_store = _get_service(sc, "facts_store")
+    if facts_store is None:
+        await ws.send_json({
+            "type": "memory_forget_response",
+            "payload": {
+                "status": "error",
+                "reason": "facts_store_not_registered",
+            },
+        })
+        return
+    try:
+        from deskpet.tools.memory_tools import (
+            _forget_by_id as _do_forget_by_id,
+            _forget_by_query as _do_forget_by_query,
+            is_bound as _memory_tool_bound,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("p4_ipc.memory_forget_import_failed", error=str(exc))
+        await ws.send_json({
+            "type": "memory_forget_response",
+            "payload": {"status": "error", "reason": str(exc)},
+        })
+        return
+    if not _memory_tool_bound():
+        await ws.send_json({
+            "type": "memory_forget_response",
+            "payload": {
+                "status": "error",
+                "reason": "memory_forget_tool_not_bound",
+            },
+        })
+        return
+    fact_id = payload.get("fact_id")
+    query = payload.get("query")
+    try:
+        if fact_id is not None:
+            try:
+                fid = int(fact_id)
+            except (TypeError, ValueError):
+                raise ValueError(f"fact_id must be int, got {fact_id!r}")
+            result_str = await _do_forget_by_id(fid)
+        elif query:
+            result_str = await _do_forget_by_query(str(query))
+        else:
+            await ws.send_json({
+                "type": "memory_forget_response",
+                "payload": {
+                    "status": "error",
+                    "reason": "需 fact_id 或 query 之一",
+                },
+            })
+            return
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("p4_ipc.memory_forget_failed", error=str(exc))
+        await ws.send_json({
+            "type": "memory_forget_response",
+            "payload": {"status": "error", "reason": str(exc)},
+        })
+        return
+    import json as _json
+    try:
+        result = _json.loads(result_str)
+    except Exception:
+        result = {"status": "error", "reason": "invalid tool response"}
+    await ws.send_json({
+        "type": "memory_forget_response",
+        "payload": result,
+    })
+
+
+async def _handle_memory_forget_undo(
+    ws: Any, payload: dict[str, Any], sc: Any,
+) -> None:
+    """5 秒 undo 窗口内恢复 forgotten fact。
+
+    payload: ``{op_id: str, max_age_seconds?: float}``
+    Response: ``{type: "memory_forget_undo_response", payload: {status, restored_ids: [...]}}``
+    """
+    facts_store = _get_service(sc, "facts_store")
+    op_id = str(payload.get("op_id") or "").strip()
+    if not op_id:
+        await _send_error(ws, "memory_forget_undo requires op_id")
+        return
+    if facts_store is None:
+        await ws.send_json({
+            "type": "memory_forget_undo_response",
+            "payload": {
+                "status": "error",
+                "restored_ids": [],
+                "reason": "facts_store_not_registered",
+            },
+        })
+        return
+    try:
+        max_age = float(payload.get("max_age_seconds") or 5.0)
+    except (TypeError, ValueError):
+        max_age = 5.0
+    try:
+        restored = await facts_store.restore_from_undo(
+            op_id, max_age_seconds=max_age,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("p4_ipc.memory_forget_undo_failed", error=str(exc))
+        restored = []
+    status = "ok" if restored else "expired"
+    await ws.send_json({
+        "type": "memory_forget_undo_response",
+        "payload": {
+            "status": status,
+            "restored_ids": [int(i) for i in restored],
+        },
+    })
 
 
 # ---------------------------------------------------------------------------

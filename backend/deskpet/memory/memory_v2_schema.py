@@ -87,7 +87,12 @@ CREATE TABLE IF NOT EXISTS facts (
     is_active      INTEGER NOT NULL DEFAULT 1,
     decay_rate     REAL    NOT NULL DEFAULT 0.02,
     last_recalled  REAL,
-    embedding      BLOB
+    embedding      BLOB,
+    -- Stage 2 D1：cross-key 矛盾 / memory_forget 配套列。
+    -- 老库由 schema_v2_migrator.ensure_memory_v2_columns 通过 ALTER
+    -- 补齐；新库一次到位避免启动后立即再 ALTER。
+    superseded_by  INTEGER REFERENCES facts(id),
+    forgotten_at   REAL
 );
 CREATE INDEX IF NOT EXISTS idx_facts_subject_key ON facts(subject, key, is_active);
 CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category, is_active);
@@ -149,10 +154,18 @@ async def ensure_memory_v2_tables(db_path: str | Path) -> None:
     Safe to call concurrently and repeatedly. Caches per-path so the
     second call is a free no-op. Does NOT bump ``PRAGMA user_version``.
 
+    Stage 2: after the CREATE TABLE pass, also runs
+    :func:`schema_v2_migrator.ensure_memory_v2_columns` to additively
+    ALTER in ``superseded_by`` / ``forgotten_at`` on legacy DBs (fresh
+    DBs already have them via ``_DDL``). main.py reads
+    :func:`schema_v2_migrator.alter_failures` to disable dependent
+    feature flags on ALTER failure (R8/D17 v2).
+
     Failure modes:
-      * SQLite error → re-raise. Callers (Phase A-E stores) should fail
-        loudly when their tables can't be created — the alternative is
-        silent NULL behaviour which is worse to debug.
+      * CREATE TABLE error → re-raise. Callers (Phase A-E stores) should
+        fail loudly when their tables can't be created.
+      * Stage 2 ALTER failure → logged and recorded; not raised, so the
+        rest of the app boots and the feature flag layer can decide.
     """
     key = str(Path(db_path).resolve())
     if key in _ensured:
@@ -164,6 +177,18 @@ async def ensure_memory_v2_tables(db_path: str | Path) -> None:
             await conn.execute("PRAGMA busy_timeout=5000")
             await conn.executescript(_DDL)
             await conn.commit()
+        # Stage 2 D1：补齐老库可能缺的列。ALTER 失败不抛，
+        # main.py 据 alter_failures() 关 flag。
+        try:
+            from deskpet.memory.schema_v2_migrator import (
+                ensure_memory_v2_columns,
+            )
+
+            await ensure_memory_v2_columns(db_path)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "memory_v2 stage2 column migration failed: %s", exc,
+            )
         _ensured.add(key)
         log.debug("memory_v2 tables ensured for %s", key)
 

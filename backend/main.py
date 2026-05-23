@@ -563,6 +563,11 @@ def _make_str_llm_call(provider, *, max_tokens: int = 512):
 # _summarizer_*）。_facts_store 还被 WI-M1.4 的 EnhancedRetriever 复用。
 _fact_extractor = None  # type: ignore[assignment]
 _facts_store = None  # type: ignore[assignment]
+# Stage 2 / WI-S2.4 (D12 v2 / D-RISK-4)：episodic→semantic 异步抽 fact 的
+# task 必须收进 set + add_done_callback(discard)；裸 asyncio.create_task
+# 会被 Python 3.11+ GC 静默吞掉，引发"Task was destroyed but it is pending"
+# warning + 数据丢失。lifespan shutdown 时 gather 等所有 task 完成。
+_episodic_background_tasks: set = set()
 # 记忆系统升级 WI-M1.5: 长消息切块器。fanout 在 chunking flag 开时用它
 # 切块 + embed 进 messages_chunks；EnhancedRetriever 读侧复用做向量召回。
 _message_chunker = None  # type: ignore[assignment]
@@ -651,14 +656,36 @@ try:
         _facts_store = _FactsStore(_state_db_path, embedder=_embedder)
         _facts_llm = _make_str_llm_call(local_llm)
         if _facts_llm is not None:
+            # Stage 2 / WI-S2.1a — cross_key_merge 需要 forgotten_at + superseded_by
+            # 列可用；R8 v2 / D17 v2：列 ALTER 失败时强制关 flag。
+            _v2_cfg = config.memory.v2
+            _cross_key_enabled = bool(_v2_cfg.cross_key_merge)
+            if _cross_key_enabled:
+                try:
+                    from deskpet.memory.schema_v2_migrator import (
+                        alter_failures as _alter_failures,
+                    )
+                    _failed = _alter_failures()
+                    if _failed.get("superseded_by"):
+                        logger.warning(
+                            "p4_cross_key_merge_force_disabled",
+                            reason="superseded_by column unavailable",
+                        )
+                        _cross_key_enabled = False
+                except Exception:  # noqa: BLE001
+                    pass
             _fact_extractor = _FactExtractor(
                 _facts_store,
                 extract_llm=_facts_llm,
-                min_chars=config.memory.v2.facts.min_user_chars,
+                min_chars=_v2_cfg.facts.min_user_chars,
+                cross_key_merge=_cross_key_enabled,
+                cross_key_llm=_facts_llm,
+                embedder=_embedder,
             )
             logger.info(
                 "p4_fact_extractor_ready",
-                min_chars=config.memory.v2.facts.min_user_chars,
+                min_chars=_v2_cfg.facts.min_user_chars,
+                cross_key_merge=_cross_key_enabled,
             )
         else:
             logger.info("p4_fact_extractor_skipped", reason="no_llm_provider")
@@ -691,13 +718,16 @@ try:
             )
             _skill_memory_store = None
 
-    # 记忆系统升级 WI-M1.3/M1.4/M1.5: EnhancedRetriever 非侵入 wrapper。
-    # rerank / enhanced_retriever / query_rewrite 任一 flag 开 → 用它包住
-    # 老 Retriever；全关 → MemoryManager 直接持裸 Retriever（recall 与第
-    # 一代逐字节一致，Strangler-Fig）。
+    # 记忆系统升级 WI-M1.3/M1.4/M1.5 + Stage 2 WI-S2.2: EnhancedRetriever
+    # 非侵入 wrapper。rerank / enhanced_retriever / query_rewrite / chunking
+    # / entity_path 任一开 → 用它包住老 Retriever；全关 → MemoryManager 直
+    # 接持裸 Retriever（recall 与第一代逐字节一致，Strangler-Fig）。
     _retriever_for_mm = _retriever
     _v2 = config.memory.v2
-    if _v2.rerank or _v2.enhanced_retriever or _v2.query_rewrite or _v2.chunking:
+    if (
+        _v2.rerank or _v2.enhanced_retriever or _v2.query_rewrite
+        or _v2.chunking or _v2.entity_path
+    ):
         try:
             from deskpet.memory.enhanced_retriever import (
                 build_recall_retriever as _build_recall_retriever,
@@ -730,6 +760,40 @@ try:
                     "memory.v2.enhanced_retriever=true 但 facts_extract"
                     "=false —— facts 表不会被写入，facts 路召回将长期为空。"
                 )
+            # Stage 2 WI-S2.2: entity_path 同样依赖 facts_extract —— 没事实
+            # 抽进 facts 表，entity LIKE 永远空召。和 enhanced_retriever 一
+            # 样只 warn 不挡 boot（Strangler-Fig：先把 wire 接上）。
+            if _v2.entity_path and not _v2.facts_extract:
+                logger.warning(
+                    "memory.v2.entity_path=true 但 facts_extract=false "
+                    "—— facts 表不会被写入，entity 路召回将长期为空。"
+                )
+            # Stage 2 WI-S2.2: 构造 CompositeEntityExtractor —— LLM 降级 regex。
+            # 离线 / 无 LLM 时退化为 RegexEntityExtractor + NoopLLM（永远抽空），
+            # Composite 自动走 regex 分支。
+            _entity_extractor = None
+            if _v2.entity_path:
+                try:
+                    from deskpet.memory.entity_extractor import (
+                        CompositeEntityExtractor as _Composite,
+                        LLMEntityExtractor as _LLMEx,
+                        NoopEntityExtractor as _NoopEx,
+                        RegexEntityExtractor as _RegexEx,
+                    )
+                    _ent_llm = _make_str_llm_call(local_llm, max_tokens=128)
+                    _llm_ex = _LLMEx(_ent_llm) if _ent_llm is not None else _NoopEx()
+                    _entity_extractor = _Composite(_llm_ex, _RegexEx())
+                    logger.info(
+                        "p4_entity_path_enabled",
+                        llm_extractor=_ent_llm is not None,
+                        entity_weight=0.10,
+                    )
+                except Exception as _ent_exc:  # noqa: BLE001
+                    logger.warning(
+                        "p4_entity_extractor_init_failed",
+                        error=str(_ent_exc),
+                    )
+                    _entity_extractor = None
             _retriever_for_mm = _build_recall_retriever(
                 _retriever,
                 rerank=_v2.rerank,
@@ -742,6 +806,8 @@ try:
                 query_rewriter=_query_rewriter,
                 embedder=_embedder,
                 chunk_store=_message_chunker,
+                entity_extractor=_entity_extractor,
+                entity_weight=0.10,
             )
             logger.info(
                 "p4_enhanced_retriever_ready",
@@ -749,6 +815,7 @@ try:
                 enhanced_retriever=_v2.enhanced_retriever,
                 query_rewrite=_v2.query_rewrite,
                 chunking=_v2.chunking,
+                entity_path=_v2.entity_path,
             )
         except Exception as _er_exc:  # noqa: BLE001
             logger.warning(
@@ -837,6 +904,49 @@ try:
     service_context.register("session_db", _session_db)
     service_context.register("vector_worker", _vector_worker)
     service_context.register("embedder", _embedder)
+    # Stage 2 WI-S2.1a / E3 v2：facts_store 注册供 p4_ipc.py 的
+    # memory_facts_list / memory_forget / memory_forget_undo handlers 使用。
+    if _facts_store is not None:
+        service_context.register("facts_store", _facts_store)
+
+    # Stage 2 WI-S2.1a / D6 v2：memory_forget 工具 bind。模块在 tools
+    # discovery 时已 register 到 registry，这里注入实例依赖。
+    # R8 v2：forgotten_at 列 ALTER 失败时强制关 memory_forget flag。
+    if config.memory.v2.memory_forget and _facts_store is not None:
+        _forget_avail = True
+        try:
+            from deskpet.memory.schema_v2_migrator import (
+                alter_failures as _alter_failures2,
+            )
+            if _alter_failures2().get("forgotten_at"):
+                _forget_avail = False
+                logger.warning(
+                    "p4_memory_forget_force_disabled",
+                    reason="forgotten_at column unavailable",
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        if _forget_avail:
+            try:
+                from deskpet.tools import memory_tools as _memory_tools
+                _memory_tools.bind(
+                    facts_store=_facts_store,
+                    embedder=_embedder,
+                    llm_call=_make_str_llm_call(local_llm),
+                    enable_natural_language=(
+                        config.memory.v2.forget.enable_natural_language
+                    ),
+                )
+                logger.info(
+                    "p4_memory_forget_tool_bound",
+                    enable_natural_language=(
+                        config.memory.v2.forget.enable_natural_language
+                    ),
+                )
+            except Exception as _mf_exc:  # noqa: BLE001
+                logger.warning(
+                    "p4_memory_forget_bind_failed", error=str(_mf_exc),
+                )
 
     # OpenSpec 2026-05-16-async-image-gen: ImageGenerationWorker —
     # generate_image submits a job and returns instantly; this worker
@@ -1272,6 +1382,12 @@ async def lifespan(app: FastAPI):
                     db_path=_summarizer_state_db_path,
                     llm_call=make_llm_call(local_llm),
                     vector_worker=service_context.get("vector_worker"),
+                    # Stage 2 / WI-S2.4 — episodic→semantic 固化
+                    fact_extractor=_fact_extractor,
+                    episodic_to_semantic=bool(
+                        config.memory.v2.episodic_to_semantic
+                    ),
+                    background_tasks=_episodic_background_tasks,
                 )
                 logger.info(
                     "summarizer_done scanned=%d summarized=%d archived=%d errors=%d",
@@ -1778,6 +1894,21 @@ async def lifespan(app: FastAPI):
             await _sl.stop()
         except Exception as exc:
             logger.warning("p4_skill_loader_stop_failed", error=str(exc))
+
+    # Stage 2 / WI-S2.4 (D12 v2)：等所有 episodic fact 抽取 task 完成。
+    # 防 "Task was destroyed but it is pending" warning + 数据丢失。
+    pending = list(_episodic_background_tasks)
+    if pending:
+        logger.info(
+            "episodic_background_tasks_draining count=%d", len(pending),
+        )
+        try:
+            await asyncio.gather(*pending, return_exceptions=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "episodic_background_tasks_drain_failed: %s", exc,
+            )
+
     logger.info("shutting down")
 
 
@@ -2204,6 +2335,12 @@ async def control_channel(ws: WebSocket):
                         min_messages=int(payload.get("min_messages", 20)),
                         max_per_run=int(payload.get("max_per_run", 10)),
                         vector_worker=service_context.get("vector_worker"),
+                        # Stage 2 / WI-S2.4 — episodic→semantic 固化
+                        fact_extractor=_fact_extractor,
+                        episodic_to_semantic=bool(
+                            config.memory.v2.episodic_to_semantic
+                        ),
+                        background_tasks=_episodic_background_tasks,
                     )
                     await ws.send_json({
                         "type": "memory_summarize_response",

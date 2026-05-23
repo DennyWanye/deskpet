@@ -98,6 +98,10 @@ async def summarize_old_sessions(
     max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
     now: float | None = None,
     vector_worker: Any = None,
+    # Stage 2 / WI-S2.4 — episodic→semantic 固化通路
+    fact_extractor: Any = None,
+    episodic_to_semantic: bool = False,
+    background_tasks: set[asyncio.Task] | None = None,
 ) -> SummaryResult:
     """主入口。返回 SummaryResult 报告本次成果。
 
@@ -177,6 +181,34 @@ async def summarize_old_sessions(
                             "summarizer: vec enqueue failed for summary %d: %s",
                             summary_id, exc,
                         )
+
+                # Stage 2 / WI-S2.4 (D12 v2) — episodic 固化：异步抽 facts。
+                # 必须用 background_tasks set 收集 + add_done_callback discard，
+                # 不能裸 asyncio.create_task（Python 3.11+ 静默 GC 吞 task，
+                # D-RISK-4）。
+                if (
+                    episodic_to_semantic
+                    and fact_extractor is not None
+                ):
+                    try:
+                        summary_text = await _read_summary_content(
+                            db_path, summary_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "summarizer: episodic read content failed "
+                            "for summary %d: %s", summary_id, exc,
+                        )
+                        summary_text = None
+                    if summary_text:
+                        task = asyncio.create_task(
+                            _safe_episodic_extract(
+                                fact_extractor, summary_id, summary_text,
+                            ),
+                        )
+                        if background_tasks is not None:
+                            background_tasks.add(task)
+                            task.add_done_callback(background_tasks.discard)
         except Exception as exc:  # noqa: BLE001 — single-session failure not fatal
             log.warning(
                 "summarizer: session=%s failed: %s",
@@ -190,6 +222,32 @@ async def summarize_old_sessions(
 # ---------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------
+
+
+async def _safe_episodic_extract(
+    fact_extractor: Any, summary_id: int, summary_text: str,
+) -> None:
+    """Stage 2 / WI-S2.4：在 background task 里安全调 fact_extractor。
+
+    任何异常都吞掉 + warn。这里不能 raise —— 它跑在 background_tasks set
+    里，未捕获异常会污染 asyncio 默认日志而不影响主路径，但仍要显式收。
+    """
+    try:
+        persisted = await fact_extractor.process_message(
+            message_id=summary_id,
+            content=summary_text,
+            role="system",
+            source="summarizer",
+        )
+        log.info(
+            "episodic_to_semantic: summary=%d → %d facts persisted",
+            summary_id, len(persisted),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "episodic_to_semantic: extract failed for summary=%d: %s",
+            summary_id, exc,
+        )
 
 
 async def _read_summary_content(db_path: Path, summary_id: int) -> str | None:

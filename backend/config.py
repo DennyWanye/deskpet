@@ -152,6 +152,21 @@ class MemoryV2FactsConfig:
     min_user_chars: int = 8       # 字数采样门，取代 facts.py 硬编码 <8
     facts_weight: float = 0.2     # facts 路进 RRF 的权重
     model_override: str = ""      # 留空 = 用主 LLM
+    # Stage 2 D8 v2：entity 路 RRF 权重；v1 是 0.15，保守降为 0.10。
+    entity_weight: float = 0.10
+
+
+@dataclass
+class MemoryV2ForgetConfig:
+    """``[memory.v2.forget]`` — memory_forget 工具子段（Stage 2 D5 v2）。
+
+    自然语言模式（query="...") 默认禁用：开放面是提示注入攻击面，需
+    用户在 config 里显式启用才生效。fact_id 模式始终开放。
+
+    子段名用 ``forget`` 而非 ``memory_forget`` —— 后者与父表的同名 flag
+    冲突（同一个 key 不能既是 bool 又是 dict）。
+    """
+    enable_natural_language: bool = False
 
 
 @dataclass
@@ -169,7 +184,15 @@ class MemoryV2Config:
     query_rewrite: bool = False       # WI-M1.5 短查询改写
     workspace_memory: bool = False    # WI-M1.6 code 工作记忆
     reflection: bool = False          # WI-M1.7 反思 / skill memory
+    # Stage 2 新增 4 flag（PRD §2.1 G1-G5 / §3 D16）：
+    cross_key_merge: bool = False         # WI-S2.1a 跨 key 矛盾治理
+    memory_forget: bool = False           # WI-S2.1a 显式遗忘工具
+    entity_path: bool = False             # WI-S2.2 entity 索引检索路
+    episodic_to_semantic: bool = False    # WI-S2.4 summary 抽 facts
     facts: MemoryV2FactsConfig = field(default_factory=MemoryV2FactsConfig)
+    forget: MemoryV2ForgetConfig = field(
+        default_factory=MemoryV2ForgetConfig,
+    )
 
 
 @dataclass
@@ -282,13 +305,17 @@ def _load_memory_v2(raw_v2: dict) -> MemoryV2Config:
     """Build MemoryV2Config from the raw ``[memory.v2]`` dict.
 
     ``_load_section`` is flat (no nested-dataclass recursion), so the
-    ``[memory.v2.facts]`` sub-sub-table is popped + built separately.
-    Missing section / keys → all flags default False (第一代行为不变)。
+    ``[memory.v2.facts]`` / ``[memory.v2.forget]`` sub-sub-tables are
+    popped + built separately. Missing section / keys → all flags
+    default False (第一代行为不变)。
     """
     raw_facts = dict(raw_v2.pop("facts", {}) or {})
+    raw_forget = dict(raw_v2.pop("forget", {}) or {})
     facts = _load_section(MemoryV2FactsConfig, raw_facts)
+    forget = _load_section(MemoryV2ForgetConfig, raw_forget)
     v2 = _load_section(MemoryV2Config, raw_v2)
     v2.facts = facts
+    v2.forget = forget
     return v2
 
 

@@ -269,6 +269,54 @@ export interface MemoryL1DeleteAck {
   };
 }
 
+// --- WI-S2.1b: facts view（事实 tab） + 🗑 + 5s undo --------------------
+//
+// 后端 ws 路由 `memory_facts_list` / `memory_forget` / `memory_forget_undo`
+// 由 backend/p4_ipc.py 实现。embedding 列在后端已剥离（JSON 不接 bytes），
+// 因此 FactItem 不含 embedding 字段。
+export interface FactItem {
+  id: number;
+  category: string;
+  subject: string;
+  key: string;
+  value: string;
+  confidence: number;
+  source_msg_id: number | null;
+  created_at: number;
+  updated_at: number;
+  evidence: string | null;
+  is_active: number;
+  decay_rate: number;
+  last_recalled: number | null;
+  superseded_by?: number | null;
+  forgotten_at?: number | null;
+}
+
+export interface MemoryFactsListResponse {
+  type: "memory_facts_list_response";
+  payload: { facts: FactItem[]; reason?: string };
+}
+
+export interface MemoryForgetResponse {
+  type: "memory_forget_response";
+  payload: {
+    status: "ok" | "error" | "skipped" | "not_found";
+    op_id?: string;
+    forgotten_ids?: number[];
+    reason?: string;
+    candidates?: number[];
+  };
+}
+
+export interface MemoryForgetUndoResponse {
+  type: "memory_forget_undo_response";
+  payload: {
+    status: "ok" | "expired" | "error";
+    restored_ids: number[];
+    reason?: string;
+  };
+}
+
 // --- P4-S16 Embedder status (SettingsPanel BGE-M3 卡片) ---------------------
 //
 // 让用户在前端直接看见当前 BGE-M3 是真模型还是 mock。后端 handler 在
@@ -410,6 +458,9 @@ export type IncomingMessage =
   | MemorySearchResponse
   | MemoryL1ListResponse
   | MemoryL1DeleteAck
+  | MemoryFactsListResponse
+  | MemoryForgetResponse
+  | MemoryForgetUndoResponse
   | EmbedderStatusResponse
   | ModelContextGetResponse
   | ModelContextSetAck

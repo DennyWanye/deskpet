@@ -85,6 +85,11 @@ class EnhancedRetriever:
         query_rewriter: Any | None = None,
         embedder: Any | None = None,
         chunk_store: Any | None = None,
+        # Stage 2 WI-S2.2：entity 索引检索路（PRD §3.3 / TDD §A2.3）。
+        # 默认 None / 0.10 —— byte-identity：entity_extractor=None 时
+        # _collect_entity_hits 直接返 []，recall 行为与 Stage 1 完全一致。
+        entity_extractor: Any | None = None,
+        entity_weight: float = 0.10,
     ) -> None:
         self._base = base
         self._facts_store = facts_store
@@ -101,6 +106,11 @@ class EnhancedRetriever:
         # 主动打乱召回顺序 → eval 回归。检测到 mock 时自动 bypass 重排，
         # 只 warn 一次。
         self._rerank_mock_warned = False
+        # Stage 2 WI-S2.2：entity 索引。entity_extractor=None → entity 路
+        # 关闭（byte-identity）；非空 + facts_store 非空才走。weight 0.10
+        # 比 facts_weight 低一档（PRD D8 v2，LIKE 噪声 + entity 抽取误差）。
+        self._entity_extractor = entity_extractor
+        self._entity_weight = float(entity_weight)
 
     @property
     def policy(self):
@@ -157,10 +167,18 @@ class EnhancedRetriever:
         )
 
         # No plug-ins active → byte-identical legacy path.
+        # Stage 2 WI-S2.2：entity_extractor 也算 plug-in；任何一个就绪都
+        # 跳过这个短路。entity_extractor=None → 不进 entity 路 → 行为不变。
+        entity_path_active = (
+            self._entity_extractor is not None
+            and self._facts_store is not None
+            and self._entity_weight > 0
+        )
         if (
             (self._facts_store is None or self._facts_weight <= 0)
             and self._reranker is None
             and self._chunk_store is None
+            and not entity_path_active
         ):
             return base_hits[:effective_top_k]
 
@@ -177,6 +195,15 @@ class EnhancedRetriever:
                 effective_query, top_k=widened_k
             )
             merged = _merge_with_facts(merged, fact_hits, self._facts_weight)
+
+        # Stage 2 WI-S2.2：entity 路 —— 抽 query 中的实体，LIKE facts.value。
+        # 与 fact_hits 共池（同走 _FACT_ID_OFFSET ID 空间），靠 _merge_with_facts
+        # 的去重避免与 facts 路重复（同 fact id → 后写的不进 merged）。
+        if entity_path_active:
+            entity_hits = await self._collect_entity_hits(effective_query)
+            merged = _merge_with_facts(
+                merged, entity_hits, self._entity_weight
+            )
 
         if self._reranker is not None and merged:
             merged = await self._apply_reranker(effective_query, merged)
@@ -237,27 +264,42 @@ class EnhancedRetriever:
             except Exception as exc:  # noqa: BLE001
                 log.debug("facts LIKE search failed: %s", exc)
                 return []
-        out: list[Hit] = []
-        for r in rows:
-            fid = int(r["id"])
-            synth = _FACT_ID_OFFSET + fid
-            text = f"[fact] {r['key']}: {r['value']}"
-            if r.get("evidence"):
-                text += f"  (来源: {r['evidence']})"
-            ts = float(r.get("updated_at") or 0.0)
-            # 向量召回行带 cosine ``_score``（0..1）；LIKE 兜底行用
-            # confidence 当分。两者同量级，_merge_with_facts 据此折叠。
-            score = r.get("_score")
-            if score is None:
-                score = r.get("confidence") or 0.5
-            out.append(Hit(
-                message_id=synth,
-                score=float(score),
-                text=text,
-                ts=ts,
-                source="facts",
-            ))
-        return out
+        return [_fact_row_to_hit(r, source="facts") for r in rows]
+
+    async def _collect_entity_hits(self, query: str) -> list[Hit]:
+        """Stage 2 WI-S2.2：entity 路 —— query 抽实体 → ``find_by_entities``。
+
+        三类降级：
+
+          * ``entity_extractor`` / ``facts_store`` 为空 → 返 ``[]``。
+          * extract 抛错 → 返 ``[]``（extractor 自身应吞异常，这里做最后兜底）。
+          * entities 为空 / find_by_entities 空 → 返 ``[]``。
+
+        Hit 的 ``source="entity"``，message_id 与 facts 路共用
+        ``_FACT_ID_OFFSET + fid``；``_merge_with_facts`` 据此去重，避免同一
+        fact 在 facts 路与 entity 路双重计分。
+        """
+        if self._entity_extractor is None or self._facts_store is None:
+            return []
+        try:
+            entities = await self._entity_extractor.extract(query)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("entity_extractor failed: %s", exc)
+            return []
+        if not entities:
+            return []
+        try:
+            rows = await self._facts_store.find_by_entities(
+                entities, limit=10
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("find_by_entities failed: %s", exc)
+            return []
+        log.debug(
+            "entity_path: query=%r entities=%s hits=%d",
+            query, entities, len(rows),
+        )
+        return [_fact_row_to_hit(r, source="entity") for r in rows]
 
     async def _collect_chunk_hits(
         self, query: str, *, top_k: int
@@ -358,26 +400,69 @@ def build_recall_retriever(
     query_rewriter: Any | None = None,
     embedder: Any | None = None,
     chunk_store: Any | None = None,
+    # Stage 2 WI-S2.2 — entity 路（PRD §3.3）。entity_extractor 非 None 即
+    # 视为开启；与 enhanced_retriever flag 解耦（main.py 决定何时注入）。
+    entity_extractor: Any | None = None,
+    entity_weight: float = 0.10,
 ) -> Any:
-    """记忆系统升级 WI-M1.3/M1.4/M1.5：根据 v2 flag 决定召回器。
+    """记忆系统升级 WI-M1.3/M1.4/M1.5 + Stage 2 WI-S2.2：根据 v2 flag 决定召回器。
 
     所有 flag 全关 → 直接返回**裸 base Retriever**（recall 与第一代逐字节
     一致，Strangler-Fig）。任一开 → 用 :class:`EnhancedRetriever` 包住。
 
     把「flag → 包不包」的判定抽成纯函数，让 main.py 接线与单测共用同一
     逻辑（TG-3/4：断言 MemoryManager 持有的召回器类型随 flag 切换）。
+
+    Stage 2：``entity_extractor`` 非 None 也算 "需要 EnhancedRetriever"，
+    单独开 ``entity_path`` 而其他 flag 全关时仍可包 wrapper。
     """
-    if not (rerank or enhanced_retriever or query_rewrite or chunking):
+    if not (
+        rerank or enhanced_retriever or query_rewrite or chunking
+        or entity_extractor is not None
+    ):
         return base
+    # Stage 2 WI-S2.2：entity 路依赖 facts_store.find_by_entities，故
+    # entity_extractor 启用时即便 enhanced_retriever=False 也要透传 facts_store。
+    # facts_weight 仍跟随 enhanced_retriever 控制（关掉 facts 路 RRF 融合，
+    # 只走 entity 路 LIKE）。
+    _entity_active = entity_extractor is not None
     return EnhancedRetriever(
         base=base,
-        facts_store=facts_store if enhanced_retriever else None,
+        facts_store=facts_store if (enhanced_retriever or _entity_active) else None,
         # facts_weight 必须显式传（D5）：默认 0.0 = facts 永不进结果。
         facts_weight=facts_weight if enhanced_retriever else 0.0,
         reranker=reranker if rerank else None,
         query_rewriter=query_rewriter if query_rewrite else None,
         embedder=embedder,
         chunk_store=chunk_store if chunking else None,
+        entity_extractor=entity_extractor,
+        entity_weight=entity_weight,
+    )
+
+
+def _fact_row_to_hit(r: dict, *, source: str) -> Hit:
+    """Stage 1+2 共用：facts 行 dict → 合成 Hit。
+
+    Stage 1 facts 路（``source="facts"``）和 Stage 2 entity 路
+    （``source="entity"``）共用，文本渲染 + ID 合成完全一致，避免分歧。
+    """
+    fid = int(r["id"])
+    synth = _FACT_ID_OFFSET + fid
+    text = f"[fact] {r['key']}: {r['value']}"
+    if r.get("evidence"):
+        text += f"  (来源: {r['evidence']})"
+    ts = float(r.get("updated_at") or 0.0)
+    # 向量召回行带 cosine ``_score``（0..1）；LIKE 兜底 / entity 路用
+    # confidence 当分。两者同量级，_merge_with_facts 据此折叠。
+    score = r.get("_score")
+    if score is None:
+        score = r.get("confidence") or 0.5
+    return Hit(
+        message_id=synth,
+        score=float(score),
+        text=text,
+        ts=ts,
+        source=source,
     )
 
 
@@ -408,15 +493,26 @@ def _merge_with_facts(
 
     Strategy: scale fact scores by ``facts_weight`` and union with base
     hits. Sort by score descending. Stable tie-break by original index.
+
+    Stage 2 ★: 按 ``message_id`` 去重 —— entity 路与 facts 路（甚至同路
+    多 entity）都可能召同一 fact，``_FACT_ID_OFFSET + fid`` 是稳定标识。
+    base 已包含 message_id 优先保留 base（不被弱权 fact / entity 取代）；
+    fact_hits 内部按出现顺序去重（先到先得）。
     """
     if not fact_hits:
         return base_hits
+    seen_ids: set[int] = {h.message_id for h in base_hits}
     merged: list[tuple[float, int, Hit]] = []
     for i, h in enumerate(base_hits):
         merged.append((h.score, i, h))
     base_count = len(base_hits)
-    for j, h in enumerate(fact_hits):
+    next_idx = 0
+    for h in fact_hits:
+        if h.message_id in seen_ids:
+            continue  # 去重：base 已含 / 早前 fact_hits 已加
         scaled = replace(h, score=h.score * facts_weight)
-        merged.append((scaled.score, base_count + j, scaled))
+        merged.append((scaled.score, base_count + next_idx, scaled))
+        seen_ids.add(h.message_id)
+        next_idx += 1
     merged.sort(key=lambda t: (-t[0], t[1]))
     return [h for _, _, h in merged]

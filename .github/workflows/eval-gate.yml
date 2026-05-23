@@ -1,0 +1,30 @@
+name: Eval Gate
+
+# memory-system Stage 2 WI-S2.3 / PRD D10 —召回相关 PR 自动跑 eval_gate。
+# 触发 strict 的逻辑在 backend/scripts/eval_gate_ci.sh（看 git diff 决定）。
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**/*.py'
+      - 'backend/scripts/eval_gate*'
+
+jobs:
+  eval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 拿全 history，git diff 才能比对 base branch
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend (editable)
+        run: pip install -e backend
+
+      - name: Run eval gate (auto strict if recall code touched)
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+        run: bash backend/scripts/eval_gate_ci.sh

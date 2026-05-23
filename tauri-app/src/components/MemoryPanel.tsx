@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "./Icon";
 import {
   dark,
@@ -13,12 +13,17 @@ import {
 } from "../theme/components";
 import type { ControlChannel } from "../ws/ControlChannel";
 import type {
+  ControlMessage,
+  FactItem,
   IncomingMessage,
   L1Entry,
   L1Target,
   MemoryClearAck,
   MemoryDeleteAck,
   MemoryExportResponse,
+  MemoryFactsListResponse,
+  MemoryForgetResponse,
+  MemoryForgetUndoResponse,
   MemoryHit,
   MemoryL1DeleteAck,
   MemoryL1ListResponse,
@@ -46,7 +51,109 @@ type Props = {
 // and 技能 (SkillLoader list). All requests hit the existing control WS;
 // backend handlers degrade gracefully when services aren't yet registered.
 type MemoryScope = "session" | "all";
-type PanelView = "turns" | "l1" | "search" | "skills";
+// WI-S2.1b 新增 "facts" — 显示 active 事实 + 🗑 + 5s undo
+type PanelView = "turns" | "l1" | "search" | "skills" | "facts";
+
+// undo 浮窗倒计时 5 秒；后端 max_age_seconds 默认值与之保持一致
+export const FORGET_UNDO_WINDOW_MS = 5000;
+
+// --- ws message builders (testable，无 React 副作用) -------------------
+
+export function buildMemoryFactsListMessage(opts?: {
+  limit?: number;
+  subject?: string;
+  category?: string;
+}): ControlMessage {
+  const payload: Record<string, unknown> = { limit: opts?.limit ?? 200 };
+  if (opts?.subject) payload.subject = opts.subject;
+  if (opts?.category) payload.category = opts.category;
+  return { type: "memory_facts_list", payload };
+}
+
+export function buildMemoryForgetMessage(factId: number): ControlMessage {
+  return { type: "memory_forget", payload: { fact_id: factId } };
+}
+
+export function buildMemoryForgetUndoMessage(opId: string): ControlMessage {
+  return { type: "memory_forget_undo", payload: { op_id: opId } };
+}
+
+// --- pure state reducers（vitest 直接断言用） ---------------------------
+
+export type PendingForget = { op_id: string; fact: FactItem };
+
+/**
+ * 收到 memory_forget_response 后该如何更新 facts + pendingForget。
+ *
+ * status=ok + forgotten_ids[0] 命中时：从 facts 移除 + 建 pendingForget。
+ * 其它分支（error/skipped/not_found）只返回 statusText，列表不动。
+ */
+export function applyForgetResponse(
+  facts: FactItem[],
+  payload: MemoryForgetResponse["payload"],
+): {
+  nextFacts: FactItem[];
+  pending: PendingForget | null;
+  statusText: string | null;
+} {
+  if (payload.status !== "ok") {
+    return {
+      nextFacts: facts,
+      pending: null,
+      statusText: payload.reason
+        ? `忘记失败：${payload.status} — ${payload.reason}`
+        : `忘记失败：${payload.status}`,
+    };
+  }
+  const forgottenId = payload.forgotten_ids?.[0];
+  if (forgottenId == null) {
+    return { nextFacts: facts, pending: null, statusText: "忘记失败：未知 id" };
+  }
+  const target = facts.find((f) => f.id === forgottenId);
+  if (!target) {
+    return { nextFacts: facts, pending: null, statusText: null };
+  }
+  const nextFacts = facts.filter((f) => f.id !== forgottenId);
+  const opId = payload.op_id ?? "";
+  return {
+    nextFacts,
+    pending: opId ? { op_id: opId, fact: target } : null,
+    statusText: null,
+  };
+}
+
+/**
+ * 收到 memory_forget_undo_response 后该如何还原 facts。
+ *
+ * status=ok 时把 pendingForget.fact 加回列表头部；其它分支只清 pending。
+ */
+export function applyUndoResponse(
+  facts: FactItem[],
+  pending: PendingForget | null,
+  payload: MemoryForgetUndoResponse["payload"],
+): {
+  nextFacts: FactItem[];
+  pending: PendingForget | null;
+  statusText: string | null;
+} {
+  if (payload.status === "ok" && pending) {
+    return {
+      nextFacts: [pending.fact, ...facts],
+      pending: null,
+      statusText: null,
+    };
+  }
+  return {
+    nextFacts: facts,
+    pending: null,
+    statusText:
+      payload.status === "expired"
+        ? "撤销窗口已过期（>5s）"
+        : payload.reason
+          ? `撤销失败：${payload.reason}`
+          : null,
+  };
+}
 
 export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
   const [view, setView] = useState<PanelView>("turns");
@@ -79,6 +186,26 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
   // --- P4-S11 skills list state -----------------------------------------
   const [skills, setSkills] = useState<SkillDescriptor[]>([]);
   const [skillsReason, setSkillsReason] = useState<string | null>(null);
+
+  // --- WI-S2.1b facts view + 🗑 + 5s undo -------------------------------
+  const [facts, setFacts] = useState<FactItem[]>([]);
+  const [factsReason, setFactsReason] = useState<string | null>(null);
+  const [pendingForget, setPendingForget] = useState<PendingForget | null>(
+    null,
+  );
+  const [forgetDeadline, setForgetDeadline] = useState<number | null>(null);
+  // 显示用倒计时（每 250ms 刷新一次），不参与超时判断
+  const [forgetRemainingMs, setForgetRemainingMs] = useState<number>(0);
+  const pendingForgetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  const clearPendingForgetTimer = useCallback(() => {
+    if (pendingForgetTimerRef.current) {
+      clearTimeout(pendingForgetTimerRef.current);
+      pendingForgetTimerRef.current = null;
+    }
+  }, []);
 
   // Subscribe to memory_* responses from the shared control channel. Non-
   // memory messages are forwarded to the usual App.tsx handler via the same
@@ -194,10 +321,58 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
           setSkillsReason(m.payload.reason ?? null);
           break;
         }
+        case "memory_facts_list_response": {
+          const m = msg as MemoryFactsListResponse;
+          // 后端按 updated_at DESC 排好；再排一次纯保险。
+          const sorted = [...m.payload.facts].sort(
+            (a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0),
+          );
+          setFacts(sorted);
+          setFactsReason(m.payload.reason ?? null);
+          break;
+        }
+        case "memory_forget_response": {
+          const m = msg as MemoryForgetResponse;
+          // 用 functional setFacts 拿到最新 facts，再函数式更新 pending
+          setFacts((prev) => {
+            const r = applyForgetResponse(prev, m.payload);
+            if (r.pending) {
+              clearPendingForgetTimer();
+              setPendingForget(r.pending);
+              setForgetDeadline(Date.now() + FORGET_UNDO_WINDOW_MS);
+              setForgetRemainingMs(FORGET_UNDO_WINDOW_MS);
+              pendingForgetTimerRef.current = setTimeout(() => {
+                setPendingForget(null);
+                setForgetDeadline(null);
+                setForgetRemainingMs(0);
+              }, FORGET_UNDO_WINDOW_MS);
+            }
+            if (r.statusText) setStatus(r.statusText);
+            return r.nextFacts;
+          });
+          break;
+        }
+        case "memory_forget_undo_response": {
+          const m = msg as MemoryForgetUndoResponse;
+          clearPendingForgetTimer();
+          setForgetDeadline(null);
+          setForgetRemainingMs(0);
+          // 用 functional updater + 当前 pending 闭包：onMessage 重新订阅时
+          // 闭包会随 useEffect 依赖刷新（pendingForget 进依赖数组）
+          setPendingForget((curPending) => {
+            setFacts((prev) => {
+              const r = applyUndoResponse(prev, curPending, m.payload);
+              if (r.statusText) setStatus(r.statusText);
+              return r.nextFacts;
+            });
+            return null;
+          });
+          break;
+        }
       }
     });
     return unsub;
-  }, [open, getChannel, l1Target]);
+  }, [open, getChannel, l1Target, clearPendingForgetTimer]);
 
   // --- Conversation history ---------------------------------------------
   const refresh = useCallback(() => {
@@ -237,6 +412,31 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
   useEffect(() => {
     if (open && view === "skills") refreshSkills();
   }, [open, view, refreshSkills]);
+
+  // --- Facts fetch on tab enter (WI-S2.1b) -------------------------------
+  const refreshFacts = useCallback(() => {
+    getChannel()?.send(buildMemoryFactsListMessage({ limit: 200 }));
+  }, [getChannel]);
+
+  useEffect(() => {
+    if (open && view === "facts") refreshFacts();
+  }, [open, view, refreshFacts]);
+
+  // Tick countdown for the undo toast (display only)
+  useEffect(() => {
+    if (!forgetDeadline) return;
+    const id = setInterval(() => {
+      const remaining = Math.max(0, forgetDeadline - Date.now());
+      setForgetRemainingMs(remaining);
+      if (remaining === 0) clearInterval(id);
+    }, 250);
+    return () => clearInterval(id);
+  }, [forgetDeadline]);
+
+  // Clean up dangling timer on unmount / panel close
+  useEffect(() => {
+    return () => clearPendingForgetTimer();
+  }, [clearPendingForgetTimer]);
 
   // --- Handlers ---------------------------------------------------------
   const handleDelete = (id: number) => {
@@ -279,6 +479,16 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
       type: "memory_l1_delete",
       payload: { target: l1Target, index },
     });
+  };
+
+  // --- WI-S2.1b handlers ----------------------------------------------
+  const handleFactForget = (factId: number) => {
+    getChannel()?.send(buildMemoryForgetMessage(factId));
+  };
+
+  const handleFactUndo = () => {
+    if (!pendingForget) return;
+    getChannel()?.send(buildMemoryForgetUndoMessage(pendingForget.op_id));
   };
 
   const handleSearch = () => {
@@ -325,6 +535,7 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
             {view === "l1" ? `L1 · ${l1Target === "memory" ? "MEMORY.md" : "USER.md"}` : ""}
             {view === "search" ? "向量搜索" : ""}
             {view === "skills" ? "技能" : ""}
+            {view === "facts" ? `事实 · ${facts.length}` : ""}
           </span>
         </span>
         <button
@@ -397,6 +608,15 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
           style={tabStyle(view === "skills")}
         >
           技能
+        </button>
+        <button
+          data-testid="memory-view-facts"
+          role="tab"
+          aria-selected={view === "facts"}
+          onClick={() => setView("facts")}
+          style={tabStyle(view === "facts")}
+        >
+          事实
         </button>
       </div>
 
@@ -706,6 +926,128 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
         </>
       )}
 
+      {/* --- 事实 view (WI-S2.1b) ------------------------------------ */}
+      {view === "facts" && (
+        <>
+          <div style={{ display: "flex", gap: "4px", marginBottom: "6px" }}>
+            <button
+              data-testid="facts-refresh"
+              onClick={refreshFacts}
+              style={btnStyle("#3b82f6")}
+            >
+              刷新
+            </button>
+            <span
+              style={{ alignSelf: "center", opacity: 0.55, fontSize: "10px" }}
+            >
+              共 {facts.length} 条
+            </span>
+          </div>
+          {factsReason && (
+            <div
+              style={{ opacity: 0.6, fontSize: "10px", marginBottom: "4px" }}
+            >
+              后端提示：{factsReason}
+            </div>
+          )}
+          {status && (
+            <div
+              style={{ opacity: 0.75, marginBottom: "6px", fontSize: "11px" }}
+            >
+              {status}
+            </div>
+          )}
+          <div style={listStyle}>
+            {facts.length === 0 && (
+              <div style={emptyStyle}>(暂无事实)</div>
+            )}
+            {facts.map((f) => (
+              <div
+                key={f.id}
+                data-testid={`fact-row-${f.id}`}
+                data-fact-category={f.category}
+                style={{ ...rowStyle, flexDirection: "column", alignItems: "stretch" }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <span style={categoryBadgeStyle} title={f.category}>
+                    {f.category}
+                  </span>
+                  <span
+                    style={{
+                      flex: 1,
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      fontSize: 12,
+                    }}
+                  >
+                    <strong>{f.key}</strong>
+                    <span style={{ opacity: 0.55 }}>: </span>
+                    <span>{f.value}</span>
+                  </span>
+                  <button
+                    data-testid={`fact-forget-${f.id}`}
+                    onClick={() => handleFactForget(f.id)}
+                    style={{
+                      ...btnStyle("#991b1b"),
+                      padding: "1px 6px",
+                      fontSize: "12px",
+                      flexShrink: 0,
+                    }}
+                    title={`忘记 fact #${f.id}`}
+                    aria-label={`忘记事实 ${f.key}`}
+                  >
+                    🗑
+                  </button>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    opacity: 0.5,
+                    fontSize: "10px",
+                    marginTop: 2,
+                  }}
+                >
+                  <span>{f.subject || "(no subject)"}</span>
+                  <span>
+                    更新于 {new Date((f.updated_at || 0) * 1000).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {pendingForget && (
+            <div data-testid="fact-undo-toast" style={undoToastStyle}>
+              <span style={{ flex: 1 }}>
+                已忘记 <strong>{pendingForget.fact.key}</strong>:{" "}
+                {pendingForget.fact.value}，撤销？
+              </span>
+              <span
+                data-testid="fact-undo-remaining"
+                style={{ opacity: 0.6, fontSize: 10 }}
+              >
+                {Math.ceil(forgetRemainingMs / 1000)}s
+              </span>
+              <button
+                data-testid="fact-undo-btn"
+                onClick={handleFactUndo}
+                style={btnStyle("#3b82f6")}
+              >
+                撤销
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
       {/* --- 技能 view ------------------------------------------------ */}
       {view === "skills" && (
         <>
@@ -816,6 +1158,34 @@ const emptyStyle: React.CSSProperties = {
   textAlign: "center",
   marginTop: "32px",
   fontSize: 12,
+};
+
+const categoryBadgeStyle: React.CSSProperties = {
+  display: "inline-block",
+  padding: "1px 6px",
+  color: "#7fb0ff",
+  fontSize: "10px",
+  background: "rgba(79,147,255,0.16)",
+  border: `1px solid ${dark.border}`,
+  borderRadius: 5,
+  flexShrink: 0,
+};
+
+const undoToastStyle: React.CSSProperties = {
+  position: "absolute",
+  left: 12,
+  right: 12,
+  bottom: 12,
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "8px 10px",
+  borderRadius: 8,
+  background: "rgba(30, 30, 45, 0.96)",
+  border: `1px solid ${dark.border}`,
+  fontSize: 11,
+  boxShadow: "0 6px 18px rgba(0,0,0,0.35)",
+  zIndex: 5,
 };
 
 const sessionTagStyle: React.CSSProperties = {

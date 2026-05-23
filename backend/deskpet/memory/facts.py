@@ -37,6 +37,7 @@ import json
 import logging
 import math
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Sequence
@@ -55,6 +56,10 @@ _CATEGORY_DECAY: dict[str, float] = {
     "project": 0.01,
     "event": 0.05,         # fast — yesterday's news
     "reflection": 0.02,
+    # Stage 2 D13 v2 / R-MISS-3：episodic 固化通路（WI-S2.4）。
+    # summary 抽出的 fact category；衰减慢（长期保留）。同时进
+    # VALID_CATEGORIES 白名单（下方 frozenset 派生）。
+    "episodic_summary": 0.01,
 }
 
 VALID_CATEGORIES = frozenset(_CATEGORY_DECAY.keys())
@@ -92,6 +97,37 @@ Output ONLY the JSON array. No prose, no markdown fences.
 
 SOURCE:
 {content}
+
+JSON:"""
+
+
+_CROSS_KEY_CONFLICT_PROMPT = """\
+You are detecting **cross-key contradictions** among existing facts.
+
+NEW fact (about to be inserted):
+  category: {new_category}
+  subject:  {new_subject}
+  key:      {new_key}
+  value:    {new_value}
+
+EXISTING active facts on the same subject (id / key / value /
+updated_ago_days). They are candidates that MIGHT contradict the new
+fact even though their key differs:
+{candidates}
+
+Decide:
+  * Which existing facts are made obsolete (superseded) by the new one?
+    A contradiction: e.g. NEW "allergic to seafood" vs EXISTING "allergic
+    to peanut" + user said "actually I was wrong about peanut". Things
+    in different domains (coffee preference vs hiking hobby) are NOT
+    contradictions and MUST NOT be marked superseded.
+  * Should the new fact still be inserted as a fresh row?
+
+Output ONLY a single JSON object:
+  {{"conflicts": [{{"old_id": <int>, "reason": "<one sentence>"}}, ...],
+    "should_insert": true|false}}
+
+If unsure → conflicts: [] and should_insert: true (safe default).
 
 JSON:"""
 
@@ -161,6 +197,17 @@ class MergeDecision:
     action: str   # 'replace' | 'merge' | 'no_op'
     value: Optional[str]
     reason: str
+
+
+@dataclass
+class CrossKeyDecision:
+    """Stage 2 WI-S2.1a：cross-key 矛盾扫描的 LLM 输出。
+
+    ``conflicts`` 每项 dict 形如 ``{"old_id": int, "reason": str}``。
+    LLM 给出非法形态（缺 old_id / 非 int）由调用方过滤（TS1-13）。
+    """
+    should_insert: bool
+    conflicts: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FactsStore:
@@ -367,6 +414,54 @@ class FactsStore:
             await cur.close()
         return [dict(r) for r in rows]
 
+    async def find_by_entities(
+        self,
+        entities: list[str],
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Stage 2 WI-S2.2 / PRD §3.3：实体精准索引（LIKE 只查 value 列）。
+
+        把 query 端 NER 抽出的实体列表喂进来，逐个对 ``facts.value`` 做
+        ``LIKE '%entity%'`` —— **只查 value 列**（不查 subject / key），原因：
+
+          * ``subject`` 多为 ``"user"`` 等通用值，LIKE 噪声极大。
+          * ``key`` 是英文 snake_case 标识符（``pet_name`` / ``favorite_drink``），
+            与中文实体严重不匹配，召不到也徒增 SQL 成本。
+
+        规则：
+
+          * 实体列表上限 5 个（超过截断，对应 PRD §3.3 ``entities[:5]``）。
+          * 单实体长度 < 2 字符跳过（中文单字 / 英文单字母无意义）。
+          * 按 ``id`` 去重 —— 多个实体同时命中同一 fact 只算一次。
+          * 按 ``updated_at`` 降序排（最近更新的事实优先）。
+
+        ``vector_search`` 之外的第二条 facts 召回路径。EnhancedRetriever 把
+        结果按 ``entity_weight``（默认 0.10）折叠进 RRF。空 entities → 空返；不抛错。
+        """
+        if not entities:
+            return []
+        await self._ensure_schema()
+        seen: dict[int, dict[str, Any]] = {}
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            for e in entities[:5]:  # 上限 5 个实体
+                if not isinstance(e, str) or len(e.strip()) < 2:
+                    continue
+                pat = f"%{e.strip()}%"
+                cur = await conn.execute(
+                    "SELECT * FROM facts "
+                    "WHERE is_active = 1 AND value LIKE ? "
+                    "ORDER BY updated_at DESC LIMIT ?",
+                    (pat, int(limit)),
+                )
+                for r in await cur.fetchall():
+                    seen.setdefault(int(r["id"]), dict(r))
+                await cur.close()
+        rows = list(seen.values())
+        rows.sort(key=lambda r: -float(r.get("updated_at") or 0))
+        return rows[: int(limit)]
+
     async def vector_search(
         self, query_embedding: Any, *, limit: int = 10
     ) -> list[dict[str, Any]]:
@@ -424,6 +519,184 @@ class FactsStore:
                 (ts, int(fact_id)),
             )
             await conn.commit()
+
+    # ------------------------------------------------------------------
+    # Stage 2 / WI-S2.1a — cross-key 矛盾治理 + memory_forget 配套
+    # ------------------------------------------------------------------
+
+    async def mark_superseded(
+        self, *, old_id: int, superseded_by: int,
+    ) -> None:
+        """A1 v2 D3：原子标 old_id 为 inactive 且记录被谁推翻。
+
+        ``WHERE is_active=1`` 守护：若 old_id 已 inactive（被另一并发
+        路径先标过），本次 UPDATE 静默 0 行，不报错（TS1-10）。
+        """
+        await self._ensure_schema()
+        async with aiosqlite.connect(self._db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            await conn.execute(
+                "UPDATE facts SET is_active = 0, superseded_by = ? "
+                "WHERE id = ? AND is_active = 1",
+                (int(superseded_by), int(old_id)),
+            )
+            await conn.commit()
+
+    async def mark_forgotten(
+        self, fact_id: int, *, op_id: str, ts: Optional[float] = None,
+    ) -> None:
+        """memory_forget 标 inactive + 记 forgotten_at（D5 v2）。
+
+        evidence 末尾追加 ``[forget_op:<op_id>]`` 标记，restore_from_undo
+        靠这个反查。``WHERE is_active=1`` 守护：已 inactive / 不存在
+        ID 调用静默无效（TS2-2）。
+        """
+        await self._ensure_schema()
+        when = ts if ts is not None else time.time()
+        async with aiosqlite.connect(self._db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            await conn.execute(
+                "UPDATE facts SET is_active = 0, forgotten_at = ? "
+                "WHERE id = ? AND is_active = 1",
+                (float(when), int(fact_id)),
+            )
+            await conn.execute(
+                "UPDATE facts SET evidence = COALESCE(evidence, '') || ? "
+                "WHERE id = ?",
+                (f"\n[forget_op:{op_id}]", int(fact_id)),
+            )
+            await conn.commit()
+
+    async def restore_from_undo(
+        self, op_id: str, *, max_age_seconds: float = 5.0,
+    ) -> list[int]:
+        """5 秒 undo 窗口内 restore；超时返回 [] (D5 v2)。
+
+        现在 - forgotten_at < max_age_seconds 且 evidence 含
+        ``[forget_op:<op_id>]`` 的行被恢复 is_active=1 / forgotten_at=NULL。
+        清理 evidence 末尾的 marker 不必（多一行噪声但不影响逻辑）。
+        """
+        await self._ensure_schema()
+        now = time.time()
+        cutoff = now - float(max_age_seconds)
+        async with aiosqlite.connect(self._db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            cur = await conn.execute(
+                "SELECT id FROM facts "
+                "WHERE forgotten_at IS NOT NULL AND forgotten_at >= ? "
+                "AND evidence LIKE ?",
+                (cutoff, f"%[forget_op:{op_id}]%"),
+            )
+            ids = [int(r[0]) for r in await cur.fetchall()]
+            await cur.close()
+            if not ids:
+                return []
+            await conn.executemany(
+                "UPDATE facts SET is_active = 1, forgotten_at = NULL "
+                "WHERE id = ?",
+                [(fid,) for fid in ids],
+            )
+            await conn.commit()
+        return ids
+
+    async def is_forgotten_recently(
+        self, *, subject: str, key: str, within_days: int = 7,
+    ) -> bool:
+        """R-MISS-2 v2：subject/key 最近 N 天被 forgotten 过则返 True。
+
+        FactExtractor 写入前查它防"用户喊忘记 → 一分钟后又被自动重新
+        抽出来覆盖遗忘"。within_days 默认 7 天。
+        """
+        await self._ensure_schema()
+        cutoff = time.time() - float(within_days) * 86400.0
+        async with aiosqlite.connect(self._db_path) as conn:
+            cur = await conn.execute(
+                "SELECT 1 FROM facts "
+                "WHERE subject = ? AND key = ? "
+                "AND forgotten_at IS NOT NULL AND forgotten_at >= ? "
+                "LIMIT 1",
+                (subject, key, cutoff),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+        return row is not None
+
+    async def list_superseded_chain(
+        self, fact_id: int, *, max_depth: int = 16,
+    ) -> list[dict[str, Any]]:
+        """从 fact_id 起向前追 ``superseded_by`` 链，返新→旧的 facts。
+
+        TS1-11：3 级链返 3 条。链中含 ID 不存在 → 静默断；防 max_depth
+        无限循环。
+        """
+        await self._ensure_schema()
+        out: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        cur_id: Optional[int] = int(fact_id)
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            depth = 0
+            while cur_id is not None and depth < max_depth:
+                if cur_id in seen:
+                    break
+                seen.add(cur_id)
+                c = await conn.execute(
+                    "SELECT * FROM facts WHERE id = ?", (int(cur_id),)
+                )
+                row = await c.fetchone()
+                await c.close()
+                if row is None:
+                    break
+                out.append(dict(row))
+                nxt = row["superseded_by"]
+                cur_id = int(nxt) if nxt is not None else None
+                depth += 1
+        return out
+
+    async def vector_search_in_subject(
+        self, query_embedding: Any, *, subject: str, limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """D3 v2 混合视野：限 same subject 的向量召回。
+
+        与 vector_search 同语义，多加 WHERE subject=? 把语义最近 N 条
+        限定在同一 subject 范围（防把别 subject 的 fact 混进 LLM 视野
+        造成误判）。
+        """
+        if query_embedding is None or not subject:
+            return []
+        await self._ensure_schema()
+        import numpy as np
+
+        q = np.asarray(query_embedding, dtype=np.float32).ravel()
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0.0:
+            return []
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute(
+                "SELECT * FROM facts "
+                "WHERE is_active = 1 AND subject = ? AND embedding IS NOT NULL",
+                (subject,),
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for r in rows:
+            blob = r["embedding"]
+            if not blob:
+                continue
+            vec = np.frombuffer(blob, dtype=np.float32)
+            if vec.shape != q.shape:
+                continue
+            v_norm = float(np.linalg.norm(vec))
+            if v_norm == 0.0:
+                continue
+            cos = float(np.dot(q, vec) / (q_norm * v_norm))
+            d = dict(r)
+            d["_score"] = cos
+            scored.append((cos, d))
+        scored.sort(key=lambda t: -t[0])
+        return [d for _, d in scored[: int(limit)]]
 
     async def daily_decay(self, *, now: Optional[float] = None) -> int:
         """Apply per-fact ``confidence *= exp(-decay_rate * days_since_touch)``.
@@ -483,6 +756,10 @@ class FactExtractor:
         extract_llm: LLMCall,
         merge_llm: Optional[LLMCall] = None,
         min_chars: int = 8,
+        cross_key_merge: bool = False,
+        cross_key_llm: Optional[LLMCall] = None,
+        embedder: Any | None = None,
+        forget_within_days: int = 7,
     ) -> None:
         self._store = store
         self._extract_llm = extract_llm
@@ -498,6 +775,15 @@ class FactExtractor:
         # active。用一把锁把 find→merge→upsert 的 DB 临界区串行化（LLM
         # extract 仍可并发，锁只罩持久化阶段）。
         self._persist_lock = asyncio.Lock()
+        # Stage 2 / WI-S2.1a — cross-key 矛盾治理（flag 关时整段跳过，
+        # _persist_extracted 行为与 Stage 1 字节级一致）。
+        self._cross_key_merge_enabled = bool(cross_key_merge)
+        self._cross_key_llm = cross_key_llm or self._merge_llm
+        # D3 v2 混合视野的语义部分需要 embedder；无 embedder 时只用
+        # "最近 20 条"（仍能跑，覆盖率降）。
+        self._embedder = embedder
+        # R-MISS-2：被 forgotten 的 subject/key 在 N 天内不重新插。
+        self._forget_within_days = int(forget_within_days)
 
     async def process_message(
         self,
@@ -505,12 +791,26 @@ class FactExtractor:
         message_id: int,
         content: str,
         role: str,
+        source: str = "user_message",
     ) -> list[dict[str, Any]]:
         """Top-level entry. Returns the list of persisted facts (newly
         inserted or updated). Empty list = no facts extracted or all
         no-op'd.
+
+        Stage 2 / WI-S2.4 (D13 v2)：``source`` 参数 + 联合白名单。
+          * role=user/assistant → 默认允许（不论 source）
+          * role=system AND source="summarizer" → 允许（episodic→semantic）
+          * 其他组合 → 拒（return []）
+
+        ``source="summarizer"`` 抽出的 fact category 全被强制改写为
+        ``"episodic_summary"`` —— 保证 summary 二次抽取的 fact 与 user
+        直说的 fact 在统计上可分离。
         """
-        if role not in ("user", "assistant"):
+        # Stage 2 D13 v2：联合白名单
+        if not (
+            role in ("user", "assistant")
+            or (role == "system" and source == "summarizer")
+        ):
             return []
         if not content or len(content.strip()) < self._min_chars:
             return []
@@ -522,6 +822,11 @@ class FactExtractor:
         extracted = _parse_extracted(raw)
         if not extracted:
             return []
+
+        # Stage 2 D13 v2：summarizer 来源 → category override
+        if source == "summarizer":
+            for f in extracted:
+                f.category = "episodic_summary"
 
         # 持久化阶段串行化（评审缺口 2）—— LLM extract 已并发跑完，这里
         # 锁住 find→merge→upsert 防同 (subject,key) 并发双插。
@@ -535,6 +840,10 @@ class FactExtractor:
     ) -> list[dict[str, Any]]:
         """find → merge-decide → upsert 每条抽取出的 fact。
 
+        Stage 2 / WI-S2.1a：在 find_active=None（新 key）路径上额外做
+        cross-key 矛盾扫描 —— 把 same-subject 的"最近 20 + 语义最近 10"
+        喂给 LLM，命中矛盾则 mark_superseded 旧 fact。
+
         调用方必须已持有 ``self._persist_lock`` —— 见 process_message。
         """
         persisted: list[dict[str, Any]] = []
@@ -543,10 +852,43 @@ class FactExtractor:
             if not fact.is_valid():
                 log.debug("FactExtractor: dropping invalid fact %s", fact)
                 continue
+            # R-MISS-2：被 forgotten 的 (subject, key) 在 N 天内不重新插。
+            try:
+                if await self._store.is_forgotten_recently(
+                    subject=fact.subject,
+                    key=fact.key,
+                    within_days=self._forget_within_days,
+                ):
+                    log.debug(
+                        "Skip fact (subject=%s key=%s): forgotten within %d days",
+                        fact.subject, fact.key, self._forget_within_days,
+                    )
+                    continue
+            except Exception as exc:  # noqa: BLE001
+                # is_forgotten_recently 走 forgotten_at 列；列不存在时
+                # SELECT 报错 → 老库未 ALTER 成功 → 静默继续（不卡主流程）。
+                log.debug(
+                    "is_forgotten_recently failed (legacy DB?): %s", exc,
+                )
             existing = await self._store.find_active(
                 subject=fact.subject, key=fact.key
             )
             if existing is None:
+                # Stage 2 cross-key 分支：先做矛盾扫描。
+                if self._cross_key_merge_enabled:
+                    try:
+                        cross_persisted = await self._handle_cross_key(
+                            fact, message_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "cross-key conflict scan failed: %s; "
+                            "falling back to plain insert", exc,
+                        )
+                        cross_persisted = None
+                    if cross_persisted is not None:
+                        persisted.extend(cross_persisted)
+                        continue
                 fid = await self._store.upsert(
                     category=fact.category,
                     subject=fact.subject,
@@ -596,6 +938,135 @@ class FactExtractor:
             else:
                 log.debug("FactExtractor: unknown merge action %r", decision.action)
         return persisted
+
+    # ------------------------------------------------------------------
+    # Stage 2 / WI-S2.1a — cross-key conflict scanning
+    # ------------------------------------------------------------------
+
+    async def _handle_cross_key(
+        self, fact: "ExtractedFact", message_id: int,
+    ) -> Optional[list[dict[str, Any]]]:
+        """Cross-key 矛盾分支处理。
+
+        Returns:
+          * None — 跳过此分支（无候选 / flag 关 / 异常上抛），让调用方
+            走 fallback insert 路径
+          * list[persisted] — 已处理，含本 fact 的 insert / superseded 操作
+
+        D3 v2 混合视野：① 最近 20 条 ② embedder 召回 10 条 (limited
+        to same subject) ③ 合并去重，上限 25。
+        """
+        # ① 最近 20 条
+        recent = await self._store.list_active(
+            subject=fact.subject, limit=20,
+        )
+        # ② 语义最近 10 条
+        semantic: list[dict[str, Any]] = []
+        if self._embedder is not None:
+            try:
+                emb_arr = await self._embedder.encode([f"{fact.key}: {fact.value}"])
+                if emb_arr is not None and len(emb_arr) > 0:
+                    semantic = await self._store.vector_search_in_subject(
+                        query_embedding=emb_arr[0],
+                        subject=fact.subject,
+                        limit=10,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("cross_key semantic recall failed: %s", exc)
+                semantic = []
+        # ③ 合并去重
+        candidates = _merge_dedupe_facts(recent, semantic, limit=25)
+        if not candidates:
+            return None
+
+        decision = await self._decide_cross_key_conflict(
+            new_fact=fact, candidates=candidates,
+        )
+        new_fid: Optional[int] = None
+        persisted: list[dict[str, Any]] = []
+        if decision.should_insert:
+            new_fid = await self._store.upsert(
+                category=fact.category,
+                subject=fact.subject,
+                key=fact.key,
+                value=fact.value,
+                confidence=fact.confidence,
+                source_msg_id=message_id,
+                evidence=fact.evidence,
+            )
+            persisted.append(
+                {"id": new_fid, "action": "insert", **fact.__dict__}
+            )
+        existing_ids = {int(r["id"]) for r in candidates if r.get("id") is not None}
+        for entry in decision.conflicts:
+            old_id_raw = entry.get("old_id") if isinstance(entry, dict) else None
+            if not isinstance(old_id_raw, int):
+                log.warning(
+                    "cross_key: dropping conflict with non-int old_id: %r",
+                    entry,
+                )
+                continue
+            if old_id_raw not in existing_ids:
+                log.warning(
+                    "cross_key: LLM referenced unknown fact id=%s; ignoring",
+                    old_id_raw,
+                )
+                continue
+            if new_fid is None:
+                # 没 insert 新 fact 时谁去标 superseded？保守 no-op + log。
+                log.warning(
+                    "cross_key: should_insert=False yet conflicts non-empty; "
+                    "skipping mark_superseded for old_id=%s", old_id_raw,
+                )
+                continue
+            await self._store.mark_superseded(
+                old_id=old_id_raw, superseded_by=new_fid,
+            )
+            persisted.append({
+                "id": old_id_raw,
+                "action": "superseded",
+                "superseded_by": new_fid,
+            })
+        if not decision.should_insert and not decision.conflicts:
+            log.debug(
+                "cross_key: LLM said should_insert=False with no conflicts; "
+                "noop for new fact %s", fact,
+            )
+        return persisted
+
+    async def _decide_cross_key_conflict(
+        self, *, new_fact: "ExtractedFact",
+        candidates: list[dict[str, Any]],
+    ) -> "CrossKeyDecision":
+        """LLM 看 new_fact + 候选 N 条 active facts，输出冲突判断。
+
+        Prompt 不放 evidence（控长度，R1）；只放 id/key/value/updated_at。
+        失败兜底（LLM error / JSON 解析失败）→ should_insert=True,
+        conflicts=[]，等价于不做 cross-key 干预（TS1-3/4）。
+        """
+        lines = []
+        now = time.time()
+        for r in candidates:
+            updated = float(r.get("updated_at") or 0.0)
+            ago = max(0.0, (now - updated) / 86400.0)
+            lines.append(
+                f"  - id={r['id']} key={r['key']!r} "
+                f"value={str(r.get('value',''))[:80]!r} "
+                f"updated_ago_days={ago:.1f}"
+            )
+        prompt = _CROSS_KEY_CONFLICT_PROMPT.format(
+            new_category=new_fact.category,
+            new_subject=new_fact.subject,
+            new_key=new_fact.key,
+            new_value=new_fact.value,
+            candidates="\n".join(lines),
+        )
+        try:
+            raw = await self._cross_key_llm(prompt)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cross_key LLM failed: %s", exc)
+            return CrossKeyDecision(should_insert=True, conflicts=[])
+        return _parse_cross_key_decision(raw)
 
     async def _decide_merge(
         self, new: ExtractedFact, existing: dict[str, Any]
@@ -668,6 +1139,68 @@ def _parse_extracted(raw: str) -> list[ExtractedFact]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _parse_cross_key_decision(raw: str) -> CrossKeyDecision:
+    """Defensive parse for cross-key LLM output.
+
+    Any non-conforming response → safe default ``should_insert=True,
+    conflicts=[]`` —— 等价"什么都不动"，承接 Stage 1 行为。
+    """
+    if not raw:
+        return CrossKeyDecision(should_insert=True, conflicts=[])
+    text = raw.strip()
+    if text.startswith("```"):
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    lb, rb = text.find("{"), text.rfind("}")
+    if not (0 <= lb < rb):
+        return CrossKeyDecision(should_insert=True, conflicts=[])
+    try:
+        obj = json.loads(text[lb:rb + 1])
+    except json.JSONDecodeError:
+        return CrossKeyDecision(should_insert=True, conflicts=[])
+    if not isinstance(obj, dict):
+        return CrossKeyDecision(should_insert=True, conflicts=[])
+    raw_conflicts = obj.get("conflicts")
+    out_conflicts: list[dict[str, Any]] = []
+    if isinstance(raw_conflicts, list):
+        for c in raw_conflicts:
+            if not isinstance(c, dict):
+                continue
+            # 不在这里过滤 old_id 类型 —— 调用方会过滤 + 记 warning。
+            out_conflicts.append(c)
+    should_insert = bool(obj.get("should_insert", True))
+    return CrossKeyDecision(
+        should_insert=should_insert, conflicts=out_conflicts,
+    )
+
+
+def _merge_dedupe_facts(
+    recent: list[dict[str, Any]],
+    semantic: list[dict[str, Any]],
+    *, limit: int = 25,
+) -> list[dict[str, Any]]:
+    """D3 v2：合并最近 N + 语义 M 候选，按 id 去重，限 limit。
+
+    顺序：最近优先（更可能是用户刚说的）→ 语义补漏。
+    """
+    seen: dict[int, dict[str, Any]] = {}
+    for src in (recent, semantic):
+        for r in src:
+            rid = r.get("id")
+            if rid is None:
+                continue
+            seen.setdefault(int(rid), dict(r))
+            if len(seen) >= limit:
+                break
+        if len(seen) >= limit:
+            break
+    return list(seen.values())[:limit]
 
 
 def _parse_merge_decision(raw: str) -> MergeDecision:
