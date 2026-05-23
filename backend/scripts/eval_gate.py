@@ -15,9 +15,20 @@ baseline 比对 → 指标回归则**非零退出**，可挂进 pre-merge / CI�
 用法::
 
     cd backend
-    python -m scripts.eval_gate                 # 跑门控，回归则 exit 1
-    python -m scripts.eval_gate --update-baseline   # 把当前结果写成 baseline
+    python -m scripts.eval_gate                 # 默认 gate，回归则 exit 1
+    python -m scripts.eval_gate --strict        # 严格模式：hit@5 必须 > baseline
+    python -m scripts.eval_gate --update-baseline   # 写 baseline（带 sanity）
+    python -m scripts.eval_gate --update-baseline --force  # 强制写
     python -m scripts.eval_gate --json          # 只打印 JSON，不做门控判定
+
+Stage 2 升级（WI-S2.3，PRD D10/D11）
+-----------------------------------
+* ``--strict``：召回相关代码改动 PR 必须开。hit@5 **严格大于** baseline
+  (含 ``_HIT_TOLERANCE``)。CI 自动通过 ``scripts/eval_gate_ci.sh`` 看
+  git diff 触发，不靠人工。
+* ``--update-baseline``：默认开 sanity 检查 —— 新值若 hit@5 比旧 baseline
+  低超过容差、或 token_per_query 超旧值 ×30%，**拒绝写入**（exit 3）。
+  ``--force`` 可绕（仅紧急情况）。首次写（无旧 baseline）直接写。
 """
 from __future__ import annotations
 
@@ -110,11 +121,73 @@ def _gate(current: dict, baseline: dict) -> tuple[bool, list[str]]:
     return (not failures), failures
 
 
+def _gate_strict(current: dict, baseline: dict) -> tuple[bool, list[str]]:
+    """Stage 2 严格门控（PRD D10）：hit@5 **严格大于** baseline + 容差。
+
+    召回相关 PR（``*_retriever.py / *_extractor.py / facts.py / chunker.py``
+    等）必须开 strict —— 不允许"持平"或"微微下降到容差内"。token 增幅约束
+    与默认 gate 一致（≤ +30%）。
+    """
+    failures: list[str] = []
+    base_hit5 = float(baseline.get("hit@5", 0.0))
+    cur_hit5 = float(current.get("hit@5", 0.0))
+    # 严格大于：要求 cur 必须比 baseline 高出超过 _HIT_TOLERANCE
+    if cur_hit5 <= base_hit5 + _HIT_TOLERANCE:
+        failures.append(
+            f"strict hit@5 未提升: {cur_hit5:.4f} 未 > baseline "
+            f"{base_hit5:.4f} + 容差 {_HIT_TOLERANCE}"
+        )
+    base_tok = float(baseline.get("token_per_query", 0.0))
+    cur_tok = float(current.get("token_per_query", 0.0))
+    if base_tok > 0 and cur_tok > base_tok * _TOKEN_GROWTH_MAX:
+        failures.append(
+            f"token_per_query 超标: {cur_tok:.1f} > baseline {base_tok:.1f} "
+            f"× {_TOKEN_GROWTH_MAX}"
+        )
+    return (not failures), failures
+
+
+def _check_update_sanity(
+    current: dict, old: dict | None, force: bool,
+) -> tuple[bool, str]:
+    """``--update-baseline`` 写入前的 sanity（PRD D11）。
+
+    返回 ``(ok, reason)``。``force=True`` 直接放行；``old is None``（首次写）
+    也直接放行。违规：``hit@5`` 比旧值低超过容差，或 ``token_per_query``
+    超旧值 × ``_TOKEN_GROWTH_MAX``。
+    """
+    if force or old is None:
+        return True, ""
+    base_hit5 = float(old.get("hit@5", 0.0))
+    cur_hit5 = float(current.get("hit@5", 0.0))
+    if cur_hit5 < base_hit5 - _HIT_TOLERANCE:
+        return False, (
+            f"拒绝写入: 新 hit@5 {cur_hit5:.4f} < 旧 baseline "
+            f"{base_hit5:.4f} − 容差 {_HIT_TOLERANCE}（--force 可绕）"
+        )
+    base_tok = float(old.get("token_per_query", 0.0))
+    cur_tok = float(current.get("token_per_query", 0.0))
+    if base_tok > 0 and cur_tok > base_tok * _TOKEN_GROWTH_MAX:
+        return False, (
+            f"拒绝写入: 新 token_per_query {cur_tok:.1f} > 旧 baseline "
+            f"{base_tok:.1f} × {_TOKEN_GROWTH_MAX}（--force 可绕）"
+        )
+    return True, ""
+
+
 async def _amain() -> int:
     parser = argparse.ArgumentParser(prog="python -m scripts.eval_gate")
     parser.add_argument(
         "--update-baseline", action="store_true",
-        help="把当前 eval 结果写成新的 baseline",
+        help="把当前 eval 结果写成新的 baseline（默认带 sanity 检查）",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="--update-baseline 时绕过 sanity（钉低 hit@5 / 钉高 token）",
+    )
+    parser.add_argument(
+        "--strict", action="store_true",
+        help="严格门控（PRD D10）：hit@5 必须严格 > baseline + 容差",
     )
     parser.add_argument(
         "--json", action="store_true",
@@ -127,6 +200,11 @@ async def _amain() -> int:
     print(json.dumps(current, ensure_ascii=False, indent=2))
 
     if args.update_baseline:
+        old = _load_baseline()
+        ok, reason = _check_update_sanity(current, old, force=args.force)
+        if not ok:
+            print(f"[eval_gate] {reason}", file=sys.stderr)
+            return 3
         payload = {
             k: current[k]
             for k in ("qa_set_size", "hit@1", "hit@5", "hit@10",
@@ -137,7 +215,12 @@ async def _amain() -> int:
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        print(f"[eval_gate] baseline 已更新 → {_BASELINE_PATH}")
+        if args.force and old is not None:
+            print(
+                f"[eval_gate] baseline 已强制更新（--force） → {_BASELINE_PATH}"
+            )
+        else:
+            print(f"[eval_gate] baseline 已更新 → {_BASELINE_PATH}")
         return 0
 
     if args.json:
@@ -151,11 +234,19 @@ async def _amain() -> int:
             file=sys.stderr,
         )
         return 2
-    ok, failures = _gate(current, baseline)
+    if args.strict:
+        ok, failures = _gate_strict(current, baseline)
+        gate_name = "strict gate"
+    else:
+        ok, failures = _gate(current, baseline)
+        gate_name = "gate"
     if ok:
-        print("[eval_gate] PASS —— eval 指标未回归。")
+        print(f"[eval_gate] PASS —— eval 指标通过 {gate_name}。")
         return 0
-    print("[eval_gate] FAIL —— eval 指标门控未通过：", file=sys.stderr)
+    print(
+        f"[eval_gate] FAIL —— eval 指标 {gate_name} 未通过：",
+        file=sys.stderr,
+    )
     for f in failures:
         print(f"  - {f}", file=sys.stderr)
     return 1
