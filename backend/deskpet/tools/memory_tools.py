@@ -249,7 +249,11 @@ async def _llm_confirm_forget(
 
 
 def _parse_confirm_response(raw: str) -> list[int]:
-    """Defensive parse of ``{"ids": [...]}``."""
+    """Defensive parse of ``{"ids": [...]}``.
+
+    Stage 2 真测试 round 2 bug fix：剥 ``<think>...</think>`` reasoning
+    块（deepseek-v4 / claude thinking 等模型常带）。
+    """
     if not raw:
         return []
     text = raw.strip()
@@ -260,6 +264,11 @@ def _parse_confirm_response(raw: str) -> list[int]:
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
+    import re
+    for pat in (r"<think>.*?</think>", r"<thinking>.*?</thinking>",
+                r"<reasoning>.*?</reasoning>"):
+        text = re.sub(pat, "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = text.strip()
     lb, rb = text.find("{"), text.rfind("}")
     if not (0 <= lb < rb):
         return []

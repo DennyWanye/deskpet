@@ -227,15 +227,17 @@ def test_ts1_6_dedupe_limits_to_25() -> None:
 
 
 # ---------------------------------------------------------------------------
-# TS1-7 — prompt 不含 evidence 字段（控长度）
+# TS1-7 — 候选 fact 的 evidence 不进 prompt（控长度 R1）；NEW fact
+# 的 evidence 必须进 prompt（round 2 真测试 bug fix —— 没 evidence
+# LLM 看不到 "其实不是 X，是 Y" 类修正信号）
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_ts1_7_prompt_no_evidence(db_path: Path) -> None:
+async def test_ts1_7_prompt_candidate_no_evidence_but_new_has(db_path: Path) -> None:
     store = await _make_store(db_path)
     await store.upsert(
         category="preference", subject="user", key="kx", value="vx",
         confidence=0.9, source_msg_id=1,
-        evidence="!!!SENSITIVE EVIDENCE STRING!!!",
+        evidence="!!!CANDIDATE_EVIDENCE_SHOULD_NOT_LEAK!!!",
     )
     captured: list[str] = []
 
@@ -244,7 +246,11 @@ async def test_ts1_7_prompt_no_evidence(db_path: Path) -> None:
             captured.append(prompt)
             if "EXISTING active facts" in prompt:
                 return json.dumps({"conflicts": [], "should_insert": True})
-            return _extract_response_for("preference", "ky", "vy")
+            return json.dumps([{
+                "category": "preference", "subject": "user",
+                "key": "ky", "value": "vy", "confidence": 0.9,
+                "evidence": "NEW_FACT_EVIDENCE_SHOULD_APPEAR",
+            }])
 
     ext = FactExtractor(
         store, extract_llm=CaptureLLM(), merge_llm=CaptureLLM(),
@@ -254,7 +260,10 @@ async def test_ts1_7_prompt_no_evidence(db_path: Path) -> None:
     cross_key_prompts = [p for p in captured if "EXISTING active facts" in p]
     assert len(cross_key_prompts) >= 1
     for p in cross_key_prompts:
-        assert "!!!SENSITIVE EVIDENCE STRING!!!" not in p
+        # 候选 fact 的 evidence 不能进 prompt（控长度 R1）
+        assert "!!!CANDIDATE_EVIDENCE_SHOULD_NOT_LEAK!!!" not in p
+        # 但 NEW fact 的 evidence 必须进 prompt（round 2 真测试 fix）
+        assert "NEW_FACT_EVIDENCE_SHOULD_APPEAR" in p
 
 
 # ---------------------------------------------------------------------------

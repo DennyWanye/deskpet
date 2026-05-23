@@ -36,6 +36,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -109,19 +110,27 @@ NEW fact (about to be inserted):
   subject:  {new_subject}
   key:      {new_key}
   value:    {new_value}
+  evidence: {new_evidence}    # the user's original phrasing — read this
+                              # carefully; it often contains the explicit
+                              # correction signal ("其实不是 X，是 Y" /
+                              # "actually I was wrong about X")
 
 EXISTING active facts on the same subject (id / key / value /
 updated_ago_days). They are candidates that MIGHT contradict the new
 fact even though their key differs:
 {candidates}
 
-Decide:
-  * Which existing facts are made obsolete (superseded) by the new one?
-    A contradiction: e.g. NEW "allergic to seafood" vs EXISTING "allergic
-    to peanut" + user said "actually I was wrong about peanut". Things
-    in different domains (coffee preference vs hiking hobby) are NOT
-    contradictions and MUST NOT be marked superseded.
-  * Should the new fact still be inserted as a fresh row?
+Decision logic:
+  * If the NEW fact's **evidence** contains an explicit correction
+    ("其实不是 X，是 Y" / "搞错了" / "actually I was wrong about X" /
+    "X 是错的，正确的是 Y" / "我刚才说 X 是错的" / 等) AND an EXISTING
+    fact's value or key matches the thing being corrected (X) → the
+    existing fact is OBSOLETE; mark it superseded.
+  * If the NEW fact simply adds another data point in the same broad
+    domain (e.g. "I'm also allergic to shrimp" added to peanut allergy
+    with NO explicit correction) → NOT a contradiction; keep both.
+  * Different domains (coffee preference vs hiking hobby) → never a
+    contradiction.
 
 Output ONLY a single JSON object:
   {{"conflicts": [{{"old_id": <int>, "reason": "<one sentence>"}}, ...],
@@ -1054,11 +1063,16 @@ class FactExtractor:
                 f"value={str(r.get('value',''))[:80]!r} "
                 f"updated_ago_days={ago:.1f}"
             )
+        # Stage 2 真测试 round 2 bug fix：LLM 缺 user 修正原话上下文
+        # 会判"两个过敏原可以共存，不矛盾"。把 new fact 的 evidence
+        # （normalize 截到 200 字以内）也传进 prompt，让 LLM 看到
+        # "其实不是 X，是 Y" 类型的修正信号。
         prompt = _CROSS_KEY_CONFLICT_PROMPT.format(
             new_category=new_fact.category,
             new_subject=new_fact.subject,
             new_key=new_fact.key,
             new_value=new_fact.value,
+            new_evidence=new_fact.evidence,
             candidates="\n".join(lines),
         )
         try:
@@ -1103,6 +1117,27 @@ class FactExtractor:
 # ----------------------------------------------------------------------
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning_blocks(text: str) -> str:
+    """Stage 2 真测试 round 2 bug fix：DeepSeek-V4 / Claude reasoning /
+    其他 thinking 模型常在 JSON 输出前附 ``<think>...</think>`` 块，
+    且块内会出现 ``[``、``{``、``"`` 等字符让 ``find("[") / rfind("]")``
+    截取范围出错或 ``json.loads`` 失败。先用正则把所有 think 块剥掉，
+    再做 json 范围扫描更稳。
+
+    其他常见 reasoning 标记（claude ``<thinking>``、gemini ``<reasoning>``）
+    也覆盖。
+    """
+    text = _THINK_BLOCK_RE.sub("", text)
+    for tag in ("thinking", "reasoning"):
+        text = re.sub(
+            rf"<{tag}>.*?</{tag}>", "", text, flags=re.DOTALL | re.IGNORECASE,
+        )
+    return text.strip()
+
+
 def _parse_extracted(raw: str) -> list[ExtractedFact]:
     if not raw:
         return []
@@ -1114,6 +1149,7 @@ def _parse_extracted(raw: str) -> list[ExtractedFact]:
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
+    text = _strip_reasoning_blocks(text)
     lb, rb = text.find("["), text.rfind("]")
     if not (0 <= lb < rb):
         return []
@@ -1157,6 +1193,7 @@ def _parse_cross_key_decision(raw: str) -> CrossKeyDecision:
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
+    text = _strip_reasoning_blocks(text)
     lb, rb = text.find("{"), text.rfind("}")
     if not (0 <= lb < rb):
         return CrossKeyDecision(should_insert=True, conflicts=[])
@@ -1207,6 +1244,7 @@ def _parse_merge_decision(raw: str) -> MergeDecision:
     if not raw:
         return MergeDecision(action="no_op", value=None, reason="empty llm response")
     text = raw.strip()
+    text = _strip_reasoning_blocks(text)
     if text.startswith("```"):
         nl = text.find("\n")
         if nl != -1:
