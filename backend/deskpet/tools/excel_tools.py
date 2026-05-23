@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 from . import office_paths
@@ -241,10 +242,17 @@ def excel_create(
         log.warning("excel_create failed: %s", exc, exc_info=True)
         return {"ok": False, "error": f"render failed: {exc}", "retriable": True}
 
+    # WI-T1.2 D1：显式 emit artifacts[]（一等公民路径，保 BC）
     return {
         "ok": True,
         "path": str(out_path),
         "sheet_count": len(sheets),
+        "artifacts": [{
+            "kind": "file",
+            "path": str(out_path),
+            "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "title": Path(str(out_path)).name,
+        }],
     }
 
 

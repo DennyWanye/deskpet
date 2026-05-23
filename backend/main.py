@@ -353,6 +353,57 @@ try:
         )
     )
     deskpet_tool_registry_v2.set_permission_gate(permission_gate_v2)
+    # WI-T3.1 last-mile wiring: provider 模式注入 ToolsConfig 到 registry。
+    # 2026-05-23 测试阶段决策：config.toml 默认全 ON（不走灰度），
+    # 用户/管理员可在 config.toml 改 flag 个别关闭。
+    deskpet_tool_registry_v2.set_tools_config_provider(
+        lambda: getattr(config, "tools", None)
+    )
+
+    # WI-T1.5 last-mile: 解析 default_artifact_dir 空字符串 → 默认
+    # <user_data>/artifacts/。这样 config.toml 用户留空也能拿到合理默认；
+    # 显式填路径则按用户配置走（office_paths.artifact_default_path 直接读）。
+    if hasattr(config, "tools") and config.tools.last_mile.default_artifact_dir == "":
+        from pathlib import Path as _PathLM
+        config.tools.last_mile.default_artifact_dir = str(
+            _PathLM(_paths.user_data_dir()) / "artifacts"
+        )
+        logger.info(
+            "last_mile.default_artifact_dir resolved to %s",
+            config.tools.last_mile.default_artifact_dir,
+        )
+    # WI-T2.2 P0 修：按 cfg.tools.verifier.emit_receipts 构造 ReceiptStore
+    # 并通过 provider 注入。flag OFF 时 box[0]=None 永不产 receipt（BC）；
+    # flag ON 时每次 execute_tool 都 emit + 写盘。
+    # 注：用 list[Any] 容器避免 nonlocal (此处在 module 顶层 try-block)。
+    _receipt_store_box: list[Any] = [None]
+    def _get_receipt_store() -> Any:
+        cfg = getattr(config, "tools", None)
+        emit = bool(getattr(getattr(cfg, "verifier", None),
+                            "emit_receipts", False))
+        if not emit:
+            return None
+        if _receipt_store_box[0] is None:
+            try:
+                from deskpet.tools.receipt_store import ReceiptStore
+                from pathlib import Path as _PathRS
+                retention = int(getattr(
+                    getattr(cfg, "last_mile", None),
+                    "artifact_dir_retention_days", 7,
+                ))
+                _receipt_store_box[0] = ReceiptStore(
+                    _PathRS(_paths.user_data_dir()),
+                    retention_days=min(retention, 7),
+                )
+                # 启动期自清理 (PRD D5)
+                deleted = _receipt_store_box[0].cleanup_expired()
+                if deleted > 0:
+                    logger.info("receipt_store: cleaned %d expired files", deleted)
+            except Exception as _rs_exc:  # noqa: BLE001
+                logger.warning("ReceiptStore init failed: %s", _rs_exc)
+                return None
+        return _receipt_store_box[0]
+    deskpet_tool_registry_v2.set_receipt_store_provider(_get_receipt_store)
     # P4-S25: persist auto_mode across restart. Path lives under the
     # user data dir so it follows the user's profile (dev mode uses
     # `<repo>/userdata/`, prod uses `%APPDATA%/deskpet/`). Loading
@@ -2000,6 +2051,40 @@ async def health():
         "cloud_configured": llm._cloud is not None,
         "startup_errors": errors,
     }
+
+
+@app.post("/metrics/event")
+async def post_metrics_event(request: Request):
+    """WI-T1.7 last-mile: 前端 ArtifactCard 按钮点击 → 此端点 → metrics.jsonl。
+
+    Body: {event: str, detail: dict}
+    Auth: 同 /metrics — SHARED_SECRET 在 DEV_MODE 下放行。
+    PRD §5 健康区间 metric (artifact_action click rate) 的入口。
+    """
+    if not DEV_MODE:
+        secret = request.headers.get("x-shared-secret", "")
+        if not secret or not secrets.compare_digest(secret, SHARED_SECRET):
+            return Response(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Bearer realm="metrics"'},
+            )
+    try:
+        body = await request.json()
+    except Exception:
+        return Response(status_code=400, content="invalid json")
+    event = body.get("event")
+    detail = body.get("detail") or {}
+    if not isinstance(event, str) or not event:
+        return Response(status_code=400, content="missing 'event' field")
+    if not isinstance(detail, dict):
+        return Response(status_code=400, content="'detail' must be dict")
+    try:
+        from observability.metrics_sink import record as _metric_record
+        _metric_record(event, detail)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("metrics event drop: %s", exc)
+        return Response(status_code=500, content="sink error")
+    return Response(status_code=204)
 
 
 @app.get("/metrics")

@@ -128,7 +128,18 @@ def pdf_export(
             return {"ok": False, "error": f"cannot place output pdf: {exc}", "retriable": True}
 
     size = dest.stat().st_size if dest.is_file() else 0
-    return {"ok": True, "path": str(dest), "size_bytes": size}
+    # WI-T1.2 D1：显式 emit artifacts[]（一等公民路径，保 BC）
+    return {
+        "ok": True,
+        "path": str(dest),
+        "size_bytes": size,
+        "artifacts": [{
+            "kind": "file",
+            "path": str(dest),
+            "mime": "application/pdf",
+            "title": Path(str(dest)).name,
+        }],
+    }
 
 
 # ---------------------------------------------------------------------------

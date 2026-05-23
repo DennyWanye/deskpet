@@ -94,6 +94,18 @@ docs/EVIDENCE/screenshot_*.png
 codex-installer-for-friend.zip
 .dev-userdata/
 
+# WI-T1.7 last-mile dev 端到端 metrics validation 临时目录 (2026-05-23)
+.dev-metrics-validation/
+
+# Acceptance script 自动产生的 ts 目录（每次跑都新建）+ MR-1 windows-mcp
+# 子代理预创建的空目录。真正要保留的 evidence 由 commit message 显式提交，
+# 如 manual-results-mr22-metrics-prod-validation 已 commit。
+plans/*/manual-results-2026-*Z/
+plans/*/manual-results-mr1-20260523/
+
+# Backend portable sentinel (PyInstaller build script 重生成)
+backend/dist-portable/
+
 # 中转站 device key —— 临时人工测试用，绝不入库
 .relay_api_key
 .relay_base_url

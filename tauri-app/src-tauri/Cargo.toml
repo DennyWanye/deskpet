@@ -36,6 +36,13 @@ nvml-wrapper = "0.10"
 # P3-S2: blocking MessageDialog for the "no NVIDIA GPU" fatal-error
 # path. Default feature set is enough — we only need MessageDialog.
 tauri-plugin-dialog = "2"
+# WI-T1.3 last-mile: artifact_copy_path command 写剪贴板（用户点产物卡片
+# "复制路径" 按钮）。其他三个 artifact_* command 复用 opener + dialog。
+tauri-plugin-clipboard-manager = "2"
+# WI-T1.3 artifact_save_as: tauri-plugin-dialog 的 save_file 是 callback API；
+# 我们用 tokio oneshot 把 callback 转 async/await。Tauri 已经依赖 tokio
+# 作为 async runtime，这里只是显式声明 sync feature。
+tokio = { version = "1", features = ["sync"] }
 # P4-S21 #1: HTTP client for the `update_cloud_config` IPC command that
 # proxies frontend Settings saves to the backend (webview can't fetch
 # http://127.0.0.1 directly under release-build mixed-content rules).

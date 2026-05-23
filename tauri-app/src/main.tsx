@@ -1,5 +1,29 @@
 import { createRoot } from 'react-dom/client'
 import './index.css'
+import { BACKEND_PORT } from './backendPort'
+
+// WI-T1.7 last-mile: 全局 metric emit sink。
+// ArtifactCard 按钮点击会调 window.__deskpet_metrics_emit；这里 wire 到
+// backend POST /metrics/event，最终落地 <user_data>/metrics.jsonl。
+// 无 backend 时静默丢（dev/test 友好），不破 UI。
+declare global {
+  interface Window {
+    __deskpet_metrics_emit?: (event: string, payload: Record<string, unknown>) => void;
+  }
+}
+window.__deskpet_metrics_emit = (event: string, payload: Record<string, unknown>) => {
+  try {
+    void fetch(`http://127.0.0.1:${BACKEND_PORT}/metrics/event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event, detail: payload }),
+      // fire-and-forget — 不阻 UI
+      keepalive: true,
+    }).catch(() => { /* silent — backend down or offline */ });
+  } catch {
+    // Safari old / restricted env — never break UI
+  }
+};
 
 // P4-S23 — multi-window routing. The main pet shell lives at the
 // default URL; the secondary "code-panel" Tauri window opens with

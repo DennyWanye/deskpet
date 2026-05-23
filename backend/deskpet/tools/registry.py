@@ -184,10 +184,37 @@ class ToolRegistry:
         # afterwards. Defaults to None for backward compat with tests
         # and legacy callers that don't want breaker semantics.
         self._breaker = None  # type: Optional[Any]  # ToolCircuitBreaker
+        # WI-T1.1 (last-mile): optional ToolsConfig provider for D1 信封包装。
+        # 默认 None → execute_tool 不加 artifacts 键（BC + 字节级一致硬保证）。
+        # 启动期 main.py 调 set_tools_config_provider(lambda: cfg.tools)。
+        self._tools_config_provider: Optional[Callable[[], Any]] = None
+        # WI-T2.2 (last-mile P0 修): optional ReceiptStore provider 真正插电。
+        # 默认 None → 不产 receipt（BC）；main.py 启动时按 cfg.verifier.emit_receipts
+        # 决定是否构造 ReceiptStore 并注入。
+        self._receipt_store_provider: Optional[Callable[[], Any]] = None
+        # WI-T2.3 session iteration 计数 (per session_id) — receipt.iteration 字段
+        self._session_iteration: dict[str, int] = {}
 
     def set_permission_gate(self, gate) -> None:  # type: ignore[no-untyped-def]
         """Wire a PermissionGate. Called once at backend startup."""
         self._gate = gate
+
+    def set_tools_config_provider(self, provider) -> None:  # type: ignore[no-untyped-def]
+        """WI-T1.1 wire a callable returning current ``ToolsConfig``.
+
+        Provider 模式（不直传 cfg）允许 runtime 切换 flag 而无需重启 registry。
+        provider 返回值需有 ``.last_mile.artifact_envelope`` 属性（ducktype）；
+        返回 None 时按 BC 路径（不包装 envelope）。
+        """
+        self._tools_config_provider = provider
+
+    def set_receipt_store_provider(self, provider) -> None:  # type: ignore[no-untyped-def]
+        """WI-T2.2 P0 修：wire a callable returning current ``ReceiptStore`` (or None).
+
+        与 set_tools_config_provider 同模式：provider 返回 None → BC 路径
+        不产 receipt；ReceiptStore 已构造时每次 execute_tool 都 emit。
+        """
+        self._receipt_store_provider = provider
 
     def set_circuit_breaker(self, breaker) -> None:  # type: ignore[no-untyped-def]
         """P5-S2 Phase 3: wire a :class:`agent.circuit_breaker.ToolCircuitBreaker`.
@@ -570,6 +597,62 @@ class ToolRegistry:
                     await self._breaker.record_call(session_id, name, ok=False)
                 return envelope_bad
         envelope = {"ok": True, "result": result, "error": None}
+
+        # WI-T1.1 last-mile: 信封包装（PRD §3 D1）。
+        # 仅在 provider 已设 + cfg.tools.last_mile.artifact_envelope=True
+        # 且 result 含可推断 path/url 时，追加 ``artifacts`` 键。
+        # 字节级一致硬保证：flag OFF 时 envelope dict 不含 ``artifacts`` 键
+        # （不是空数组，是缺键 —— 见 TG-2 T2-5b）。
+        if self._tools_config_provider is not None:
+            try:
+                cfg = self._tools_config_provider()
+                envelope_on = bool(
+                    getattr(getattr(cfg, "last_mile", None),
+                            "artifact_envelope", False)
+                )
+                if envelope_on:
+                    from deskpet.tools.artifact import maybe_add_artifacts
+                    envelope = maybe_add_artifacts(
+                        envelope=envelope, tool_name=name, enable=True,
+                    )
+            except Exception as _exc:  # noqa: BLE001 — never break dispatch
+                logger.warning(
+                    "tools_config_provider raised in execute_tool %r: %s",
+                    name, _exc,
+                )
+
+        # WI-T2.2 P0 修：emit receipt（PRD §3 D5 + 二轮 P0-1 接电）。
+        # ReceiptStore 在 main.py 启动期按 cfg.verifier.emit_receipts 构造并
+        # set_receipt_store_provider 注入；未注入则 BC 路径不产 receipt。
+        if self._receipt_store_provider is not None:
+            try:
+                store = self._receipt_store_provider()
+                if store is not None:
+                    from datetime import datetime, timezone
+                    from deskpet.tools.receipt_store import emit_receipt
+                    self._session_iteration[session_id] = (
+                        self._session_iteration.get(session_id, 0) + 1
+                    )
+                    iteration = self._session_iteration[session_id]
+                    # use envelope.ok 表示工具是否成功（即便 handler 返了
+                    # ok=False 也算 dispatch 完成 - 而 envelope.ok=True 仅
+                    # 表示 dispatch 路径没有异常）
+                    envelope_ok = envelope.get("ok") is True
+                    emit_receipt(
+                        store,
+                        tool_name=name,
+                        args=dict(merged_params or {}),
+                        started_at=datetime.now(timezone.utc),
+                        ended_at=datetime.now(timezone.utc),
+                        ok=envelope_ok,
+                        session_id=session_id,
+                        iteration=iteration,
+                    )
+            except Exception as _exc:  # noqa: BLE001 — never break dispatch
+                logger.warning(
+                    "receipt_store_provider raised in execute_tool %r: %s",
+                    name, _exc,
+                )
 
         # P5-S2 Phase 3: record success/failure to the breaker. The
         # handler returned a JSON string (typically an envelope itself)

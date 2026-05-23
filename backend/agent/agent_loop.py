@@ -392,6 +392,10 @@ class AgentLoop:
         signature_repeat_threshold: Optional[int] = None,
         termination_gate: Optional[TerminationGate] = None,
         context_manager: Optional[ContextManager] = None,
+        # WI-T2.6 last-mile P0-3: VerifyGate end_turn 守门 + ReceiptStore 拿 ledger
+        verify_gate: Optional[Any] = None,        # deskpet.agent.verify_gate.VerifyGate
+        receipt_store: Optional[Any] = None,      # deskpet.tools.receipt_store.ReceiptStore
+        max_verify_nudges: int = 2,               # PRD D6: 3 次失败强退
     ) -> None:
         self.llm = llm_registry
         self.tools = tool_registry
@@ -415,6 +419,10 @@ class AgentLoop:
         # genuinely refuses to continue. Set to 0 to disable the hook.
         self.completion_probe = completion_probe
         self.max_completion_nudges = max_completion_nudges
+        # WI-T2.6 last-mile P0-3: VerifyGate end_turn 守门
+        self.verify_gate = verify_gate
+        self.receipt_store = receipt_store
+        self.max_verify_nudges = max_verify_nudges
         # P5-S2 Phase 3.3: same-(name, args) repeat detection. When set,
         # the loop checks the activity store's per-session
         # ``tool_signature_window`` BEFORE dispatching each tool_call —
@@ -525,6 +533,8 @@ class AgentLoop:
         # fresh nudge budget — we don't want stale "already nudged 2x"
         # state leaking between turns.
         completion_nudges_used = 0
+        # WI-T2.6: 同 completion_nudges_used 模式 — 本轮起算
+        verify_nudges_used = 0
         # P6 Phase 6 — local mirror of gate.state.tools_used kept so the
         # selfcheck tier messages can format "已用 N 次工具调用". The gate
         # is the source of truth for hard-cap enforcement; this var is
@@ -931,6 +941,88 @@ class AgentLoop:
                         # Skip the final emission and re-iterate. The
                         # next LLM call sees the nudge.
                         continue
+
+                # WI-T2.6 last-mile P0-3: VerifyGate end_turn 守门（PRD §3 D6）。
+                # 同 completion_probe 模式 — 守门返回 outcome.passed=False 时
+                # 回灌 D8 schema system message + continue；max_verify_nudges
+                # 控制重试上限（PRD: failure_count==3 时调度 ephemeral → 仍
+                # fail 才强退）。flag-off 时 verify_gate=None 跳过整段（BC）。
+                if (
+                    self.verify_gate is not None
+                    and getattr(self.verify_gate, "mode", "off") != "off"
+                    and verify_nudges_used < self.max_verify_nudges
+                    and response.content
+                ):
+                    try:
+                        # 拉取本 session 的 sig-filtered ledger（N1 信任面已在
+                        # ReceiptStore.load_session 内强制 hmac_verify）
+                        ledger = (
+                            self.receipt_store.load_session(session_id)
+                            if self.receipt_store is not None else []
+                        )
+                        v_outcome = self.verify_gate.check(
+                            assistant_text=response.content,
+                            ledger=ledger,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "verify_gate.check failed (sid=%s): %s — passing through",
+                            session_id, exc,
+                        )
+                        v_outcome = None
+
+                    if (v_outcome is not None and not v_outcome.passed
+                            and v_outcome.unmatched_claims):
+                        verify_nudges_used += 1
+                        # 失败计数达 max → 调 ephemeral 救援
+                        ephemeral_pass = False
+                        if verify_nudges_used >= self.max_verify_nudges:
+                            try:
+                                ephemeral_pass = (
+                                    self.verify_gate.consult_ephemeral_subagent(
+                                        ledger=ledger,
+                                        failed_claims=v_outcome.unmatched_claims,
+                                        assistant_text=response.content,
+                                    )
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning("ephemeral consult failed: %s", exc)
+                        if not ephemeral_pass:
+                            # 回灌 D8 schema
+                            unmatched_lines = "\n".join(
+                                f"  {i+1}. [unmatched_claim] {c.raw_text!r} — "
+                                f"no receipt matched ({c.reason})"
+                                for i, c in enumerate(v_outcome.unmatched_claims[:5])
+                            )
+                            rebound = (
+                                f"[verify-gate] iteration={iteration} blocked end_turn.\n"
+                                f"Failures:\n{unmatched_lines}\n"
+                                f"Classification: unmatched_claim\n"
+                                f"Next: please call the missing tool to actually "
+                                f"perform the action you claimed, then end_turn again."
+                            )
+                            if response.content:
+                                working_messages.append({
+                                    "role": "assistant",
+                                    "content": response.content,
+                                })
+                            working_messages.append({
+                                "role": "system",
+                                "content": rebound,
+                            })
+                            logger.info(
+                                "verify_gate_nudge_injected sid=%s nudge=%d/%d "
+                                "unmatched=%d ephemeral_pass=%s",
+                                session_id, verify_nudges_used,
+                                self.max_verify_nudges,
+                                len(v_outcome.unmatched_claims),
+                                ephemeral_pass,
+                            )
+                            continue
+                        else:
+                            logger.info(
+                                "verify_gate.ephemeral_rescued sid=%s", session_id,
+                            )
 
                 # P6 Phase 6 — gate records the natural terminal state
                 # before we emit the FinalEvent so consumers reading

@@ -806,6 +806,7 @@ def ppt_create(
     title: str = "",
     author: str = "DeskPet",
     output_path: Optional[str] = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Render an outline into a ``.pptx`` file on disk.
 
@@ -840,6 +841,22 @@ def ppt_create(
             "markdown_fallback": render_markdown_fallback(
                 slides, title=title, author=author,
             ),
+        }
+
+    # WI-T1.6: dry_run 预览模式（PRD §3 D9）。返回 outline markdown 作为
+    # text artifact，不写 .pptx — 用户/LLM 可先看大纲再决定是否真生成。
+    # 显式 emit artifacts[] 走 D1 一等公民路径。
+    if dry_run:
+        md = render_markdown_fallback(slides, title=title, author=author)
+        return {
+            "ok": True,
+            "dry_run": True,
+            "slide_count": len(slides),
+            "artifacts": [{
+                "kind": "text",
+                "title": (title or "outline") + " (preview)",
+                "preview": md,
+            }],
         }
 
     if not _HAS_PPTX:
@@ -882,11 +899,19 @@ def ppt_create(
         except Exception:  # noqa: BLE001
             pass
         prs.save(out_path)
+        # WI-T1.2 D1：显式 emit artifacts[]（一等公民路径，前端按 kind=file
+        # 渲染 ArtifactCard；保留 path 字段保 BC）。
         return {
             "ok": True,
             "path": str(out_path),
             "slide_count": total,
             "theme": theme_obj.name,
+            "artifacts": [{
+                "kind": "file",
+                "path": str(out_path),
+                "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "title": Path(str(out_path)).name,
+            }],
         }
     except Exception as exc:  # noqa: BLE001
         log.warning("ppt_create failed: %s", exc, exc_info=True)
@@ -948,6 +973,16 @@ _PPT_SCHEMA = {
                 "type": "string",
                 "description": "Absolute output path. Defaults to a temp file.",
             },
+            "dry_run": {
+                "type": "boolean",
+                "description": (
+                    "WI-T1.6 outline 预览模式。True → 不写 .pptx，仅返回 "
+                    "outline markdown 作为 text artifact 供用户确认。建议 ≥ 5 "
+                    "张幻灯片的 deck 先 dry_run=true 让用户审查 outline，再 "
+                    "dry_run=false 实际生成。"
+                ),
+                "default": False,
+            },
         },
         "required": ["outline"],
     },
@@ -966,6 +1001,7 @@ def _handle_ppt_create(args: dict, task_id: str) -> str:
         title=str(args.get("title") or ""),
         author=str(args.get("author") or "DeskPet"),
         output_path=(str(args["output_path"]) if args.get("output_path") else None),
+        dry_run=bool(args.get("dry_run", False)),
     )
     return json.dumps(result, ensure_ascii=False)
 

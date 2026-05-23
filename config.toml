@@ -57,6 +57,46 @@ tz = "Asia/Shanghai"
 "qwen3.6-plus" = 8.0
 "deepseek-chat" = 1.0
 
+
+# ────────────────────────────────────────────────────────────────
+# 工具调用 last-mile 升级（2026-05-23）— 测试阶段全 100% 启用
+# 详见 plans/2026-05-23-tool-last-mile-upgrade/00-PRD.md
+# 不走灰度（用户决策：测试阶段所有用户立即可用）。如需收回某项 flag，
+# 把对应值改为 false 重启 backend 即可。
+# ────────────────────────────────────────────────────────────────
+
+[tools.last_mile]
+# D1 envelope 包装 — 工具 result 加 artifacts[] 字段供前端用
+artifact_envelope = true
+# D2 前端 ArtifactCard 新卡片（取代旧 ToolResultCard 的纯 JSON 显示）
+frontend_artifact_card = true
+# D3 Tauri 4 commands（打开/在文件夹中显示/复制路径/另存为）
+tauri_artifact_ops = true
+# D4 默认保存路径 — 空字符串触发 main.py 启动期 fallback 到
+# <user_data>/artifacts/<YYYY-MM-DD>/<tool_name>/<slug>-<hash>.<ext>
+default_artifact_dir = ""
+# D9 outline 预览 — 默认 false，让 LLM 自由决定（用户体验更顺畅）
+outline_preview_default = false
+# 产物保留天数（启动期自动清理）
+artifact_dir_retention_days = 30
+
+[tools.verifier]
+# D5 receipt 写盘 — HMAC 签名 + DPAPI/Keychain 包装
+emit_receipts = true
+# D6 verify 模式 — "shadow" 仅 warn log 不阻断，先收集 1-2 周 metric
+# 验证 fake_completion_caught_rate ≥ 95% 后再升 "strict"（真拦截）
+verify_gate_mode = "shadow"
+# 小 LLM fallback（regex 漏抓时兜底）
+extractor_fallback_enabled = true
+# 第 3 次失败救援用的 ephemeral subagent 模型
+ephemeral_subagent_model = "haiku"
+# D7 outcome verifier — 用户机不一定有 npm/pytest，默认 false
+# dev/CI 环境单独开 true
+run_build = false
+run_tests = false
+# Claim 短语规则文件（regex + ReDoS 拒）
+claim_patterns_file = "verify/claim_patterns.yaml"
+
 [asr]
 provider = "faster-whisper"
 model = "large-v3-turbo"
