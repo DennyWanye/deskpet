@@ -1,0 +1,61 @@
+# verify/claim_patterns.yaml — VerifyGate ClaimPattern 出厂默认（v1）
+#
+# 加载约束（PRD §3 D6 + TDD §C.3）：
+#   - yaml.safe_load（拒任意对象 / !!python/... 注入）
+#   - jsonschema 校验
+#   - 每条 regex 用 google-re2 编译（线性时间，防 ReDoS）
+#   - 编译失败的 pattern 不进 patternstore（不 crash 整体）
+#   - 热加载：watchdog 监听文件，5s 内重 load；失败保留旧 patternstore
+#
+# 测试见 TDD TG-9 T9-12 / T9-12b / T9-13 / T9-15
+# Fixture 来源：backend/tests/fixtures/fake_claims_50.jsonl
+#
+# 抓获目标：纯中/英用例（bucket=zh,en,mixed）≥ 95%；同义改写（paraphrase）
+# 走 D6 二级 LLM fallback（CascadeExtractor）；否定句（negative）一律 0 命中。
+#
+version: 1
+patterns:
+  # ─── 中文：生成/创建 + 文件名 ──────────────────────────────
+  - id: zh_generated_file
+    regex: '已(?:为您)?(?:生成|创建)(?:了|完成|成功)?\s*(?:文件|图表|图像|报表|PPT|Excel|PDF|Word)?\s*[:：]?\s*(?P<title>\S+\.(?:pptx|xlsx|docx|pdf|png|jpg|jpeg|svg))'
+    tool_hint: ["ppt_create", "excel_create", "doc_create", "pdf_create", "image_generate"]
+    artifact_kind: file
+
+  - id: zh_file_then_generated
+    regex: '(?:文件|PPT|Excel|PDF|Word|图表)\s*(?P<title>\S+\.(?:pptx|xlsx|docx|pdf|png|jpg|jpeg|svg))\s*已(?:生成|创建|完成)'
+    tool_hint: ["ppt_create", "excel_create", "doc_create", "pdf_create", "image_generate"]
+    artifact_kind: file
+
+  - id: zh_saved_to_path
+    regex: '已(?:保存|输出|放置|存放)(?:到|至|在)?\s*(?P<path>[A-Za-z]:\\[^\s，。、)]+|/[^\s，。、)]+)'
+    artifact_kind: file
+
+  - id: zh_file_location
+    regex: '文件(?:位置|位于|路径)[:：是]?\s*(?P<path>[A-Za-z]:\\[^\s，。、)]+|/[^\s，。、)]+)'
+    artifact_kind: file
+
+  - id: zh_done_complete
+    regex: '已(?:完成|做好)\s*(?:文件|PPT|Excel|PDF|Word)?\s*(?:制作|生成|输出)[，。,]\s*(?:文件)?(?:位于|在|名为)?\s*(?P<title>\S+\.(?:pptx|xlsx|docx|pdf|png|jpg|jpeg|svg))?'
+    tool_hint: ["ppt_create", "excel_create", "doc_create", "pdf_create", "image_generate"]
+    artifact_kind: file
+
+  # ─── 英文：created / generated / saved ──────────────────────
+  - id: en_created_file
+    regex: '(?:I (?:have |''ve )?(?:created|generated)|Generated|Created)\s+(?:the\s+)?(?:file\s+|chart\s+|deck\s+|PPT\s+|Excel\s+|PDF\s+)?[:：]?\s*(?P<title>\S+\.(?:pptx|xlsx|docx|pdf|png|jpg|jpeg|svg))'
+    tool_hint: ["ppt_create", "excel_create", "doc_create", "pdf_create", "image_generate"]
+    artifact_kind: file
+
+  - id: en_saved_to_path
+    regex: '(?:saved|wrote|placed)\s+(?:it|the file|the chart|the deck)?\s*(?:to|at|in)\s+(?P<path>[A-Za-z]:\\\S+|/\S+)'
+    artifact_kind: file
+
+  - id: en_file_has_been_created
+    regex: '(?:The\s+)?(?:file|deck|chart|PPT|Excel|PDF|Word)?\s*(?P<title>\S+\.(?:pptx|xlsx|docx|pdf|png|jpg|jpeg|svg))\s+(?:has been|is)\s+(?:created|generated|saved|ready)'
+    tool_hint: ["ppt_create", "excel_create", "doc_create", "pdf_create", "image_generate"]
+    artifact_kind: file
+
+  # ─── 中英混合（mixed bucket 第一道防线）─────────────────────
+  - id: mixed_generated
+    regex: '(?:已|I(?:''ve| have)?)\s*(?:generate|create|save|生成|创建|保存)(?:d|了)?\s*(?:完了|完成)?\s*[:：]?\s*(?P<title>\S+\.(?:pptx|xlsx|docx|pdf|png|jpg|jpeg|svg))'
+    tool_hint: ["ppt_create", "excel_create", "doc_create", "pdf_create", "image_generate"]
+    artifact_kind: file
