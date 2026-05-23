@@ -509,6 +509,156 @@ class TestEmbedderStatus:
 
 
 # ---------------------------------------------------------------------------
+# Stage 2 WI-S2.1a — memory_facts_list / memory_forget / memory_forget_undo
+# ---------------------------------------------------------------------------
+class FakeFactsStore:
+    """In-memory facts store stub for ws-handler tests."""
+
+    def __init__(self, facts: list[dict] | None = None) -> None:
+        self._facts = list(facts or [])
+        self.forgotten_ops: list[tuple[int, str]] = []
+        self.restored_for: list[str] = []
+        self.next_restore: list[int] = []
+        self.list_call_count = 0
+
+    async def list_active(
+        self,
+        *,
+        subject=None,
+        category=None,
+        limit: int = 200,
+    ) -> list[dict]:
+        self.list_call_count += 1
+        out = list(self._facts)
+        if subject is not None:
+            out = [f for f in out if f.get("subject") == subject]
+        if category is not None:
+            out = [f for f in out if f.get("category") == category]
+        return out[:limit]
+
+    async def mark_forgotten(self, fact_id, *, op_id, ts=None):  # noqa: ARG002
+        self.forgotten_ops.append((int(fact_id), op_id))
+
+    async def restore_from_undo(self, op_id, *, max_age_seconds=5.0):  # noqa: ARG002
+        self.restored_for.append(op_id)
+        return list(self.next_restore)
+
+
+class TestMemoryFactsList:
+    @pytest.mark.asyncio
+    async def test_returns_facts_when_store_registered(self) -> None:
+        facts = [
+            {"id": 1, "category": "preference", "subject": "user",
+             "key": "k1", "value": "v1", "updated_at": 100, "is_active": 1},
+            {"id": 2, "category": "preference", "subject": "user",
+             "key": "k2", "value": "v2", "updated_at": 110, "is_active": 1,
+             "embedding": b"binary-blob"},
+        ]
+        ws = FakeWebSocket()
+        sc = FakeServiceContext(facts_store=FakeFactsStore(facts))
+        await p4_ipc.handle(ws, "s1", "memory_facts_list", {"limit": 50}, sc)
+        m = ws.sent[0]
+        assert m["type"] == "memory_facts_list_response"
+        assert len(m["payload"]["facts"]) == 2
+        # embedding 列必须被剥离（JSON 不接 bytes）
+        for f in m["payload"]["facts"]:
+            assert "embedding" not in f
+
+    @pytest.mark.asyncio
+    async def test_graceful_when_store_absent(self) -> None:
+        ws = FakeWebSocket()
+        sc = FakeServiceContext()
+        await p4_ipc.handle(ws, "s1", "memory_facts_list", {}, sc)
+        m = ws.sent[0]
+        assert m["payload"]["facts"] == []
+        assert m["payload"]["reason"] == "facts_store_not_registered"
+
+
+class TestMemoryForgetWs:
+    @pytest.mark.asyncio
+    async def test_unbound_returns_error(self) -> None:
+        from deskpet.tools import memory_tools
+        memory_tools._facts_store = None
+        ws = FakeWebSocket()
+        sc = FakeServiceContext(facts_store=FakeFactsStore([{"id": 1}]))
+        await p4_ipc.handle(ws, "s1", "memory_forget", {"fact_id": 1}, sc)
+        m = ws.sent[0]
+        assert m["type"] == "memory_forget_response"
+        assert m["payload"]["status"] == "error"
+        assert "not_bound" in m["payload"]["reason"]
+
+    @pytest.mark.asyncio
+    async def test_forget_by_id_happy_path(self) -> None:
+        from deskpet.tools import memory_tools
+        store = FakeFactsStore([{"id": 7}])
+        memory_tools.bind(
+            facts_store=store, embedder=None, llm_call=None,
+            enable_natural_language=False,
+        )
+        ws = FakeWebSocket()
+        sc = FakeServiceContext(facts_store=store)
+        await p4_ipc.handle(ws, "s1", "memory_forget", {"fact_id": 7}, sc)
+        m = ws.sent[0]
+        assert m["payload"]["status"] == "ok"
+        assert m["payload"]["forgotten_ids"] == [7]
+        assert "op_id" in m["payload"]
+        assert len(store.forgotten_ops) == 1
+        assert store.forgotten_ops[0][0] == 7
+
+    @pytest.mark.asyncio
+    async def test_facts_store_absent_returns_error(self) -> None:
+        ws = FakeWebSocket()
+        sc = FakeServiceContext()
+        await p4_ipc.handle(ws, "s1", "memory_forget", {"fact_id": 1}, sc)
+        m = ws.sent[0]
+        assert m["payload"]["status"] == "error"
+        assert "not_registered" in m["payload"]["reason"]
+
+
+class TestMemoryForgetUndo:
+    @pytest.mark.asyncio
+    async def test_undo_restores_within_window(self) -> None:
+        store = FakeFactsStore()
+        store.next_restore = [3, 4]
+        ws = FakeWebSocket()
+        sc = FakeServiceContext(facts_store=store)
+        await p4_ipc.handle(
+            ws, "s1", "memory_forget_undo",
+            {"op_id": "op-xyz", "max_age_seconds": 5.0}, sc,
+        )
+        m = ws.sent[0]
+        assert m["type"] == "memory_forget_undo_response"
+        assert m["payload"]["status"] == "ok"
+        assert m["payload"]["restored_ids"] == [3, 4]
+        assert store.restored_for == ["op-xyz"]
+
+    @pytest.mark.asyncio
+    async def test_undo_expired_returns_expired_status(self) -> None:
+        store = FakeFactsStore()
+        store.next_restore = []
+        ws = FakeWebSocket()
+        sc = FakeServiceContext(facts_store=store)
+        await p4_ipc.handle(
+            ws, "s1", "memory_forget_undo", {"op_id": "op-old"}, sc,
+        )
+        m = ws.sent[0]
+        assert m["payload"]["status"] == "expired"
+        assert m["payload"]["restored_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_undo_missing_op_id_errors(self) -> None:
+        store = FakeFactsStore()
+        ws = FakeWebSocket()
+        sc = FakeServiceContext(facts_store=store)
+        await p4_ipc.handle(
+            ws, "s1", "memory_forget_undo", {}, sc,
+        )
+        # _send_error 路径
+        m = ws.sent[0]
+        assert m["type"] == "error"
+
+
+# ---------------------------------------------------------------------------
 # Membership guard
 # ---------------------------------------------------------------------------
 def test_message_type_membership() -> None:
@@ -522,4 +672,8 @@ def test_message_type_membership() -> None:
     # Phase 1.1.6（context-1m-rearch）：模型上下文配置卡片新增 2 个类型。
     assert "model_context_get" in p4_ipc.P4_IPC_MESSAGE_TYPES
     assert "model_context_set" in p4_ipc.P4_IPC_MESSAGE_TYPES
-    assert len(p4_ipc.P4_IPC_MESSAGE_TYPES) == 8
+    # Stage 2 WI-S2.1a：MemoryPanel facts view + memory_forget UI 桥接。
+    assert "memory_facts_list" in p4_ipc.P4_IPC_MESSAGE_TYPES
+    assert "memory_forget" in p4_ipc.P4_IPC_MESSAGE_TYPES
+    assert "memory_forget_undo" in p4_ipc.P4_IPC_MESSAGE_TYPES
+    assert len(p4_ipc.P4_IPC_MESSAGE_TYPES) == 11
