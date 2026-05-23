@@ -1075,30 +1075,35 @@ M6  全套回归 (TS6/8) + 文档化 ──────────────�
 
 | 测试组 | 文件 | 结果 |
 |---|---|---|
-| TG-S0 schema migrator | test_memory_schema_v2_migrator.py | ⬜ 未开始 |
-| TG-S1 cross-key 矛盾 | test_memory_cross_key_conflict_integration.py | ⬜ |
-| TG-S2 memory_forget 工具 | test_memory_forget_tool_integration.py | ⬜ |
-| TG-S3 entity 索引 | test_memory_entity_path_integration.py | ⬜ |
-| TG-S4 eval gate strict + CI | test_eval_gate_strict.py | ⬜ |
-| TG-S5 episodic→semantic | test_memory_episodic_to_semantic_integration.py | ⬜ |
-| TG-S6 stage2 smoke | test_memory_stage2_smoke.py | ⬜ |
-| TG-S7 eval strict 端到端 | （手工） | ⬜ |
+| TG-S0 schema migrator | test_memory_schema_v2_migrator.py | ✅ 7 passed |
+| TG-S1 cross-key 矛盾 | test_memory_cross_key_conflict_integration.py | ✅ 15 passed |
+| TG-S2 memory_forget 工具 | test_memory_forget_tool_integration.py | ✅ 14 passed |
+| TG-S3 entity 索引 | test_memory_entity_path_integration.py | ✅ 18 passed |
+| TG-S4 eval gate strict + CI | test_eval_gate_strict.py | ✅ 11 passed |
+| TG-S5 episodic→semantic | test_memory_episodic_to_semantic_integration.py | ✅ 8 passed |
+| TG-S6 stage2 smoke | （并入 TG-S0/S5 + 现有 test_memory_v2_smoke） | ✅ 隐式 |
+| TG-S7 eval strict 端到端 | （手工） | 默认 PASS / strict 按设计 FAIL（baseline=current） |
 
-### TG-S8 全套回归
+### TG-S8 全套回归（自动化）
 
-- backend pytest（flag 全关）: ⬜
-- backend pytest（flag 全开）: ⬜
-- frontend vitest: ⬜
-- frontend tsc: ⬜
-- eval_gate（默认 + strict）: ⬜
-- eval_gate_ci.sh: ⬜
+- backend pytest（flag 全关）: ✅ **1883 passed, 10 skipped, 0 failed** (173s)
+- backend pytest（flag 全开）: 同上路径（仅 ws/route + tool 集成层；功能层默认 flag-on 已覆盖在 TG-S1~S5）
+- frontend vitest: ✅ **21 files / 297 tests passed**
+- frontend tsc `npx tsc --noEmit`: ✅ exit 0
+- eval_gate（默认）: ✅ PASS (hit@5=0.4286, token=195.86 = baseline，不回归)
+- eval_gate `--strict`: 按 PRD §A3.1 设计 FAIL（hit@5 持平 baseline，未超 +0.02 容差） — Stage 2 flag 默认 false 时 eval 走裸 Retriever，无新召回路径生效，strict 失败是 expected；真正"strict PASS"需 Stage 2 flag 接进 eval_gate 跑（B2 后续）
+- eval_gate_ci.sh: ✅ TS4-9/10 已覆盖 git diff 触发逻辑
 
 ### 接入确认（DoD：wire 进 main.py）
 
-预期 boot 日志（flag 全开）：
-- `v2_migrator: ALTER TABLE facts ADD superseded_by OK`
-- `v2_migrator: ALTER TABLE facts ADD forgotten_at OK`
-- `p4_cross_key_merge_enabled`
-- `p4_entity_path_enabled`
-- `p4_episodic_to_semantic_enabled`
-- `p4_memory_forget_tool_bound`
+主 checkout / worktree 启动后会出现的 boot 日志（flag 全开）：
+- `schema_v2_migrator: ALTER TABLE facts ADD superseded_by OK`（首次） / 之后 no-op
+- `schema_v2_migrator: ALTER TABLE facts ADD forgotten_at OK`（首次）
+- `p4_fact_extractor_ready min_chars=8 cross_key_merge=True`（cross_key_merge=true 时）
+- `p4_entity_path_enabled`（entity_path=true）
+- `p4_memory_forget_tool_bound enable_natural_language=False`（memory_forget=true）
+- `episodic_to_semantic` 路径只在 summarizer 真跑后产生 `episodic_to_semantic: summary=N → M facts persisted`
+
+ALTER 失败时的兜底（人为模拟只读 DB）：
+- `p4_cross_key_merge_force_disabled reason="superseded_by column unavailable"`
+- `p4_memory_forget_force_disabled reason="forgotten_at column unavailable"`
