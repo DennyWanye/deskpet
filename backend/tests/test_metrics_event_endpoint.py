@@ -11,16 +11,16 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
-    # 强制 DEV_MODE = 1 让 /metrics/event 跳过 auth
-    monkeypatch.setenv("DESKPET_DEV_MODE", "1")
-    # 重定向 user_data_dir 到 tmp 防止污染真实 metrics.jsonl
+    # DEV_MODE 在 module-load 时从 env 读 → 其他 test 已 import main module 时
+    # env 未设。直接 patch module-level attribute 才能在测试隔离生效。
+    monkeypatch.setenv("DESKPET_DEV_MODE", "1")  # 保留 env 一致性
     monkeypatch.setenv("DESKPET_USER_DATA_DIR", str(tmp_path))
-    # 重置 metric_sink 单例
+    import main as _main
+    monkeypatch.setattr(_main, "DEV_MODE", True, raising=False)
+    # 重置 metric_sink 单例（让 record 走干净路径）
     import observability.metrics_sink as ms
     ms._default_sink = None  # type: ignore[attr-defined]
-
-    from main import app
-    return TestClient(app)
+    return TestClient(_main.app)
 
 
 def test_metrics_event_accepts_valid_payload(client):
