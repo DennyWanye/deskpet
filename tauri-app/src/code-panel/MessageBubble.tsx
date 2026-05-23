@@ -7,11 +7,12 @@
  *   3. tool_result             → expandable result, syntax-highlighted
  *   4. error                   → red banner
  */
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
 import type { Message } from "../stores/sessionsStore";
 import { CodeBlock, InlineCode } from "./CodeBlock";
+import { ArtifactCard, extractArtifactsFromResult } from "./ArtifactCard";
 
 interface Props {
   msg: Message;
@@ -313,6 +314,36 @@ function ToolResultCard({
   ok: boolean;
   result: string;
 }) {
+  // WI-T1.4 last-mile: 优先走 ArtifactCard 分发（PRD §3 D2）。
+  // 仅在 ok=true 且 result 含 artifacts[] 时启用 — 失败仍走旧路径
+  // 显示错误细节。`artifacts` 字段不在 → 字节级回落旧渲染（TG-5 T5-5）。
+  const artifacts = useMemo(
+    () => (ok ? extractArtifactsFromResult(result) : []),
+    [ok, result],
+  );
+  if (ok && artifacts.length > 0) {
+    return (
+      <ToolCard
+        header={
+          <>
+            <span style={{ color: "#86efac" }}>✓ ok</span>
+            <span style={{ marginLeft: 6, color: "#94a3b8" }}>← {name}</span>
+            <span style={{ marginLeft: 8, color: "#64748b", fontSize: 11 }}>
+              {artifacts.length} 个产物
+            </span>
+          </>
+        }
+        open={true}
+        onToggle={() => { /* artifact 卡片本身可折叠 */ }}
+      >
+        <div data-testid="artifact-card-list" style={{ padding: "4px 8px" }}>
+          {artifacts.map((a, i) => (
+            <ArtifactCard key={i} artifact={a} toolName={name} />
+          ))}
+        </div>
+      </ToolCard>
+    );
+  }
   // P5-S2 Phase 5.1: 走 splitToolError 提取 hint；保留原 pretty-print fallback。
   const { body: display, hint } = splitToolError(result);
   const lineCount = display.split("\n").length;
