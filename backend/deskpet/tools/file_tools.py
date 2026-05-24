@@ -52,12 +52,46 @@ _APP_NAME = "deskpet"
 # 调 set_workspace_store() 把实例塞进来。flag 关 → 保持 None → handler
 # 跳过记录（Strangler-Fig：flag 关时 workspace_state 表不会被建）。
 _workspace_store: Any | None = None
+# Stage 2 round 2 fix：sync tool handler (os_tools/*) 跑在 executor，
+# 没 running loop → 无法直接 schedule async record_action。设置时记
+# 录 main loop reference，os_tools 用 run_coroutine_threadsafe 派回 main。
+_workspace_loop: Any | None = None
 
 
 def set_workspace_store(store: Any | None) -> None:
-    """main.py 在 workspace_memory flag 开时注入 WorkspaceMemoryStore。"""
-    global _workspace_store
+    """main.py 在 workspace_memory flag 开时注入 WorkspaceMemoryStore。
+
+    同时记录当前 event loop，供 sync tool handler (os_tools.read_file /
+    write_file) 通过 run_coroutine_threadsafe 派回主 loop 跑 record_action。
+
+    Stage 2 round 2 fix：main.py 在 module top-level 调本函数（非 async
+    上下文），get_running_loop 会 raise RuntimeError → _workspace_loop=None。
+    lifespan startup 应再调一次 :func:`rebind_loop` 把当前 loop 绑上。
+    """
+    global _workspace_store, _workspace_loop
     _workspace_store = store
+    try:
+        import asyncio as _asyncio
+        _workspace_loop = _asyncio.get_running_loop()
+    except RuntimeError:
+        _workspace_loop = None
+
+
+def rebind_loop() -> bool:
+    """Stage 2 round 2 fix：在 lifespan startup 调一次绑当前 async loop。
+
+    sync tool handler (os_tools/read_file 等) 依赖 _workspace_loop 来
+    通过 run_coroutine_threadsafe 派 record_action 回主 loop；
+    set_workspace_store 在 module top-level 调时拿不到 loop，必须在
+    lifespan async context 里补绑。Returns True if loop bound, else False.
+    """
+    global _workspace_loop
+    try:
+        import asyncio as _asyncio
+        _workspace_loop = _asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 
 async def _record_workspace_action(

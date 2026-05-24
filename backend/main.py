@@ -1215,6 +1215,15 @@ service_context.register("agent_engine", agent)
 async def lifespan(app: FastAPI):
     """Preload models on startup (best-effort — failures logged but don't block)."""
     logger.info("preloading models...")
+    # Stage 2 round 2 fix：workspace_memory hook (os_tools/read_file 等
+    # sync handler) 依赖 file_tools._workspace_loop 引用主 loop。set_
+    # workspace_store 在 module top-level 跑时拿不到 loop —— 这里补绑。
+    try:
+        from deskpet.tools.file_tools import rebind_loop as _rebind_ws_loop
+        ok = _rebind_ws_loop()
+        logger.info("p4_workspace_memory_loop_rebound", ok=ok)
+    except Exception as _exc:  # noqa: BLE001
+        logger.debug("workspace loop rebind failed: %s", _exc)
     # P2-1-S8: billing DB must exist before the first chat call. Failure
     # here is logged but doesn't block startup — the ledger simply won't
     # record anything until the DB is reachable on a future boot.

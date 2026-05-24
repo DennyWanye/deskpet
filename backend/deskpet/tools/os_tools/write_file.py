@@ -9,9 +9,41 @@ P5-S2 Phase 0: error responses now include ``ok: false`` + ``hint``
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _notify_workspace(*, session_id: str, path: str, content: str | None) -> None:
+    """Stage 2 round 2 真测试 fix — 见 read_file 同名注释。
+
+    sync handler 跑在 thread executor，无 running loop → 用 file_tools
+    保存的主 loop ref + run_coroutine_threadsafe 派回主 loop。
+    """
+    try:
+        from deskpet.tools import file_tools as _ft  # type: ignore
+    except Exception:
+        return
+    store = getattr(_ft, "_workspace_store", None)
+    loop = getattr(_ft, "_workspace_loop", None)
+    if store is None or loop is None:
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(
+            store.record_action(
+                session_id=session_id or "default",
+                path=path,
+                action="write",
+                content=content,
+            ),
+            loop,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("os_tools.write_file workspace notify failed: %s", exc)
 
 
 _EXAMPLES = [
@@ -131,6 +163,13 @@ def write_file(args: dict[str, Any], task_id: str = "") -> str:
             path=path,
         )
 
+    # Stage 2 round 2 fix：通知 workspace_store
+    _session_id = (
+        args.get("_session_id") or args.get("session_id") or "default"
+    )
+    _notify_workspace(
+        session_id=str(_session_id), path=path, content=content,
+    )
     return json.dumps(
         {"path": str(p.resolve()), "bytes_written": len(data)},
         ensure_ascii=False,

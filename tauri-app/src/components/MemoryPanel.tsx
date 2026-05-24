@@ -567,9 +567,17 @@ export function MemoryPanel({ open, onClose, sessionId, getChannel }: Props) {
           gap: 8,
         }}
       >
-      {/* Top-level view tabs — 对话 / L1 / 搜索 / 技能 */}
+      {/* Top-level view tabs — 对话 / L1 / 搜索 / 技能 / 事实 (5 项)。
+          Stage 2 round2 真测试 fix：panel 宽 ~200px 装不下 5 个中文 tab,
+          原 inline-flex 让第 5 个"事实"被父 overflow 隐藏。改成
+          flex-wrap + alignSelf:stretch 让它换行显示。 */}
       <div
-        style={{ ...segGroup, alignSelf: "flex-start" }}
+        style={{
+          ...segGroup,
+          alignSelf: "stretch",
+          display: "flex",
+          flexWrap: "wrap",
+        }}
         role="tablist"
         aria-label="Panel view"
       >
