@@ -6,6 +6,7 @@ import sys
 import tomli
 from pathlib import Path
 from dataclasses import dataclass, field, fields as dc_fields
+from typing import Optional
 
 import paths as _paths
 
@@ -664,7 +665,65 @@ def _resolve_memory_db_path(raw: str) -> Path:
     return _paths.user_data_dir() / rel
 
 
+# WI-T5.1 v3 子项：process-wide cache + mtime 失效（TDD §A12 P1-2）.
+# 原 load_config 每次 import 都重读 toml — 现网无影响（main.py 顶层只调一次），
+# 但 build_agent 等工厂调用 + pytest fixtures 反复 import 累计 IO 浪费。
+# Cache 行为：
+#   - 第一次 load_config(path) → 真读 toml + 记 mtime
+#   - 后续 load_config(path) → 比对 mtime，未变即返 cached
+#   - mtime 改变 / path 不同 → invalidate + 重读
+#   - 文件不存在 → 不缓存（保持每次重建默认 AppConfig，方便 test fixture
+#     反复 monkeypatch _resolve_memory_db_path）
+_cfg_cache: Optional["AppConfig"] = None
+_cfg_cache_path: Optional[Path] = None
+_cfg_cache_mtime: Optional[float] = None
+
+
+def _load_config_uncached(path: Path) -> "AppConfig":
+    """Real loader — extracted so cache wrapper stays small."""
+    return _load_config_impl(path)
+
+
 def load_config(path: str | Path = "config.toml") -> AppConfig:
+    """Process-wide cached AppConfig loader (WI-T5.1 v3).
+
+    Returns the previously-built AppConfig instance when path + mtime are
+    unchanged since last call. Reload happens automatically when the user
+    edits config.toml (mtime bumps) or when called with a different path.
+    """
+    global _cfg_cache, _cfg_cache_path, _cfg_cache_mtime
+    path = Path(path)
+    if path.exists():
+        try:
+            cur_mtime = path.stat().st_mtime
+        except OSError:
+            cur_mtime = None
+        if (
+            _cfg_cache is not None
+            and _cfg_cache_path == path
+            and _cfg_cache_mtime is not None
+            and cur_mtime is not None
+            and abs(cur_mtime - _cfg_cache_mtime) < 1e-6
+        ):
+            return _cfg_cache
+        cfg = _load_config_impl(path)
+        _cfg_cache = cfg
+        _cfg_cache_path = path
+        _cfg_cache_mtime = cur_mtime
+        return cfg
+    # 文件不存在 — 不缓存（保留每次重建默认 AppConfig 的语义）
+    return _load_config_impl(path)
+
+
+def _reset_load_config_cache() -> None:
+    """Test helper：清缓存（避免 fixture 间状态泄漏）。"""
+    global _cfg_cache, _cfg_cache_path, _cfg_cache_mtime
+    _cfg_cache = None
+    _cfg_cache_path = None
+    _cfg_cache_mtime = None
+
+
+def _load_config_impl(path: str | Path = "config.toml") -> AppConfig:
     path = Path(path)
     if not path.exists():
         # Even on a totally blank system we still want db_path resolved

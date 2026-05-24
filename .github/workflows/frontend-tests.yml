@@ -1,0 +1,51 @@
+name: Frontend Tests (vitest + lint)
+
+# WI-T2.5 v3 — vitest CI 默认必跑（plans/2026-05-24-tool-layer-optimization-v3
+# PRD §1.2 P1-2）。原先 vitest 没有 CI workflow，306 个 vitest 用例只靠本地
+# 跑，PR 回归靠 reviewer 自觉。本 workflow 把 vitest 提升到 required check 级别。
+#
+# 触发条件：tauri-app/** 任意改动 + 主干分支 push。
+# 不跑 cargo test（已在 release.yml 中通过 build 隐式验证）；只跑 vitest +
+# tsc 类型检查，~30s。
+
+on:
+  pull_request:
+    paths:
+      - 'tauri-app/**'
+      - '.github/workflows/frontend-tests.yml'
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'tauri-app/**'
+      - '.github/workflows/frontend-tests.yml'
+
+jobs:
+  vitest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tauri-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: tauri-app/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Run vitest (required — no --no-vitest skip)
+        run: npm test -- --run
+
+      - name: Vitest coverage (informational)
+        run: npm run test:anim:cov
+        continue-on-error: true

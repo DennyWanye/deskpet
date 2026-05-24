@@ -312,8 +312,40 @@ class ToolRegistry:
         if not callable(handler):
             raise TypeError("handler must be callable")
 
+        # WI-T4.2 v3 spec D3：plugin 工具自动加 ``<plugin>:`` 前缀防 namespace
+        # 冲突（两个 plugin 注册同名 tool 时第二个会因 ToolNameConflictError 崩）。
+        # 触发条件：source 形如 ``plugin:<name>`` 或 ``mcp:<server>`` 且 name 还
+        # 没带前缀。schema["name"] 也同步改，让 LLM 看到的就是 qualified name。
+        # 注意：mcp/manager.py 已手动构造 ``mcp_<server>_<tool>``，本逻辑对其是
+        # no-op（name 检测已含前缀直接跳过）。
+        qualified_name = name
+        if isinstance(source, str) and ":" in source:
+            prefix_kind, _, prefix_id = source.partition(":")
+            if prefix_kind in ("plugin", "mcp") and prefix_id:
+                expected_prefix = f"{prefix_kind}_{prefix_id}_"
+                # 已有以下任一前缀时跳过（防重复 / 兼容历史命名）：
+                #   1. expected_prefix (本逻辑加过)
+                #   2. f"{prefix_kind}:"  (理论 caller 已用 dotted 形式)
+                #   3. f"{prefix_id}:"    (P4-S20 旧约定 <plugin_id>:<tool>)
+                #   4. f"{prefix_id}_"    (mcp/manager.py 真实加的 mcp_<name>_<tool>
+                #                          会落到 prefix_kind="mcp"+prefix_id=<name>,
+                #                          name 已是 mcp_<name>_<tool> → 含 prefix_id_)
+                if (
+                    not name.startswith(expected_prefix)
+                    and not name.startswith(f"{prefix_kind}:")
+                    and not name.startswith(f"{prefix_id}:")
+                ):
+                    qualified_name = f"{expected_prefix}{name}"
+                    # schema 的 name 字段同步（LLM 看到 qualified name 用 dispatch）
+                    if isinstance(schema.get("name"), str):
+                        schema = {**schema, "name": qualified_name}
+                    logger.info(
+                        "registry: auto-prefixed plugin tool %r → %r (source=%s)",
+                        name, qualified_name, source,
+                    )
+
         spec = ToolSpec(
-            name=name,
+            name=qualified_name,
             toolset=toolset,
             schema=schema,
             handler=handler,
@@ -325,6 +357,8 @@ class ToolRegistry:
             timeout_seconds=float(timeout_seconds),
             replace_allowed=replace_allowed,
         )
+        # 后续 dict 查 / 冲突检测都用 qualified_name
+        name = qualified_name
         with self._lock:
             existing = self._tools.get(name)
             if existing is not None:
