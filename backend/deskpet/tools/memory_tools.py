@@ -1,6 +1,6 @@
-"""Stage 2 / WI-S2.1a — ``memory_forget`` tool.
+"""Stage 2 / WI-S2.1a — ``memory_forget`` tool + WI-T3.1 v3 memory_* 真实现.
 
-设计要点（PRD/TDD D5 v2 / D6 v2）：
+设计要点（PRD/TDD D5 v2 / D6 v2 + v3 §A8 schema migration）：
 
 * 顶层 ``registry.register(...)`` —— ``tools/__init__.py:_discover_and_load``
   在 import 时跑，没有 ``@register_tool`` 装饰器、没有 ``_ctx`` 注入。
@@ -13,6 +13,14 @@
   UI 确认 dialog。
 * 删的不是真 DELETE，是 ``is_active=0 + forgotten_at=now()``，5 秒 undo
   可恢复（FactsStore.restore_from_undo）。
+
+WI-T3.1 v3 schema migration（本文件 append）：
+* ``memory_write`` — 旧 schema (text/tier/salience) → facts.upsert
+  (subject="user", key="memory_<ts>", value=text, category=_TIER_TO_CATEGORY[tier])
+* ``memory_read``  — (memory_id:int) → facts.get_by_id
+* ``memory_search`` — (query, top_k) → facts.search（LIKE 兜底，未来 EnhancedRetriever）
+* 字典序：'m' < 's' → memory_tools.py 先注册，stubs.py 守卫模式跳过同名
+* 翻译表 PRD v3 D17：l1 短期/快衰减→event, l2 中期→project, l3 长期/慢衰减→preference
 """
 from __future__ import annotations
 
@@ -300,5 +308,227 @@ registry.register(
     handler=_handle,
     permission_category="write_file",
     dangerous=True,
+    source="builtin",
+)
+
+
+# =====================================================================
+# WI-T3.1 v3 — memory_write / memory_read / memory_search schema
+# migration 真实现（接 facts.py，stubs.py 守卫模式跳过同名 stub）
+# =====================================================================
+
+# PRD v3 D17 翻译表：tier (l1/l2/l3/auto) → facts.category
+# l1 短期/最快衰减 ↔ event；l2 中期 ↔ project；l3 长期/最慢衰减 ↔ preference
+# auto 走 preference（最保守 — 长期保留，让用户主动 forget）
+_TIER_TO_CATEGORY: dict[str, str] = {
+    "l1": "event",
+    "l2": "project",
+    "l3": "preference",
+    "auto": "preference",
+}
+
+
+_MEMORY_WRITE_SCHEMA: dict[str, Any] = {
+    "name": "memory_write",
+    "description": (
+        "Persist a fact / observation to DeskPet long-term memory. "
+        "Use when the user shares a preference, name, project detail, "
+        "or any fact worth recalling later."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Content to remember (free-form).",
+            },
+            "tier": {
+                "type": "string",
+                "enum": ["l1", "l2", "l3", "auto"],
+                "default": "auto",
+                "description": (
+                    "l1=short-term/event, l2=mid-term/project, "
+                    "l3=long-term/preference. Default auto = preference."
+                ),
+            },
+            "salience": {
+                "type": "number",
+                "description": "0.0-1.0 importance. Default 0.5.",
+                "default": 0.5,
+            },
+        },
+        "required": ["text"],
+    },
+}
+
+_MEMORY_READ_SCHEMA: dict[str, Any] = {
+    "name": "memory_read",
+    "description": "Read a specific memory record by integer id.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "integer",
+                "description": "Exact fact ID (returned by memory_write or memory_search).",
+            },
+        },
+        "required": ["memory_id"],
+    },
+}
+
+_MEMORY_SEARCH_SCHEMA: dict[str, Any] = {
+    "name": "memory_search",
+    "description": (
+        "Search DeskPet memory by free-text query. Returns up to top_k "
+        "matching facts (LIKE-based; future EnhancedRetriever upgrade)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "top_k": {"type": "integer", "default": 5},
+        },
+        "required": ["query"],
+    },
+}
+
+
+async def _memory_write_handle(args: dict, task_id: str) -> str:  # noqa: ARG001
+    """memory_write handler — schema migration 翻译到 facts.upsert."""
+    if _facts_store is None:
+        return json.dumps({
+            "ok": False,
+            "error": "memory_write not bound (main.py lifespan issue)",
+        }, ensure_ascii=False)
+    text = args.get("text")
+    if not text or not isinstance(text, str):
+        return json.dumps({
+            "ok": False,
+            "error": "missing required field 'text' (non-empty string)",
+        }, ensure_ascii=False)
+    tier = str(args.get("tier") or "auto").lower()
+    category = _TIER_TO_CATEGORY.get(tier, "preference")
+    try:
+        salience = float(args.get("salience", 0.5))
+    except (TypeError, ValueError):
+        salience = 0.5
+    # confidence ≈ salience（旧 schema 没有 confidence 字段，复用 salience 语义）
+    confidence = max(0.0, min(1.0, salience))
+    # key 用时间戳保证唯一（旧 schema 没传 key 字段 → 自动生成）
+    key = f"memory_{int(time.time() * 1000)}"
+    try:
+        new_id = await _facts_store.upsert(
+            category=category,
+            subject="user",
+            key=key,
+            value=text.strip(),
+            confidence=confidence,
+            source_msg_id=None,
+            evidence="memory_write tool call",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({
+            "ok": False,
+            "error": f"facts.upsert failed: {exc}",
+        }, ensure_ascii=False)
+    return json.dumps({
+        "ok": True,
+        "memory_id": int(new_id),
+        "category": category,
+        "tier": tier,
+    }, ensure_ascii=False)
+
+
+async def _memory_read_handle(args: dict, task_id: str) -> str:  # noqa: ARG001
+    """memory_read handler — by id 真实现（R-MISS-9 facts.get_by_id 新加）."""
+    if _facts_store is None:
+        return json.dumps({
+            "ok": False,
+            "error": "memory_read not bound",
+        }, ensure_ascii=False)
+    raw_id = args.get("memory_id")
+    try:
+        fact_id = int(raw_id)
+    except (TypeError, ValueError):
+        return json.dumps({
+            "ok": False,
+            "error": f"memory_id must be integer, got {raw_id!r}",
+        }, ensure_ascii=False)
+    try:
+        row = await _facts_store.get_by_id(fact_id)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({
+            "ok": False,
+            "error": f"facts.get_by_id failed: {exc}",
+        }, ensure_ascii=False)
+    if row is None:
+        return json.dumps({
+            "ok": False,
+            "error": f"memory_id={fact_id} not found",
+        }, ensure_ascii=False)
+    # 隐藏内部字段（embedding 是 bytes blob，序列化噪声）
+    safe = {k: v for k, v in row.items() if k not in ("embedding",)}
+    return json.dumps({"ok": True, "fact": safe}, ensure_ascii=False, default=str)
+
+
+async def _memory_search_handle(args: dict, task_id: str) -> str:  # noqa: ARG001
+    """memory_search handler — facts.search (LIKE) 兜底真实现."""
+    if _facts_store is None:
+        return json.dumps({
+            "ok": False,
+            "error": "memory_search not bound",
+        }, ensure_ascii=False)
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return json.dumps({
+            "ok": False,
+            "error": "query must be non-empty",
+        }, ensure_ascii=False)
+    try:
+        top_k = int(args.get("top_k", 5))
+    except (TypeError, ValueError):
+        top_k = 5
+    top_k = max(1, min(20, top_k))
+    try:
+        rows = await _facts_store.search(query, limit=top_k)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({
+            "ok": False,
+            "error": f"facts.search failed: {exc}",
+        }, ensure_ascii=False)
+    safe_rows = [
+        {k: v for k, v in r.items() if k not in ("embedding",)}
+        for r in (rows or [])
+    ]
+    return json.dumps({
+        "ok": True,
+        "results": safe_rows,
+        "count": len(safe_rows),
+    }, ensure_ascii=False, default=str)
+
+
+# 注册（memory_tools.py 字典序先于 stubs.py，故 stubs.py 守卫模式跳过同名 stub）
+registry.register(
+    name="memory_write",
+    toolset="memory",
+    schema=_MEMORY_WRITE_SCHEMA,
+    handler=_memory_write_handle,
+    permission_category="write_file",
+    source="builtin",
+)
+registry.register(
+    name="memory_read",
+    toolset="memory",
+    schema=_MEMORY_READ_SCHEMA,
+    handler=_memory_read_handle,
+    permission_category="read_file",
+    source="builtin",
+)
+registry.register(
+    name="memory_search",
+    toolset="memory",
+    schema=_MEMORY_SEARCH_SCHEMA,
+    handler=_memory_search_handle,
+    permission_category="read_file",
     source="builtin",
 )

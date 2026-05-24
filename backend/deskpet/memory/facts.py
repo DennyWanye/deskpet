@@ -370,6 +370,23 @@ class FactsStore:
             await cur.close()
         return dict(row) if row else None
 
+    async def get_by_id(self, fact_id: int) -> Optional[dict[str, Any]]:
+        """Fetch a fact by integer ID. Returns None when absent.
+
+        WI-T3.1 v3 R-MISS-9：memory_read tool 需要按 ID 查 — 原 facts.py 仅有
+        find_active(subject,key)/list_active 等过滤接口，无 by-id 主键查。
+        """
+        await self._ensure_schema()
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute(
+                "SELECT * FROM facts WHERE id = ?",
+                (int(fact_id),),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+        return dict(row) if row else None
+
     async def list_active(
         self,
         *,

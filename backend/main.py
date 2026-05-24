@@ -1030,6 +1030,13 @@ try:
         enable_watch=False,
     )
     service_context.register("skill_loader", _skill_loader)
+    # WI-T3.2 v3：skill_invoke 工具接电 SkillLoader（取代 stubs.py 同名 stub）.
+    try:
+        from deskpet.tools import skill_tools as _skill_tools
+        _skill_tools.bind(skill_loader=_skill_loader)
+        logger.info("p4_skill_invoke_tool_bound")
+    except Exception as _sk_exc:  # noqa: BLE001
+        logger.warning("p4_skill_invoke_bind_failed", error=str(_sk_exc))
 
     # P4-S14 + S15: ContextAssembler — pass embedder so TaskClassifier can
     # use the embed-tier route (rule → embed → llm cascade). When BGE-M3

@@ -313,7 +313,7 @@ async def test_execute_tool_unknown_returns_error() -> None:
 
 
 def test_register_replace_logs_warning(caplog) -> None:
-    """Existing behavior: re-register replaces with warning (kept for compat)."""
+    """WI-T4.1 v3：opt-in 覆盖 = warn (旧 silent replace 行为升级为 opt-in)."""
     reg = ToolRegistry()
     reg.register(
         "foo", "util",
@@ -325,5 +325,23 @@ def test_register_replace_logs_warning(caplog) -> None:
             "foo", "util",
             {"name": "foo", "description": "d2", "parameters": {}},
             lambda a, t: "{}",
+            replace_allowed=True,
         )
     assert any("re-registered" in r.message for r in caplog.records)
+
+
+def test_register_replace_without_optin_raises() -> None:
+    """WI-T4.1 v3：未 opt-in → ToolNameConflictError (last-mile/stage2 教训)."""
+    from deskpet.tools.registry import ToolNameConflictError
+    reg = ToolRegistry()
+    reg.register(
+        "bar", "util",
+        {"name": "bar", "description": "d", "parameters": {}},
+        lambda a, t: "{}",
+    )
+    with pytest.raises(ToolNameConflictError):
+        reg.register(
+            "bar", "util",
+            {"name": "bar", "description": "d2", "parameters": {}},
+            lambda a, t: "{}",
+        )

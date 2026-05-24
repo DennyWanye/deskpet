@@ -57,6 +57,20 @@ ToolHandler = Callable[[dict[str, Any], str], str]
 CheckFn = Callable[[], bool]
 
 
+# WI-T4.1 v3 D11: 显式 conflict 错误（registry spec gap 修复）。
+# 历史 ``registry.register replaces on duplicate`` 是反模式 — late-loaded
+# stubs 会无声覆盖真实现，错误极难调试（last-mile / stage2 都踩过）。
+# v3 行为：name 冲突时若双方都未 opt-in `replace_allowed=True` → 抛此异常；
+# 任一方 opt-in 则允许覆盖（warn）。
+class ToolNameConflictError(RuntimeError):
+    """Raised when registering a tool name that already exists and neither
+    the existing spec nor the new registration opt-in `replace_allowed=True`.
+
+    Typical fix: pass `replace_allowed=True` explicitly (for test fixtures,
+    MCP hot-replace, or stubs.py guard-mode), or rename one of the tools.
+    """
+
+
 def _envelope_indicates_success(handler_result: str) -> bool:
     """P5-S2 Phase 3: was the handler call a "real" success for breaker
     accounting?
@@ -117,6 +131,13 @@ class ToolSpec:
     # via ``asyncio.wait_for``. Defaults to 60s; bash_run / long-running
     # MCP tools should override on registration (e.g. 300.0).
     timeout_seconds: float = 60.0
+    # WI-T4.1 v3 D11: explicit consent for "this name may be replaced".
+    # ToolNameConflictError 抛 iff 同名重复注册且两边都没 opt-in。
+    # 历史 stubs.py "register replaces on duplicate" 行为现改为：
+    #   - stubs.py 用 "if not registry.has(name): register"（守卫模式）
+    #   - 真实现注册（默认 replace_allowed=False）→ 不会被 stub 覆盖
+    #   - mcp_call / 测试热替换等显式 replace_allowed=True 时合法覆盖
+    replace_allowed: bool = False
 
     def env_satisfied(self) -> bool:
         """True iff every ``requires_env`` var is present AND non-empty."""
@@ -260,15 +281,27 @@ class ToolRegistry:
         source: str = "builtin",
         dangerous: bool = False,
         timeout_seconds: float = 60.0,
+        replace_allowed: bool = False,
     ) -> None:
-        """Register a single tool. Idempotent replace on duplicate name
-        (with a log warning — usually a symptom of module reload during
-        tests or hot-reload in dev; never expected in production).
+        """Register a single tool.
+
+        Name conflict policy (WI-T4.1 v3):
+          - 默认 ``replace_allowed=False``: 重复 name 且 existing spec 也未
+            opt-in → 抛 :class:`ToolNameConflictError`
+          - 任一方 (existing 或 new) ``replace_allowed=True`` → 允许覆盖
+            （仅 log.warning）
+          - stubs.py 应改用守卫模式 ``if not registry.has(name): register``，
+            真实现注册时不再被 stub 覆盖
 
         The ``schema`` argument is the raw OpenAI ``function`` object
         (``{name, description, parameters}``). ``schemas()`` wraps each
         with the outer ``{type: "function", function: ...}`` envelope,
         so callers don't need to repeat it here.
+
+        Args:
+            replace_allowed: 显式声明"这个名字允许被覆盖"。两边都未 opt-in
+                时同名注册 raise；仅一边 True 也允许覆盖（用于 MCP 热重连 /
+                测试 fixture / stubs.py 守卫模式）。
         """
         if not name or not isinstance(name, str):
             raise ValueError(f"tool name must be non-empty str, got {name!r}")
@@ -290,16 +323,35 @@ class ToolRegistry:
             source=source,
             dangerous=dangerous,
             timeout_seconds=float(timeout_seconds),
+            replace_allowed=replace_allowed,
         )
         with self._lock:
-            if name in self._tools:
+            existing = self._tools.get(name)
+            if existing is not None:
+                # WI-T4.1 v3 D11: 同名重注册策略
+                if not (existing.replace_allowed or replace_allowed):
+                    raise ToolNameConflictError(
+                        f"Tool {name!r} already registered "
+                        f"(toolset={existing.toolset}, source={existing.source}). "
+                        f"Set replace_allowed=True on either registration to "
+                        f"allow override (e.g. stubs.py guard-mode), or rename "
+                        f"one of the tools."
+                    )
                 logger.warning(
-                    "tool %r re-registered (toolset=%s); previous definition "
-                    "replaced",
-                    name,
-                    toolset,
+                    "tool %r re-registered (toolset=%s → %s, source=%s → %s); "
+                    "previous definition replaced (replace_allowed opt-in)",
+                    name, existing.toolset, toolset, existing.source, source,
                 )
             self._tools[name] = spec
+
+    def has(self, name: str) -> bool:
+        """Return True iff a tool with this name is currently registered.
+
+        Stubs.py 守卫模式：``if not registry.has(name): register(...)``
+        防止 late-loaded stub 覆盖 already-registered 真实现。
+        """
+        with self._lock:
+            return name in self._tools
 
     def unregister(self, name: str) -> bool:
         """Remove a tool by name. Returns True if removed, False if

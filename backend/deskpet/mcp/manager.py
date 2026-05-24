@@ -435,12 +435,16 @@ class MCPManager:
                 registered.append(qualified)
                 continue
             try:
+                # WI-T4.1 v3: MCP server reconnect / hot-replace 合法场景，
+                # 显式 opt-in 避免 ToolNameConflictError 误抛。
                 self._registry.register(
                     name=qualified,
                     toolset="mcp",
                     schema=_tool_to_schema(qualified, tool),
                     handler=_make_tool_handler(self, runtime.name, tool),
                     check_fn=_make_check_fn(self, runtime.name),
+                    source=f"mcp:{runtime.name}",
+                    replace_allowed=True,
                 )
                 registered.append(qualified)
             except Exception as exc:  # noqa: BLE001

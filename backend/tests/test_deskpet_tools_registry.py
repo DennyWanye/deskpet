@@ -63,10 +63,17 @@ def test_auto_discovery_loads_web_tools():
 
 
 def test_auto_discovery_loads_stubs_and_search():
+    """WI-T3.3 v3：mcp_call / delegate 直接 unregister 后 stubs.py 不再注册.
+
+    memory_* + skill_invoke 仍 stub-or-real（守卫模式，详 stubs.py）.
+    """
     names = set(module_registry.list_tools())
     assert "tool_search" in names
     assert {"memory_write", "memory_read", "memory_search"} <= names
-    assert {"delegate", "skill_invoke", "mcp_call"} <= names
+    assert "skill_invoke" in names
+    # T3.3: mcp_call / delegate 不再 stub（无真 caller，0-release 删）
+    assert "mcp_call" not in names
+    assert "delegate" not in names
 
 
 def test_auto_discovery_meets_mvp_16_tools_minimum():
@@ -93,9 +100,21 @@ def test_register_validates_handler(fresh: ToolRegistry):
         fresh.register("a", "control", _fake_schema("a"), "not-callable")  # type: ignore[arg-type]
 
 
-def test_register_replaces_duplicate(fresh: ToolRegistry, caplog):
+def test_register_duplicate_without_optin_raises(fresh: ToolRegistry):
+    """WI-T4.1 v3：同名重注册且双方都未 opt-in → ToolNameConflictError."""
+    from deskpet.tools.registry import ToolNameConflictError
     fresh.register("a", "control", _fake_schema("a"), lambda a, t: '"v1"')
-    fresh.register("a", "control", _fake_schema("a"), lambda a, t: '"v2"')
+    with pytest.raises(ToolNameConflictError):
+        fresh.register("a", "control", _fake_schema("a"), lambda a, t: '"v2"')
+
+
+def test_register_replaces_duplicate_with_optin(fresh: ToolRegistry, caplog):
+    """WI-T4.1 v3：opt-in replace_allowed=True → 允许覆盖 + 仅 warn."""
+    fresh.register("a", "control", _fake_schema("a"), lambda a, t: '"v1"')
+    fresh.register(
+        "a", "control", _fake_schema("a"), lambda a, t: '"v2"',
+        replace_allowed=True,
+    )
     assert fresh.dispatch("a", {}) == '"v2"'
 
 
