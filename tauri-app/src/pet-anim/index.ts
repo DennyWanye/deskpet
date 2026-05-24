@@ -498,13 +498,21 @@ export class AnimationOverlay {
     current_state: string
     current_motion_idx: number | null
   } {
+    // NFR-6: last_input_t comes from event.timeStamp / performance.now()
+    // (DOMHighResTimeStamp). Mixing with Date.now() (epoch ms) would
+    // produce nonsensical ages (~56 years). Use performance.now() here
+    // when available; fall back to Date.now() only in non-browser tests.
+    const nowSameBase =
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now()
     return {
       gaze_target_yaw: this.gazeState.target_yaw_deg,
       gaze_smoothed_yaw: this.gazeState.smoothed_yaw_deg,
       last_input_age_ms:
         this.gazeState.last_input_t === -Infinity
           ? Infinity
-          : Math.max(0, Date.now() - this.gazeState.last_input_t),
+          : Math.max(0, nowSameBase - this.gazeState.last_input_t),
       current_state: this.reactorCtx.state,
       current_motion_idx: this.current_motion_idx,
     }
