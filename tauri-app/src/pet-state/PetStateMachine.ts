@@ -27,6 +27,16 @@ export type PetState =
   | "alert"
   | "intervening";
 
+/**
+ * v3 (2026-05-24) Pet Animation UX v1 addition (PRD §6.2):
+ * `motion_tag_pool` carries a list of motion tags (fast / medium / slow /
+ * special) so the App can call AnimationOverlay.setMotionTagPool(tags,
+ * {force_switch_now}, now_t) on state changes. The legacy `motion_pool`
+ * string[] is kept untouched so callers that never opt into tag-driven
+ * picking are zero-regression.
+ */
+export type MotionTag = 'fast' | 'medium' | 'slow' | 'special';
+
 export interface PetMotionConfig {
   /** Pool of Idle motion ids to randomly cycle through; empty means
    * "use Live2D's default Idle group". */
@@ -39,6 +49,12 @@ export interface PetMotionConfig {
   head_tilt: number;
   /** Trigger TapBody once when entering this state. */
   tap_on_entry: boolean;
+  /**
+   * v3 (PRD FR-5): tags fed to AnimationOverlay.setMotionTagPool. Undefined
+   * = "no opinion" (App stays on its current motion). Empty array = the
+   * caller has explicitly cleared its preference (mostly used in 'idle').
+   */
+  motion_tag_pool?: Array<MotionTag>;
 }
 
 /**
@@ -76,6 +92,7 @@ export const STATE_CONFIG: Record<PetState, PetMotionConfig> = {
     blink_hz: 0.2,
     head_tilt: 0,
     tap_on_entry: false,
+    motion_tag_pool: undefined,
   },
   working: {
     // Idle pool subset perceived as "perky"; calibration spike pending.
@@ -84,6 +101,7 @@ export const STATE_CONFIG: Record<PetState, PetMotionConfig> = {
     blink_hz: 0.3,
     head_tilt: 2,
     tap_on_entry: false,
+    motion_tag_pool: ['fast', 'medium'],
   },
   worried: {
     motion_pool: ["Idle"], // slower subset
@@ -91,6 +109,7 @@ export const STATE_CONFIG: Record<PetState, PetMotionConfig> = {
     blink_hz: 0.5,
     head_tilt: -5,
     tap_on_entry: false,
+    motion_tag_pool: ['slow', 'medium'],
   },
   alert: {
     motion_pool: ["Idle"],
@@ -98,6 +117,7 @@ export const STATE_CONFIG: Record<PetState, PetMotionConfig> = {
     blink_hz: 0.6,
     head_tilt: -8,
     tap_on_entry: true,
+    motion_tag_pool: ['slow', 'special'],
   },
   intervening: {
     motion_pool: ["Idle"],
@@ -105,6 +125,7 @@ export const STATE_CONFIG: Record<PetState, PetMotionConfig> = {
     blink_hz: 0.3,
     head_tilt: 3,
     tap_on_entry: true,
+    motion_tag_pool: ['fast'],
   },
 };
 

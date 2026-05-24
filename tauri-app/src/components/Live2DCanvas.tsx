@@ -1,4 +1,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import {
+  AnimationOverlay,
+  type CoreModelLike,
+  type InteractionKind,
+  type MotionTag,
+} from "../pet-anim";
+import { get_calibrated_motion_pools } from "../pet-state/PetStateMachine";
 
 interface Live2DCanvasProps {
   modelPath: string;
@@ -13,30 +20,78 @@ interface Live2DCanvasProps {
 
 /**
  * Imperative handle for driving Live2D state from parent components.
- * Exposed via forwardRef so `App` can push emotion/action events that arrive
- * over the WebSocket control channel directly into the model without
- * re-rendering the heavy render loop.
  *
- * P5-S3 additions: setBlinkRate / setHeadTilt / setIdleSubset are used
- * by PetStateMachine to "colour" the otherwise-static idle Hiyori in
- * worried / alert states. Hiyori has no Expressions in model3.json, so
- * we drive raw Live2D parameters instead — see render-loop application.
+ * v3 (2026-05-24) Pet Animation UX additions per PRD §6.1:
+ *   - setMotionTagPool(tags, opts, now_t) — drive motion choice by tag
+ *   - setGazeTarget / clearGazeTarget — manual gaze override (App rarely
+ *     uses; we wire window-level pointermove inside the canvas instead)
+ *   - pulseInteraction(kind) — emit synthetic pointer reactions for tests
+ *   - getAnimationMetrics / getAnimationDebug — expose perf + state to
+ *     ManualTest CASE-MET / CASE-G / CASE-MP via window globals
  */
 export interface Live2DHandle {
-  /** Apply a named expression (e.g. "happy"). Silently no-ops if unknown/unloaded. */
+  /** Apply a named expression. Silently no-ops if unknown/unloaded. */
   setExpression: (name: string) => void;
-  /** Trigger a motion group by name (e.g. "wave"). Silently no-ops if unknown/unloaded. */
+  /** Trigger a motion group. Silently no-ops if unknown/unloaded. */
   playMotion: (group: string) => void;
-  /** P5-S3: set the eye-blink frequency in Hz overlaid on the base motion.
-   * 0.2 Hz = relaxed, 0.5 Hz = anxious. Set to 0 to disable supervisor blink. */
+  /** P5-S3: eye-blink frequency Hz overlaid on base motion. */
   setBlinkRate: (hz: number) => void;
-  /** P5-S3: set head tilt in degrees (positive = up, negative = down).
-   * Visualises pet "looking down" in worried/alert states. */
+  /** P5-S3: persistent head tilt (degrees). */
   setHeadTilt: (degrees: number) => void;
-  /** P5-S3: advisory hint for which Idle motion subset to prefer.
-   * Empty array means "use default behaviour". Hiyori only has one
-   * Idle group so this currently no-ops; reserved for future models. */
+  /** P5-S3: advisory hint for Idle motion subset. */
   setIdleSubset: (motionIds: string[]) => void;
+  /** v3 PRD FR-5: drive motion by tag pool. */
+  setMotionTagPool: (
+    tags: MotionTag[],
+    opts: { force_switch_now: boolean },
+    now_t: number,
+  ) => void;
+  /** v3 PRD FR-4 (rarely-needed manual override). */
+  setGazeTarget: (clientX: number, clientY: number, now_t: number) => void;
+  clearGazeTarget: (now_t: number) => void;
+  /** v3 PRD FR-6 (test/synthetic). */
+  pulseInteraction: (kind: InteractionKind) => void;
+  /** v3 PRD FR-7. */
+  getAnimationMetrics: () => ReturnType<AnimationOverlay["getAnimationMetrics"]>;
+  /** v3 PRD §6.1 debug surface. */
+  getAnimationDebug: () => ReturnType<AnimationOverlay["getAnimationDebug"]>;
+}
+
+interface FaceFrame {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  face_center_x: number;
+  face_center_y: number;
+  face_radius_css: number;
+}
+
+/**
+ * Compute hit-zone bounding box + face centre + radius from window
+ * geometry + pet rendering width. PRD §6.0 v3 single source of truth —
+ * the same values feed both the <div data-pet-hitzone> style and
+ * overlay.setFaceCenter so they never drift.
+ */
+function computeFaceFrame(
+  petWidth: number,
+  innerHeight: number,
+  innerWidth: number,
+  modelScaleFactor = 1,
+): FaceFrame {
+  const left = innerWidth - petWidth + petWidth * 0.25;
+  const width = Math.max(40, petWidth * 0.5 * modelScaleFactor);
+  const top = innerHeight * 0.2;
+  const height = Math.max(40, innerHeight * 0.6 * modelScaleFactor);
+  return {
+    left,
+    top,
+    width,
+    height,
+    face_center_x: left + width / 2,
+    face_center_y: top + height * 0.3,
+    face_radius_css: Math.min(width, height) * 0.5,
+  };
 }
 
 /**
@@ -45,6 +100,14 @@ export interface Live2DHandle {
  *
  * WebView2 transparent windows don't composite <canvas>/<WebGL>.
  * We render offscreen and display each frame via <img> (HTML = composites OK).
+ *
+ * v3 (2026-05-24) — wires AnimationOverlay for FR-1~FR-7:
+ *   - Render loop calls overlay.applyTo(coreModel, timestamp) instead of
+ *     hand-rolled blink/tilt code
+ *   - window-level pointermove → overlay.setGazeTarget (PRD §6.0)
+ *   - <div data-pet-hitzone> covers face+torso → overlay.pulseInteraction
+ *   - ResizeObserver + window resize keep face_center synced (PRD §6.0)
+ *   - toBlob callback records visual_latency (PRD §6.8 FIFO pairing)
  */
 export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function Live2DCanvas(
   { modelPath, onFpsUpdate, mouthOpenY = 0, petWidth },
@@ -52,6 +115,7 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
 ) {
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const hitZoneRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState(() => ({
     w: petWidth ?? window.innerWidth,
     h: window.innerHeight,
@@ -63,15 +127,29 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
   const cleanupRef = useRef<(() => void) | null>(null);
   const mouthRef = useRef(mouthOpenY);
   mouthRef.current = mouthOpenY;
-  // P5-S3: supervisor-driven parameter overlays. Refs (not state) so the
-  // render loop reads them every frame without re-mounting. Defaults
-  // match the "idle" PetState config.
-  const blinkHzRef = useRef<number>(0.2);
-  const headTiltRef = useRef<number>(0);
   // Live2D model instance (set once init() succeeds). Kept on a ref so that
   // imperative methods can reach it without blowing up the render loop via
   // re-renders.
   const modelRef = useRef<any>(null);
+  // v3: AnimationOverlay instance — per Live2DCanvas mount. dispose()
+  // called from cleanupRef so HMR / StrictMode double-mount can't leak.
+  const overlayRef = useRef<AnimationOverlay | null>(null);
+  // v3: face frame state. Updated by ResizeObserver + window resize + once
+  // on model load. Drives both hit-zone DOM and overlay.setFaceCenter via
+  // a single source `computeFaceFrame`.
+  const faceFrameRef = useRef<FaceFrame>(
+    computeFaceFrame(petWidth ?? window.innerWidth, window.innerHeight, window.innerWidth),
+  );
+
+  // Construct overlay once. We construct it eagerly so imperative handle
+  // methods can no-op-write into it even before the Live2D model loads.
+  if (overlayRef.current === null) {
+    overlayRef.current = new AnimationOverlay({
+      motionLabelsLoader: get_calibrated_motion_pools as () =>
+        | Record<MotionTag, number[]>
+        | null,
+    });
+  }
 
   useImperativeHandle(
     ref,
@@ -80,7 +158,6 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         const model = modelRef.current;
         if (!model) return;
         try {
-          // pixi-live2d-display API: expression(id?: string | number | undefined)
           model.expression?.(name);
         } catch (err) {
           console.warn("[Live2D] setExpression failed:", name, err);
@@ -90,37 +167,142 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         const model = modelRef.current;
         if (!model) return;
         try {
-          // pixi-live2d-display API: motion(group, index?, priority?)
-          // priority=2 (FORCE) overrides any idle motion — immediate playback.
           model.motion?.(group, undefined, 2);
         } catch (err) {
           console.warn("[Live2D] playMotion failed:", group, err);
         }
       },
       setBlinkRate(hz: number) {
-        blinkHzRef.current = Math.max(0, Number.isFinite(hz) ? hz : 0);
+        overlayRef.current?.setBlinkHz(Math.max(0, Number.isFinite(hz) ? hz : 0));
       },
       setHeadTilt(degrees: number) {
-        // Clamp to the model's reasonable range. Hiyori's ParamAngleZ
-        // typically spans ±30°; we cap at ±15° to avoid jarring poses.
         const clamped = Math.max(-15, Math.min(15, Number.isFinite(degrees) ? degrees : 0));
-        headTiltRef.current = clamped;
+        overlayRef.current?.setStateBaseHeadTilt(clamped);
       },
       setIdleSubset(_motionIds: string[]) {
         // Reserved for future models with multiple Idle groups.
         // Hiyori has only one ("Idle"), so no-op.
       },
+      setMotionTagPool(tags, opts, now_t) {
+        overlayRef.current?.setMotionTagPool(tags, opts, now_t);
+      },
+      setGazeTarget(clientX, clientY, now_t) {
+        overlayRef.current?.setGazeTarget(clientX, clientY, now_t);
+      },
+      clearGazeTarget(now_t) {
+        overlayRef.current?.clearGazeTarget(now_t);
+      },
+      pulseInteraction(kind) {
+        overlayRef.current?.pulseInteraction(kind, performance.now());
+      },
+      getAnimationMetrics() {
+        return (
+          overlayRef.current?.getAnimationMetrics() ?? {
+            interaction: { p50: 0, p95: 0, max: 0, samples: [] },
+            visual: { p50: 0, p95: 0, max: 0, samples: [] },
+          }
+        );
+      },
+      getAnimationDebug() {
+        return (
+          overlayRef.current?.getAnimationDebug() ?? {
+            gaze_target_yaw: 0,
+            gaze_smoothed_yaw: 0,
+            last_input_age_ms: 0,
+            current_state: "rest",
+            current_motion_idx: null,
+          }
+        );
+      },
     }),
     [],
   );
 
-  // Track viewport
+  // Track viewport. Also keep face frame current.
   useEffect(() => {
-    const onResize = () =>
-      setSize({ w: petWidth ?? window.innerWidth, h: window.innerHeight });
-    window.addEventListener("resize", onResize);
+    const apply = (): void => {
+      const w = petWidth ?? window.innerWidth;
+      const h = window.innerHeight;
+      setSize({ w, h });
+      const ff = computeFaceFrame(w, h, window.innerWidth);
+      faceFrameRef.current = ff;
+      overlayRef.current?.setFaceCenter(ff.face_center_x, ff.face_center_y, ff.face_radius_css);
+    };
+    apply();
+    let timeout: number | undefined;
+    const throttled = (): void => {
+      if (timeout) return;
+      timeout = window.setTimeout(() => {
+        timeout = undefined;
+        apply();
+      }, 100);
+    };
+    window.addEventListener("resize", throttled);
     console.warn("[Pet] viewport:", window.innerWidth, "x", window.innerHeight, "dpr:", window.devicePixelRatio);
-    return () => window.removeEventListener("resize", onResize);
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined" && containerRef.current) {
+      ro = new ResizeObserver(throttled);
+      ro.observe(containerRef.current);
+    }
+    return () => {
+      window.removeEventListener("resize", throttled);
+      if (timeout) window.clearTimeout(timeout);
+      ro?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [petWidth]);
+
+  // Window-level pointermove for gaze. PRD §6.0 v3: even with
+  // ignore_cursor_events=true the WebView JS still receives this
+  // (Day-0 Probe-3); listener lives here so a hit-zone-bounded fallback
+  // can be slotted in by flipping the addEventListener target later.
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    if (!overlay) return;
+    const onMove = (e: PointerEvent): void => {
+      overlay.setGazeTarget(e.clientX, e.clientY, e.timeStamp);
+    };
+    const onBlur = (): void => {
+      overlay.clearGazeTarget(performance.now());
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
+  // Expose metrics + debug + bench on window for ManualTest helpers.
+  useEffect(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w["__deskpet_anim_metrics"] = () => overlayRef.current?.getAnimationMetrics();
+    w["__deskpet_anim_debug"] = overlayRef.current?.getAnimationDebug();
+    // Keep debug pointer fresh — read from overlay each access via getter.
+    Object.defineProperty(w, "__deskpet_anim_debug", {
+      configurable: true,
+      get: () => overlayRef.current?.getAnimationDebug(),
+    });
+    if (import.meta.env.DEV) {
+      const model = modelRef.current;
+      w["__deskpet_anim_bench"] = {
+        applyToOnce: (t: number) => {
+          const m = modelRef.current ?? model;
+          if (m && overlayRef.current) {
+            overlayRef.current.applyTo((m as any).internalModel?.coreModel as CoreModelLike, t);
+          }
+        },
+      };
+    }
+    return () => {
+      try {
+        delete w["__deskpet_anim_metrics"];
+        delete w["__deskpet_anim_debug"];
+        delete w["__deskpet_anim_bench"];
+      } catch {
+        /* ignore */
+      }
+    };
   }, []);
 
   // Main init — runs once
@@ -154,22 +336,12 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
 
         if (destroyed) { pixiApp.destroy(true); return; }
 
-        // Disable PixiJS event system — we render offscreen via <img>, no
-        // pointer interaction is possible. Must use destroy() (not nulling
-        // domElement directly) so listeners are unbound properly.
-        // Prevents "Cannot read properties of null (reading 'isConnected')"
-        // spam on every pointer move.
         try {
           pixiApp.stage.eventMode = "none";
           pixiApp.stage.interactiveChildren = false;
           pixiApp.renderer?.events?.destroy?.();
         } catch { /* ignore */ }
 
-        // Append canvas to DOM (hidden) — WebGL needs DOM presence to render.
-        // Before appending, purge any orphan pet-canvases from prior mounts
-        // (HMR partial-cleanup, StrictMode ghosts, Vite full-reload races).
-        // Without this, leftover canvases from previous React mounts would
-        // stack up and render overlapping Live2D characters.
         document.querySelectorAll<HTMLCanvasElement>("canvas[data-pet-live2d]")
           .forEach((stale) => {
             try { stale.parentNode?.removeChild(stale); } catch { /* ignore */ }
@@ -194,7 +366,6 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
 
         model.autoInteract = false;
 
-        // Scale model to fit
         const scaleX = (renderW * 0.85) / model.width;
         const scaleY = (renderH * 0.7) / model.height;
         const scale = Math.min(scaleX, scaleY);
@@ -205,10 +376,19 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         pixiApp.stage.addChild(model);
         modelRef.current = model;
 
-        // P5-S1 D — expose an index-targeting motion call on window for
-        // the HiyoriMotionTuner (debug-only). Lets the tuner play a
-        // *specific* Idle motion (m01..m10) instead of the random
-        // selection the imperative handle does.
+        // Inject motion player into the overlay so motionPool/FR-5 can
+        // drive real Idle/TapBody groups.
+        overlayRef.current?.setMotionPlayer((group, idx) => {
+          try {
+            model.motion?.(group, idx, 2);
+          } catch (err) {
+            console.warn("[Live2D] motion player failed:", group, idx, err);
+          }
+        });
+        // Push the freshly-loaded model into the face-frame computation.
+        const ff = faceFrameRef.current;
+        overlayRef.current?.setFaceCenter(ff.face_center_x, ff.face_center_y, ff.face_radius_css);
+
         try {
           (window as any).__deskpet_play_motion = (group: string, idx?: number) => {
             try {
@@ -222,8 +402,6 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         modeRef.current = "live2d";
         console.warn("[Live2D] render loop starting");
 
-        // Render loop — cap at ~30fps for performance
-        // toBlob + createObjectURL is faster than toDataURL (no base64 encoding)
         const TARGET_FPS = 30;
         const FRAME_INTERVAL = 1000 / TARGET_FPS;
         let frameCount = 0;
@@ -235,7 +413,6 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         function renderLoop(timestamp: number) {
           if (destroyed) return;
 
-          // Throttle frame extraction to TARGET_FPS
           const delta = timestamp - lastFrameTime;
           if (delta >= FRAME_INTERVAL && !pendingBlob) {
             lastFrameTime = timestamp - (delta % FRAME_INTERVAL);
@@ -248,51 +425,19 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
               lastFpsTime = now;
             }
 
-            // Apply lip-sync mouth parameter + P5-S3 supervisor overlays
-            // (blink frequency + head tilt). Each is best-effort: if the
-            // model doesn't expose the param, we silently skip rather
-            // than spamming console errors at render-loop frequency.
+            // v3: hand control to AnimationOverlay. mouth_open_y is the
+            // only legacy param still pushed in-place here; everything
+            // else (blink, perlin, gaze, saccade, tilt) is overlay-owned.
             try {
-              const coreModel = (model as any).internalModel?.coreModel;
-              if (coreModel) {
-                // ParamMouthOpenY — lip sync
-                const mouthIdx = coreModel.getParameterIndex?.("ParamMouthOpenY");
-                if (mouthIdx != null && mouthIdx >= 0) {
-                  coreModel.setParameterValueByIndex(mouthIdx, mouthRef.current);
-                }
-                // ParamEyeLOpen / ParamEyeROpen — supervisor blink overlay.
-                // We compute a square-wave at blinkHzRef.current Hz where
-                // the eyes are closed for ~120 ms per cycle. blink_hz=0
-                // disables the override (motion's natural blink wins).
-                const hz = blinkHzRef.current;
-                if (hz > 0) {
-                  const period = 1000 / hz; // ms
-                  const phase = timestamp % period;
-                  const closed = phase < 120;
-                  const eyeVal = closed ? 0.0 : 1.0;
-                  const lIdx = coreModel.getParameterIndex?.("ParamEyeLOpen");
-                  if (lIdx != null && lIdx >= 0) {
-                    coreModel.setParameterValueByIndex(lIdx, eyeVal);
-                  }
-                  const rIdx = coreModel.getParameterIndex?.("ParamEyeROpen");
-                  if (rIdx != null && rIdx >= 0) {
-                    coreModel.setParameterValueByIndex(rIdx, eyeVal);
-                  }
-                }
-                // ParamAngleZ — head tilt. Hiyori uses degrees directly
-                // (range typically ±30°); we already clamped to ±15° in
-                // setHeadTilt.
-                const tilt = headTiltRef.current;
-                if (tilt !== 0) {
-                  const angleIdx = coreModel.getParameterIndex?.("ParamAngleZ");
-                  if (angleIdx != null && angleIdx >= 0) {
-                    coreModel.setParameterValueByIndex(angleIdx, tilt);
-                  }
-                }
+              const coreModel = (model as any).internalModel?.coreModel as
+                | CoreModelLike
+                | undefined;
+              if (coreModel && overlayRef.current) {
+                overlayRef.current.setMouthOpenY(mouthRef.current);
+                overlayRef.current.applyTo(coreModel, timestamp);
               }
             } catch { /* ignore if model structure differs */ }
 
-            // Extract frame via toBlob (async, faster than toDataURL)
             if (imgRef.current && pixiApp?.view) {
               pendingBlob = true;
               try {
@@ -300,10 +445,12 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
                   (blob: Blob | null) => {
                     pendingBlob = false;
                     if (destroyed || !blob || !imgRef.current) return;
-                    // Revoke previous blob URL to prevent memory leak
                     if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
                     currentBlobUrl = URL.createObjectURL(blob);
                     imgRef.current.src = currentBlobUrl;
+                    // v3: record visual latency — pair this frame with
+                    // the oldest pending click event (FIFO per §3.8).
+                    overlayRef.current?.recordVisualFrameTs(performance.now());
                   },
                   "image/webp",
                   0.8,
@@ -334,7 +481,7 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
       }
     }
 
-    // Canvas2D fallback
+    // Canvas2D fallback — unchanged from pre-v3, just a fallback character.
     function startCanvas2D() {
       console.warn("[Canvas2D] starting fallback");
       const width = size.w;
@@ -343,10 +490,6 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
       const dpr = window.devicePixelRatio || 1;
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
-      // Narrow the context type once at the top so the inner draw() closure
-      // sees a non-null CanvasRenderingContext2D. With `function draw()` (a
-      // hoisted declaration), TS doesn't carry the `if (!rawCtx) return;`
-      // narrowing into the closure; an explicit non-null typed const does.
       const rawCtx = canvas.getContext("2d");
       if (!rawCtx) return;
       const ctx: CanvasRenderingContext2D = rawCtx;
@@ -375,31 +518,24 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         ctx.scale(cs, cs);
         const by = Math.sin(ts / 1500) * 3, bo = Math.sin(ts / 800) * 2;
 
-        // Shadow
         ctx.fillStyle = "rgba(0,0,0,0.15)";
         ctx.beginPath(); ctx.ellipse(0, 140 + by, 55, 10, 0, 0, Math.PI * 2); ctx.fill();
-        // Tail
         const tw = Math.sin(ts / 300) * 15;
         ctx.strokeStyle = "rgba(99,102,241,0.8)"; ctx.lineWidth = 8; ctx.lineCap = "round";
         ctx.beginPath(); ctx.moveTo(45, 85 + by); ctx.quadraticCurveTo(75 + tw, 55 + by, 70 + tw * 1.5, 25 + by); ctx.stroke();
-        // Body
         ctx.fillStyle = "rgba(99,102,241,0.9)"; roundRect(ctx, -55, 50 + by, 110, 80, 22);
         ctx.fillStyle = "rgba(129,140,248,0.3)"; roundRect(ctx, -40, 55 + by, 80, 25, 12);
-        // Paws
         ctx.fillStyle = "rgba(129,140,248,0.9)";
         ctx.beginPath(); ctx.ellipse(-35, 130 + by, 18, 10, -0.1, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.ellipse(35, 130 + by, 18, 10, 0.1, 0, Math.PI * 2); ctx.fill();
-        // Head
         ctx.fillStyle = "rgba(99,102,241,0.95)";
         ctx.beginPath(); ctx.arc(0, bo, 65, 0, Math.PI * 2); ctx.fill();
-        // Ears
         ctx.fillStyle = "rgba(99,102,241,0.95)";
         ctx.beginPath(); ctx.moveTo(-55, -20 + bo); ctx.lineTo(-70, -70 + bo); ctx.lineTo(-25, -45 + bo); ctx.closePath(); ctx.fill();
         ctx.beginPath(); ctx.moveTo(55, -20 + bo); ctx.lineTo(70, -70 + bo); ctx.lineTo(25, -45 + bo); ctx.closePath(); ctx.fill();
         ctx.fillStyle = "rgba(196,181,253,0.7)";
         ctx.beginPath(); ctx.moveTo(-52, -25 + bo); ctx.lineTo(-63, -60 + bo); ctx.lineTo(-32, -42 + bo); ctx.closePath(); ctx.fill();
         ctx.beginPath(); ctx.moveTo(52, -25 + bo); ctx.lineTo(63, -60 + bo); ctx.lineTo(32, -42 + bo); ctx.closePath(); ctx.fill();
-        // Eyes
         eyeBlinkTimer += 16;
         if (eyeBlinkTimer > 3000 && !isBlinking) { isBlinking = true; eyeBlinkTimer = 0; }
         if (isBlinking && eyeBlinkTimer > 150) { isBlinking = false; eyeBlinkTimer = 0; }
@@ -416,16 +552,13 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           ctx.beginPath(); ctx.arc(-20 + px, ey - 4 + py, 4, 0, Math.PI * 2); ctx.fill();
           ctx.beginPath(); ctx.arc(28 + px, ey - 4 + py, 3, 0, Math.PI * 2); ctx.fill();
         }
-        // Blush
         ctx.fillStyle = "rgba(251,191,207,0.45)";
         ctx.beginPath(); ctx.ellipse(-42, 12 + bo, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.ellipse(42, 12 + bo, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
-        // Nose + Mouth (with lip-sync)
         const mOpen = mouthRef.current;
         ctx.fillStyle = "rgba(196,181,253,0.8)";
         ctx.beginPath(); ctx.moveTo(0, 8 + bo); ctx.lineTo(-5, 14 + bo); ctx.lineTo(5, 14 + bo); ctx.closePath(); ctx.fill();
         if (mOpen > 0.05) {
-          // Open mouth proportional to mouthOpenY
           ctx.fillStyle = "rgba(67,56,202,0.6)";
           ctx.beginPath(); ctx.ellipse(0, 20 + bo, 8, 4 + mOpen * 10, 0, 0, Math.PI * 2); ctx.fill();
         } else {
@@ -433,7 +566,6 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           ctx.beginPath(); ctx.arc(-8, 16 + bo, 8, -0.3, Math.PI * 0.7); ctx.stroke();
           ctx.beginPath(); ctx.arc(8, 16 + bo, 8, Math.PI * 0.3, Math.PI + 0.3); ctx.stroke();
         }
-        // Whiskers
         ctx.strokeStyle = "rgba(200,200,220,0.5)"; ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.moveTo(-30, 10 + bo); ctx.lineTo(-65, 5 + bo); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(-30, 16 + bo); ctx.lineTo(-65, 18 + bo); ctx.stroke();
@@ -441,7 +573,6 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         ctx.beginPath(); ctx.moveTo(30, 16 + bo); ctx.lineTo(65, 18 + bo); ctx.stroke();
         ctx.restore();
 
-        // Use toBlob + createObjectURL (faster than toDataURL)
         canvas.toBlob(
           (blob) => {
             if (!blob || !imgRef.current || destroyed) return;
@@ -464,6 +595,9 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
       destroyed = true;
       cancelAnimationFrame(rafId);
       modelRef.current = null;
+      // v3: dispose the overlay so HMR + StrictMode unmounts don't leak.
+      overlayRef.current?.dispose();
+      overlayRef.current = null;
       try {
         const pixiCanvas = pixiApp?.view as HTMLCanvasElement;
         if (pixiCanvas?.parentNode) pixiCanvas.parentNode.removeChild(pixiCanvas);
@@ -477,6 +611,12 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Run once only
 
+  // hit-zone DOM (PRD §6.0). Sized in absolute CSS px from
+  // computeFaceFrame so it stays in sync with overlay's face_center.
+  // z-index is intentionally below HiyoriMotionTuner / SettingsPanel /
+  // other UI surfaces (which all use 100+) so they remain clickable on
+  // top — see CASE-PR-06.
+  const ff = faceFrameRef.current;
   return (
     <>
       <div ref={containerRef} style={{ display: "none" }} />
@@ -488,10 +628,39 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           height: `${size.h}px`,
           position: "absolute",
           top: 0,
-          // 2026-05-19: 角色贴**壳右缘**（桌宠通常停在屏幕右侧）；壳已
-          // 铺满整窗，左侧多出的透明边距正好放 ▶ tab / 留给独立面板侧。
           right: 0,
           pointerEvents: "none",
+        }}
+      />
+      <div
+        ref={hitZoneRef}
+        data-pet-hitzone="1"
+        style={{
+          position: "fixed",
+          left: ff.left,
+          top: ff.top,
+          width: ff.width,
+          height: ff.height,
+          pointerEvents: "auto",
+          // Make absolutely sure we never paint anything visible.
+          background: "transparent",
+          zIndex: 25,
+        }}
+        onPointerEnter={(e) => {
+          overlayRef.current?.pulseInteraction("hover_enter", e.timeStamp);
+        }}
+        onPointerLeave={(e) => {
+          overlayRef.current?.pulseInteraction("hover_leave", e.timeStamp);
+        }}
+        onClick={(e) => {
+          const ts = e.timeStamp;
+          const overlay = overlayRef.current;
+          if (!overlay) return;
+          // Record interaction latency BEFORE the reactor mutates so
+          // the elapsed millis are the true event→write distance.
+          const before = performance.now();
+          overlay.pulseInteraction("click", ts);
+          overlay.recordInteractionLatency(performance.now() - before);
         }}
       />
     </>

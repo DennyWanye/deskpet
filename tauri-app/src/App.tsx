@@ -753,6 +753,16 @@ function App() {
     live.setBlinkRate(petResult.motion.blink_hz);
     live.setHeadTilt(petResult.motion.head_tilt);
     live.setIdleSubset(petResult.motion.motion_pool);
+    // v3 (PRD §6.5 / FR-5): drive AnimationOverlay's motion tag pool.
+    // state_changed=true → force_switch_now so a supervisor severity
+    // bump swaps the motion immediately rather than waiting for the
+    // round-robin period.
+    const tags = petResult.motion.motion_tag_pool ?? [];
+    live.setMotionTagPool(
+      tags,
+      { force_switch_now: petResult.state_changed },
+      performance.now(),
+    );
     if (petResult.state_changed && petResult.motion.tap_on_entry) {
       live.playMotion("TapBody");
     }
