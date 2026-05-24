@@ -1018,6 +1018,20 @@ class AgentLoop:
                                 len(v_outcome.unmatched_claims),
                                 ephemeral_pass,
                             )
+                            # WI-T2.1 v3：真 emit 到 metrics.jsonl（MR-T-8 拦截
+                            # 硬证据 — 用户 goal "verify_* event in metrics.jsonl"
+                            # 把 fake-completion 拦截事件计数化，供监控面板看健康率）
+                            try:
+                                from observability.metrics_sink import (
+                                    record as _verify_metric,
+                                )
+                                _verify_metric("verify_gate_nudge_injected", {
+                                    "nudge_count": int(verify_nudges_used),
+                                    "count": int(len(v_outcome.unmatched_claims)),
+                                    "ok": bool(ephemeral_pass),
+                                })
+                            except Exception:  # noqa: BLE001 — metric 失败不阻 dispatch
+                                pass
                             continue
                         else:
                             logger.info(

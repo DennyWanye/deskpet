@@ -56,6 +56,11 @@ VALID_EVENTS = frozenset({
     "verify.ephemeral_rescued",
     "verify.sig_invalid_filtered",
     "verifier.skipped_due_to_missing_toolchain",
+    # WI-T2.1 v3 build_agent 工厂接电 — chat 启动时 emit；MR-T-1 硬证据
+    # （用户 goal："必须有 boot smoke + metrics.jsonl 真出现 verify_* event"）.
+    "verify_gate_init",
+    # WI-T2.6 agent_loop 触发 nudge（fake-completion 拦截事件）.
+    "verify_gate_nudge_injected",
 })
 
 # Whitelisted ``detail`` keys. A caller can ONLY write these fields —
@@ -84,6 +89,11 @@ _ALLOWED_DETAIL_KEYS = frozenset({
     # WI-T2.4/T2.5 verify metric details (无敏感内容).
     "verifier",      # file_exists / git_diff / build / test
     "missing",       # missing toolchain name (npm / pytest / git)
+    # WI-T2.1 v3 verify_gate_init detail (脱敏: mode 是枚举, count 是数字).
+    "mode",            # verify_gate_init: off / shadow / strict
+    "patterns_loaded", # verify_gate_init: 加载的 ClaimPattern 数
+    "session_id",      # verify_gate_nudge_injected: hash 后 sid（caller 自管脱敏）
+    "nudge_count",     # verify_gate_nudge_injected: 第几次 nudge
 })
 
 # Max length of any *surviving* string value — defence-in-depth second
