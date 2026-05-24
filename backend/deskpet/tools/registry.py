@@ -550,6 +550,12 @@ class ToolRegistry:
         # override via ``ToolSpec.timeout_seconds`` (e.g. bash_run = 300s).
         # On timeout: return a uniform ``tool_timeout`` error envelope so
         # the agent loop carries on instead of dying with TimeoutError.
+        #
+        # WI-T2.3 v3 P0 修：dispatch 真实开始时间。原 emit_receipt 处用了两次
+        # datetime.now() → duration_ms 永远 ~0μs（last-mile round2 P0-3）。
+        # 这里捕真 started_at，emit_receipt 时用它对账 ended_at。
+        from datetime import datetime as _dt, timezone as _tz
+        _started_at = _dt.now(_tz.utc)
         try:
             import asyncio as _asyncio
             import inspect as _inspect
@@ -628,7 +634,6 @@ class ToolRegistry:
             try:
                 store = self._receipt_store_provider()
                 if store is not None:
-                    from datetime import datetime, timezone
                     from deskpet.tools.receipt_store import emit_receipt
                     self._session_iteration[session_id] = (
                         self._session_iteration.get(session_id, 0) + 1
@@ -638,12 +643,15 @@ class ToolRegistry:
                     # ok=False 也算 dispatch 完成 - 而 envelope.ok=True 仅
                     # 表示 dispatch 路径没有异常）
                     envelope_ok = envelope.get("ok") is True
+                    # WI-T2.3 v3 P0 修：用真实 _started_at（dispatch 开始时记
+                    # 录）+ now() 算 duration_ms。原 v2.1 用两次 now() 间隔仅
+                    # 微秒，导致 receipt duration_ms ~0 → p95 监控失效。
                     emit_receipt(
                         store,
                         tool_name=name,
                         args=dict(merged_params or {}),
-                        started_at=datetime.now(timezone.utc),
-                        ended_at=datetime.now(timezone.utc),
+                        started_at=_started_at,
+                        ended_at=_dt.now(_tz.utc),
                         ok=envelope_ok,
                         session_id=session_id,
                         iteration=iteration,

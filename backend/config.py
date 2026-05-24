@@ -249,6 +249,10 @@ class ToolsVerifierConfig:
     run_build: bool = False                        # D7 build verifier
     run_tests: bool = False                        # D7 test verifier
     claim_patterns_file: str = "verify/claim_patterns.yaml"
+    # v3 WI-T2.1 接电 + M5 ToolsConfig 扩展：build_agent 工厂从这里读 nudge 上限
+    # （PRD §3 D6：failure_count == 3 时调度 ephemeral；默认 2 表示连续 2 次
+    # unmatched 才触发救援）
+    max_verify_nudges: int = 2
 
 
 @dataclass

@@ -1,0 +1,54 @@
+# Default claim patterns for VerifyGate (PRD §3 D6).
+#
+# Each pattern detects a "I just did X" assertion in the assistant's reply.
+# VerifyGate uses these to demand a matching ToolReceipt in the session
+# ledger; if a claim has no matching receipt, the gate blocks end_turn.
+#
+# Schema (see deskpet/agent/verify_gate.py:ClaimPattern):
+#   id           — short unique identifier (snake_case)
+#   regex        — Python re-compatible pattern (avoid nested quantifiers;
+#                  the loader rejects on `re.error` or static ReDoS detection)
+#   artifact_kind — one of: file | url | text | command_run
+#   tool_hint    — list of tool names whose receipts can satisfy the claim
+#
+# Keep this file minimal in shadow-mode boot — false-positives here block
+# every end_turn. Add patterns as you observe real fake-completion incidents.
+
+patterns:
+  - id: zh_generated_pptx
+    regex: '已生成 (?P<title>[^\s，。]+\.pptx)'
+    artifact_kind: file
+    tool_hint:
+      - ppt_create
+      - artifact_create
+
+  - id: zh_generated_docx
+    regex: '已生成 (?P<title>[^\s，。]+\.docx)'
+    artifact_kind: file
+    tool_hint:
+      - docx_create
+      - artifact_create
+
+  - id: zh_generated_xlsx
+    regex: '已生成 (?P<title>[^\s，。]+\.xlsx)'
+    artifact_kind: file
+    tool_hint:
+      - xlsx_create
+      - artifact_create
+
+  - id: zh_saved_file
+    regex: '(?:已保存|已写入) (?P<path>[A-Za-z]:[\\/][^\s，。]+)'
+    artifact_kind: file
+    tool_hint:
+      - write_file
+      - artifact_create
+
+  - id: en_created_file
+    regex: 'I have created (?P<path>[^\s,\.]+\.[a-z]{2,5})'
+    artifact_kind: file
+    tool_hint:
+      - write_file
+      - artifact_create
+      - ppt_create
+      - docx_create
+      - xlsx_create

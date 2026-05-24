@@ -387,13 +387,17 @@ try:
             try:
                 from deskpet.tools.receipt_store import ReceiptStore
                 from pathlib import Path as _PathRS
+                # WI-T2.2 v3 P0 修：取消 min(retention, 7) 截断（last-mile
+                # round2 P0-2）。原代码把用户配的 30 天硬压成 7 天，回放窗口
+                # 残缺。按 ToolsLastMileConfig.artifact_dir_retention_days
+                # 默认 30 + 用户 cfg 真值。
                 retention = int(getattr(
                     getattr(cfg, "last_mile", None),
-                    "artifact_dir_retention_days", 7,
+                    "artifact_dir_retention_days", 30,
                 ))
                 _receipt_store_box[0] = ReceiptStore(
                     _PathRS(_paths.user_data_dir()),
-                    retention_days=min(retention, 7),
+                    retention_days=retention,
                 )
                 # 启动期自清理 (PRD D5)
                 deleted = _receipt_store_box[0].cleanup_expired()
@@ -607,6 +611,120 @@ def _make_str_llm_call(provider, *, max_tokens: int = 512):
         return (result or {}).get("content") or ""
 
     return _call
+
+
+# ─── WI-T2.1 v3 build_agent 工厂（接电 VerifyGate）─────────────────
+#
+# Testability refactor: AgentLoop 构造逻辑从 chat handler inline 抽出，
+# 让 wiring 测试可直接 `from main import build_agent; agent = build_agent(cfg, ...)`
+# 断言 `agent.verify_gate is not None`，**不依赖** import main 全跑（v1 评审 P1-1
+# 反驳 `import main; reload` 在 monolithic main.py 99% 翻车）。
+#
+# 修 last-mile P0-1：last-mile 已写好 VerifyGate / ReceiptStore / agent_loop
+# 内部 verify check，但 main.py:_AgentLoop(...) 构造调用没传 `verify_gate=` /
+# `receipt_store=` / `max_verify_nudges=`，导致生产抓获率 0%。本工厂兜底所有
+# 接电点 — 调用方只需替换 `_AgentLoop(...)` 为 `build_agent(cfg, ...)`。
+def build_agent(
+    cfg,
+    *,
+    llm_registry,
+    tool_registry,
+    context_manager,
+    receipt_store_getter,
+    # ★v3 round2 P0-6 补 4 个参数（main.py:4161 现场调用需要）
+    max_iterations: int = 16,
+    completion_probe=None,
+    max_completion_nudges: int = 2,
+    signature_repeat_threshold=None,
+):
+    """Build a wired _AgentLoop with optional VerifyGate + ReceiptStore.
+
+    Behavior matrix:
+      - cfg.tools.verifier.verify_gate_mode == "off" (default): verify_gate=None,
+        agent_loop 跳过 verify check（BC，与现状字节级一致）
+      - mode in ("shadow", "strict"): 构造 RegexExtractor(load_claim_patterns(yaml))
+        + VerifyGate(extractor, mode)；patterns yaml 缺失或 parse 失败 → 退化
+        verify_gate=None + warn（**不抛**，避免 backend 启动崩）
+      - receipt_store_getter() 失败 → receipt_store=None + warn
+
+    Args:
+        cfg: AppConfig 实例（需有 cfg.tools.verifier 子段）
+        llm_registry / tool_registry / context_manager: AgentLoop 必需
+        receipt_store_getter: 0-arg callable，返回 ReceiptStore 或 None
+        max_iterations: AgentLoop 迭代上限（companion 16 / code 50）
+        completion_probe: 完成探针 (P5-S2 Hook A)
+        max_completion_nudges: 完成探针 nudge 上限
+        signature_repeat_threshold: 死循环抑制阈值 (P5-S2 Phase 6)
+
+    Returns:
+        _AgentLoop 实例（带 verify_gate / receipt_store / max_verify_nudges 接电）
+    """
+    from agent.agent_loop import AgentLoop as _AgentLoop
+
+    # Build VerifyGate from cfg (mode != "off" only — flag OFF stays BC).
+    verify_gate = None
+    try:
+        verifier_cfg = getattr(getattr(cfg, "tools", None), "verifier", None)
+        if verifier_cfg is not None and verifier_cfg.verify_gate_mode != "off":
+            from pathlib import Path as _Path
+            from deskpet.agent.verify_gate import (
+                RegexExtractor,
+                VerifyGate,
+                load_claim_patterns,
+            )
+            patterns_path = _Path(verifier_cfg.claim_patterns_file)
+            if not patterns_path.is_absolute():
+                # Resolve relative to backend/ (where the default yaml lives)
+                patterns_path = _Path(__file__).parent / patterns_path
+            patterns = load_claim_patterns(patterns_path)
+            verify_gate = VerifyGate(
+                extractor=RegexExtractor(patterns),
+                mode=verifier_cfg.verify_gate_mode,
+            )
+            logger.info(
+                "verify_gate_init mode=%s patterns=%d path=%s",
+                verifier_cfg.verify_gate_mode, len(patterns), patterns_path,
+            )
+            try:
+                from observability.metrics_sink import record as _verify_metric
+                _verify_metric("verify_gate_init", {
+                    "mode": verifier_cfg.verify_gate_mode,
+                    "patterns_loaded": len(patterns),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("verify_gate init failed: %s — disabled", exc)
+        verify_gate = None
+
+    # Pull receipt_store (None when emit_receipts=False).
+    receipt_store = None
+    try:
+        receipt_store = receipt_store_getter()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("receipt_store getter failed: %s — verify_gate disabled", exc)
+        receipt_store = None
+        verify_gate = None  # gate without ledger = blocks every end_turn
+
+    nudges = 2
+    try:
+        nudges = int(getattr(verifier_cfg, "max_verify_nudges", 2)) if verifier_cfg else 2
+    except Exception:  # noqa: BLE001
+        nudges = 2
+
+    return _AgentLoop(
+        llm_registry=llm_registry,
+        tool_registry=tool_registry,
+        max_iterations=max_iterations,
+        completion_probe=completion_probe,
+        max_completion_nudges=max_completion_nudges,
+        signature_repeat_threshold=signature_repeat_threshold,
+        context_manager=context_manager,
+        # ─── WI-T2.1 v3 真接电（修 last-mile P0-1）───
+        verify_gate=verify_gate,
+        receipt_store=receipt_store,
+        max_verify_nudges=nudges,
+    )
 
 
 # 记忆系统升级 WI-M1.2: facts shadow 抽取器 + FactsStore。模块级默认
@@ -4158,14 +4276,19 @@ async def control_channel(ws: WebSocket):
                                 "tool_signature_repeat_threshold", 3
                             ))
                         )
-                        _agent = _AgentLoop(
+                        # WI-T2.1 v3：build_agent 工厂接电 VerifyGate +
+                        # ReceiptStore（修 last-mile P0-1，详 module 顶
+                        # build_agent docstring）。
+                        _agent = build_agent(
+                            config,
                             llm_registry=_shim,
                             tool_registry=deskpet_tool_registry_v2,
+                            context_manager=_ctx_mgr,
+                            receipt_store_getter=_get_receipt_store,
                             max_iterations=_max_iter,
                             completion_probe=_completion_probe,
                             max_completion_nudges=2,
                             signature_repeat_threshold=_sig_repeat_thr,
-                            context_manager=_ctx_mgr,
                         )
                         # P4-S25 A1: stream by default — gives the user
                         # instant visible feedback on thinking-mode
