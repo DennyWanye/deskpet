@@ -375,10 +375,34 @@ class ToolRegistry:
           2. ``enabled_toolsets`` — if provided, only tools whose
              ``toolset`` is in the whitelist survive. ``None`` (the
              default) returns everything.
+          3. ★v3 WI-T5.1：``cfg.tools.disabled_toolsets`` — 强 strict 模式
+             过滤；同时 schema 层 + execute_tool 层都挡（默认双层）。
+          4. ★v3 WI-T5.1：``cfg.tools.disabled_toolsets_schema_only`` —
+             opt-in 仅 schema 层挡（execute_tool 仍可调）。
+          5. ★v3 WI-T5.1：``cfg.tools.dangerous_tools_allowlist`` —
+             非空时过 dangerous=True 工具白名单。
         """
         allowed: Optional[set[str]] = (
             set(enabled_toolsets) if enabled_toolsets is not None else None
         )
+
+        # WI-T5.1 v3：cfg.tools 字段（cfg provider 已注入）
+        cfg_disabled: set[str] = set()
+        cfg_disabled_schema_only: set[str] = set()
+        dangerous_allowlist: set[str] = set()
+        if self._tools_config_provider is not None:
+            try:
+                cfg = self._tools_config_provider()
+                cfg_disabled = set(getattr(cfg, "disabled_toolsets", []) or [])
+                cfg_disabled_schema_only = set(
+                    getattr(cfg, "disabled_toolsets_schema_only", []) or []
+                )
+                dangerous_allowlist = set(
+                    getattr(cfg, "dangerous_tools_allowlist", []) or []
+                )
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning("tools_config_provider read failed in schemas: %s", _exc)
+
         with self._lock:
             specs = list(self._tools.values())
 
@@ -387,6 +411,14 @@ class ToolRegistry:
             if not spec.env_satisfied():
                 continue
             if allowed is not None and spec.toolset not in allowed:
+                continue
+            # WI-T5.1 v3：cfg.disabled_toolsets / _schema_only 双层挡
+            if spec.toolset in cfg_disabled:
+                continue
+            if spec.toolset in cfg_disabled_schema_only:
+                continue
+            # WI-T5.1 v3：dangerous allowlist — 非空时仅 allowlist 中 dangerous 工具
+            if dangerous_allowlist and spec.dangerous and spec.name not in dangerous_allowlist:
                 continue
             out.append({"type": "function", "function": dict(spec.schema)})
         return out
@@ -559,6 +591,26 @@ class ToolRegistry:
         if spec is None:
             return {"ok": False, "result": None, "error": f"unknown tool: {name}"}
 
+        # WI-T5.1 v3：disabled_toolsets 双层挡 — strict 模式下 execute_tool
+        # 也拒绝（schema_only 仅 schemas() 过滤，execute_tool 仍可调）。
+        if self._tools_config_provider is not None:
+            try:
+                cfg = self._tools_config_provider()
+                disabled_strict = set(getattr(cfg, "disabled_toolsets", []) or [])
+                if spec.toolset in disabled_strict:
+                    return {
+                        "ok": False,
+                        "result": None,
+                        "error": (
+                            f"tool {name!r} disabled by [tools] "
+                            f"disabled_toolsets (toolset={spec.toolset})"
+                        ),
+                    }
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning(
+                    "tools_config_provider read failed in execute_tool: %s", _exc,
+                )
+
         # P5-S2 Phase 3: per-(session, tool) circuit breaker. If the
         # breaker is OPEN we synthesize a structured ``circuit_open``
         # envelope so the LLM sees a real tool_result with a hint and
@@ -612,7 +664,20 @@ class ToolRegistry:
             import asyncio as _asyncio
             import inspect as _inspect
 
-            timeout_s = float(getattr(spec, "timeout_seconds", 60.0)) or 60.0
+            # WI-T5.1 v3 default_timeout_seconds：cfg 兜底 ToolSpec 未配 timeout
+            # 时的默认值。ToolSpec.timeout_seconds 默认 60.0，cfg 60.0 → 与
+            # 现状字节级一致；用户在 [tools] default_timeout_seconds=30 时
+            # 全局缩短未显式 override 的工具 timeout。
+            cfg_default_timeout = 60.0
+            if self._tools_config_provider is not None:
+                try:
+                    cfg = self._tools_config_provider()
+                    cfg_default_timeout = float(
+                        getattr(cfg, "default_timeout_seconds", 60.0) or 60.0
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            timeout_s = float(getattr(spec, "timeout_seconds", cfg_default_timeout)) or cfg_default_timeout
 
             async def _run_handler() -> Any:
                 if _inspect.iscoroutinefunction(spec.handler):

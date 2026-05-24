@@ -257,13 +257,34 @@ class ToolsVerifierConfig:
 
 @dataclass
 class ToolsConfig:
-    """``[tools]`` 父表，含 last_mile / verifier 两个子表。
+    """``[tools]`` 父表，含 last_mile / verifier 两个子表 + v3 5 字段。
 
     _load_section 平铺解析，无法直接处理嵌套子 dataclass —— load_config 把
     子表 pop 出来单独构建（_load_tools，同 _load_memory_v2 模式）。
+
+    WI-T5.1 v3 新增 5 字段（PRD §3.5 G6 + TDD §A12）：
+
+    * ``disabled_toolsets`` — **★v3 默认 strict**：列出的 toolset 既不出现
+      在 LLM schemas 也无法 execute_tool（双层挡，PRD D14 P1-5 反 v1 反模式）。
+      Silent breaking change 风险见 R12 — release notes 提醒用户从 schema-only
+      迁移到 strict 默认前显式过迁移路径。
+    * ``disabled_toolsets_schema_only`` — opt-in 边缘场景：仅 LLM 看不到但
+      execute_tool 仍可调（编排器/测试夹具用）。
+    * ``dangerous_tools_allowlist`` — 非空时仅 allowlist 中的 dangerous=True
+      工具会出现在 schemas（默认空 = 沿用 UI 确认 popup 流程）。
+    * ``default_timeout_seconds`` — ToolSpec.timeout_seconds 未指定时的兜底
+      （ToolSpec 默认 60，但 execute_tool 读 cfg 兜底防忘配）。
+    * ``strict_unknown_toolset`` — True → ``disabled_toolsets`` 含 typo
+      (registry 未知 toolset 名) 时启动 fail-fast；False 仅 warn。
     """
     last_mile: ToolsLastMileConfig = field(default_factory=ToolsLastMileConfig)
     verifier: ToolsVerifierConfig = field(default_factory=ToolsVerifierConfig)
+    # ─── WI-T5.1 v3 ─────────────────────────────────────────────
+    disabled_toolsets: list[str] = field(default_factory=list)
+    disabled_toolsets_schema_only: list[str] = field(default_factory=list)
+    dangerous_tools_allowlist: list[str] = field(default_factory=list)
+    default_timeout_seconds: float = 60.0
+    strict_unknown_toolset: bool = False
 
 
 @dataclass(frozen=True)
