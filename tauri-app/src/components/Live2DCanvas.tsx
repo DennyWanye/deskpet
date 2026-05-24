@@ -116,6 +116,15 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hitZoneRef = useRef<HTMLDivElement>(null);
+  // FIX-R3: tracks pointerdown position for manual drag detection on
+  // hit-zone. We avoid `data-tauri-drag-region` because it eats click.
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  // FIX-R3 (round-3 retest): startDragging MUST be called synchronously
+  // while the mouse button is still pressed. `await import()` adds enough
+  // latency that the user releases the button first → SendMessage
+  // WM_NCLBUTTONDOWN is a no-op. We pre-load on mount and cache the
+  // bound function so the threshold-trigger call is synchronous.
+  const startDraggingRef = useRef<(() => Promise<unknown>) | null>(null);
   const [size, setSize] = useState(() => ({
     w: petWidth ?? window.innerWidth,
     h: window.innerHeight,
@@ -251,6 +260,28 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [petWidth]);
+
+  // FIX-R3: pre-load Tauri window startDragging so the manual drag
+  // handler can call it synchronously during the gesture.
+  useEffect(() => {
+    let cancelled = false;
+    import("@tauri-apps/api/window")
+      .then((m) => {
+        if (cancelled) return;
+        try {
+          const w = m.getCurrentWindow();
+          startDraggingRef.current = () => w.startDragging();
+        } catch {
+          /* ignore — Tauri runtime unavailable (dev-browser preview) */
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Window-level pointermove for gaze. PRD §6.0 v3: even with
   // ignore_cursor_events=true the WebView JS still receives this
@@ -642,9 +673,17 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           width: ff.width,
           height: ff.height,
           pointerEvents: "auto",
-          // Make absolutely sure we never paint anything visible.
           background: "transparent",
-          zIndex: 25,
+          // FIX-R3 (2026-05-24): z-index 25→5. With z=25 the hit-zone
+          // covered the upper portion of DialogBar (z:10) at the face
+          // bbox's bottom edge, eating mousedown and preventing text
+          // selection on assistant replies. Dropping to z:5 keeps
+          // hit-zone above the pet <img> (pointer-events:none anyway)
+          // but BELOW DialogBar (z:10), input bar (z:20),
+          // PetDebugOverlay (z:30), Toolbar and other UI surfaces —
+          // anything visible on top now wins pointer events, while the
+          // empty face area still triggers hit-zone reactions.
+          zIndex: 5,
         }}
         onPointerEnter={(e) => {
           overlayRef.current?.pulseInteraction("hover_enter", e.timeStamp);
@@ -652,12 +691,45 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         onPointerLeave={(e) => {
           overlayRef.current?.pulseInteraction("hover_leave", e.timeStamp);
         }}
+        onPointerDown={(e) => {
+          // FIX-R3: manual drag detection. We can't use
+          // `data-tauri-drag-region` because that attribute triggers
+          // Win32 WM_NCLBUTTONDOWN on mousedown — the OS then owns the
+          // gesture and React's onClick never fires (so the TapBody
+          // pulse is lost). Instead we record the down point and watch
+          // for movement > DRAG_THRESHOLD_PX; if it exceeds, we
+          // explicitly call appWindow.startDragging(). A pure
+          // mousedown+up without movement falls through to onClick
+          // (preserving the click pulse).
+          dragStartRef.current = { x: e.clientX, y: e.clientY };
+        }}
+        onPointerMove={(e) => {
+          const start = dragStartRef.current;
+          if (!start) return;
+          const dx = e.clientX - start.x;
+          const dy = e.clientY - start.y;
+          if (dx * dx + dy * dy > 25 /* 5px threshold squared */) {
+            dragStartRef.current = null;
+            // Synchronous call — the cached startDragging was prepared
+            // at mount, so SendMessage WM_NCLBUTTONDOWN runs before the
+            // user can release the button.
+            const fn = startDraggingRef.current;
+            if (fn) {
+              try {
+                void fn();
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        }}
+        onPointerUp={() => {
+          dragStartRef.current = null;
+        }}
         onClick={(e) => {
           const ts = e.timeStamp;
           const overlay = overlayRef.current;
           if (!overlay) return;
-          // Record interaction latency BEFORE the reactor mutates so
-          // the elapsed millis are the true event→write distance.
           const before = performance.now();
           overlay.pulseInteraction("click", ts);
           overlay.recordInteractionLatency(performance.now() - before);
