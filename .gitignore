@@ -110,3 +110,25 @@ backend/dist-portable/
 .relay_api_key
 .relay_base_url
 .relay_model
+
+# ─── 2026-05-24 v3 工具层 commit 后追加 ───
+# Backend 运行时用户数据（含 config.toml + LLM runtime + 工作区生成的图/文档 +
+# permissions 状态），开发期被 PyInstaller 重定向到 backend/userdata/，敏感
+# 数据永不入库。
+backend/userdata/
+
+# Codex GPT-5.4 工具临时打包目录（构建产物，跨 session 重生成）
+codex-installer-package/
+
+# Tauri app 测试覆盖率输出 + 本地 IDE 配置
+tauri-app/coverage/
+tauri-app/.claude/
+
+# 临时手测截图目录（pet-anim FR-1~7 / 桌宠 UI 各种 hit-zone 验证用，
+# 截图体积大且每次 round 新生成；evidence 价值见 PRD 文档对应小节）
+plans/test-screenshots/
+
+# pet-anim / 其他 PRD evidence 目录里的截图二进制（PNG 体积大；
+# .mjs / .py / 文本日志仍入库 — 那些是真实工具/报告，体积可控）
+plans/*/evidence/*/screenshots/*.png
+plans/*/evidence/*/screenshots/*.jpg

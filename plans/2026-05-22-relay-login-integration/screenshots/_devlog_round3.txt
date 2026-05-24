@@ -179,3 +179,504 @@ INFO:providers.openai_compatible:event='p4s25_prompt_cache_hit' level='info' tim
 INFO:billing.ledger:event='billing_record' level='info' timestamp='2026-05-22T13:11:43.545308Z' provider='cloud' model='gpt-5.5' prompt_tokens=8145 completion_tokens=11 cost_cny=0.16312
 INFO:__main__:event='control channel disconnected' level='info' timestamp='2026-05-22T13:11:58.556108Z' session_id='e2e-r6-test'
 INFO:     connection closed
+INFO:__main__:event='llm_runtime_overrides_saved path=%s' level='info' timestamp='2026-05-22T13:25:04.532820Z' positional_args=(WindowsPath('C:/Users/24378/AppData/Roaming/deskpet/llm_runtime.json'),)
+INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:25:04.532820Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:llm.model_info:model_context_resolved model=deepseek-v4-pro window=1000000 source=builtin
+INFO:__main__:event='permission_auto_mode_set' level='info' timestamp='2026-05-22T13:25:47.700067Z' enabled=True
+INFO:__main__:event='supervisor_toggle_enabled' level='info' timestamp='2026-05-22T13:25:47.700067Z'
+INFO:llm.model_info:model_context_resolved model=deepseek-v4-pro window=1000000 source=builtin
+INFO:__main__:event='permission_auto_mode_set' level='info' timestamp='2026-05-22T13:26:32.783640Z' enabled=True
+INFO:__main__:event='supervisor_toggle_enabled' level='info' timestamp='2026-05-22T13:26:32.783640Z'
+[2m21:28:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/PetSupervisorBubble.tsx[22m
+INFO:llm.model_info:model_context_resolved model=deepseek-v4-pro window=1000000 source=builtin
+INFO:__main__:event='permission_auto_mode_set' level='info' timestamp='2026-05-22T13:29:46.453317Z' enabled=True
+INFO:__main__:event='supervisor_toggle_enabled' level='info' timestamp='2026-05-22T13:29:46.453317Z'
+[2m21:30:52[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/MessageStreamPanel.tsx[22m
+[2m21:31:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/MessageStreamPanel.tsx[22m
+[2m21:42:14[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] viewport: 495 x 334 dpr: 2.129999876022339
+[2m21:42:14[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] starting PixiJS...
+INFO:     127.0.0.1:6734 - "WebSocket /ws/control?secret=" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:1396 - "WebSocket /ws/audio?secret=&session_id=default" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+[2m21:42:14[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'invoke')
+[39m > invoke node_modules/@tauri-apps/api/core.js:202:38
+ > Module.getRelayAccessToken src/bindings/relay.ts:21:20
+    19 |  
+    20 |  export async function getRelayAccessToken(): Promise<string | null> {
+    21 |    const out = await invoke<string | null>("get_relay_access_token");
+       |                      ^
+    22 |    return out ?? null;
+    23 |  }
+ > RelayAuthAdapter.restoreSession src/auth/RelayAuthAdapter.ts:174:39
+ > src/auth/RelayEdition.tsx:66:39
+ > src/auth/RelayEdition.tsx:65:5
+ > Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25989:19
+ > runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:871:29
+ > commitHookEffectListMount node_modules/react-dom/cjs/react-dom-client.development.js:13249:28
+ > commitHookPassiveMountEffects node_modules/react-dom/cjs/react-dom-client.development.js:13336:10
+ > commitPassiveMountOnFiber node_modules/react-dom/cjs/react-dom-client.development.js:15484:12
+
+[2m21:42:14[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[bootstrap] start_backend failed: Cannot read properties of undefined (reading 'invoke')
+[2m21:42:14[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] visibility listen failed: TypeError: Cannot read properties of undefined (reading 'transformCallback')
+    at transformCallback (http://localhost:5173/node_modules/.vite/deps/core-CiOu3334.js?v=306776e7:90:36)
+    at Module.listen (http://localhost:5173/node_modules/.vite/deps/@tauri-apps_api_event.js?v=306776e7:74:12)
+    at http://localhost:5173/src/App.tsx?t=1779456480373:251:26
+[2m21:42:14[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'transformCallback')
+[39m > transformCallback node_modules/@tauri-apps/api/core.js:72:38
+ > Module.listen node_modules/@tauri-apps/api/event.js:77:17
+ > wire src/hooks/useBackendLifecycle.ts:37:35
+    35 |        ];
+    36 |        for (const [name, kind] of events) {
+    37 |          const unlisten = await mod.listen<string>(name, (e) => {
+       |                                     ^
+    38 |            onEvent(kind, e.payload ?? "");
+    39 |          });
+
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] PixiJS created, loading cubism4...
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] loading model: /assets/live2d/hiyori/Hiyori.model3.json
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] model loaded: 2976 x 4175
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] render loop starting
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m    at Live2DModel._render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:17997:45)
+    at Container.render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:13540:9)
+    at _Container2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:10414:75)
+    at ObjectRendererSystem.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8869:186)
+    at _Renderer2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8949:23)
+    at _Application2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:13569:17)
+    at TickerListener.emit (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8324:38)
+    at _Ticker2.update (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8492:42)
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] viewport: 495 x 425 dpr: 2.129999876022339
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] starting PixiJS...
+INFO:     127.0.0.1:5534 - "WebSocket /ws/control?secret=" [accepted]
+INFO:     connection open
+[2m21:42:15[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'invoke')
+[39m > invoke node_modules/@tauri-apps/api/core.js:202:38
+ > Module.getRelayAccessToken src/bindings/relay.ts:21:20
+    19 |  
+    20 |  export async function getRelayAccessToken(): Promise<string | null> {
+    21 |    const out = await invoke<string | null>("get_relay_access_token");
+       |                      ^
+    22 |    return out ?? null;
+    23 |  }
+ > RelayAuthAdapter.restoreSession src/auth/RelayAuthAdapter.ts:174:39
+ > src/auth/RelayEdition.tsx:66:39
+ > src/auth/RelayEdition.tsx:65:5
+ > Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25989:19
+ > runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:871:29
+ > commitHookEffectListMount node_modules/react-dom/cjs/react-dom-client.development.js:13249:28
+ > commitHookPassiveMountEffects node_modules/react-dom/cjs/react-dom-client.development.js:13336:10
+ > commitPassiveMountOnFiber node_modules/react-dom/cjs/react-dom-client.development.js:15484:12
+
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[bootstrap] start_backend failed: Cannot read properties of undefined (reading 'invoke')
+INFO:     127.0.0.1:14938 - "WebSocket /ws/audio?secret=&session_id=default" [accepted]
+INFO:     connection open
+INFO:     connection closed
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] visibility listen failed: TypeError: Cannot read properties of undefined (reading 'transformCallback')
+    at transformCallback (http://localhost:5173/node_modules/.vite/deps/core-CiOu3334.js?v=306776e7:90:36)
+    at Module.listen (http://localhost:5173/node_modules/.vite/deps/@tauri-apps_api_event.js?v=306776e7:74:12)
+    at http://localhost:5173/src/App.tsx?t=1779456480373:251:26
+INFO:     connection closed
+[2m21:42:15[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'transformCallback')
+[39m > transformCallback node_modules/@tauri-apps/api/core.js:72:38
+ > Module.listen node_modules/@tauri-apps/api/event.js:77:17
+ > wire src/hooks/useBackendLifecycle.ts:37:35
+    35 |        ];
+    36 |        for (const [name, kind] of events) {
+    37 |          const unlisten = await mod.listen<string>(name, (e) => {
+       |                                     ^
+    38 |            onEvent(kind, e.payload ?? "");
+    39 |          });
+
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] PixiJS created, loading cubism4...
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] loading model: /assets/live2d/hiyori/Hiyori.model3.json
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] model loaded: 2976 x 4175
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] render loop starting
+[2m21:42:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m    at Live2DModel._render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:17997:45)
+    at Container.render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:13540:9)
+    at _Container2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:10414:75)
+    at ObjectRendererSystem.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8869:186)
+    at _Renderer2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8949:23)
+    at _Application2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:13569:17)
+    at TickerListener.emit (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8324:38)
+    at _Ticker2.update (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8492:42)
+[2m21:42:16[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] viewport: 495 x 425 dpr: 2.129999876022339
+[2m21:42:16[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] starting PixiJS...
+INFO:     127.0.0.1:8296 - "WebSocket /ws/control?secret=" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:9444 - "WebSocket /ws/audio?secret=&session_id=default" [accepted]
+INFO:     connection open
+[2m21:42:16[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'invoke')
+[39m > invoke node_modules/@tauri-apps/api/core.js:202:38
+ > Module.getRelayAccessToken src/bindings/relay.ts:21:20
+    19 |  
+    20 |  export async function getRelayAccessToken(): Promise<string | null> {
+    21 |    const out = await invoke<string | null>("get_relay_access_token");
+       |                      ^
+    22 |    return out ?? null;
+    23 |  }
+ > RelayAuthAdapter.restoreSession src/auth/RelayAuthAdapter.ts:174:39
+ > src/auth/RelayEdition.tsx:66:39
+ > src/auth/RelayEdition.tsx:65:5
+ > Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25989:19
+ > runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:871:29
+ > commitHookEffectListMount node_modules/react-dom/cjs/react-dom-client.development.js:13249:28
+ > commitHookPassiveMountEffects node_modules/react-dom/cjs/react-dom-client.development.js:13336:10
+ > commitPassiveMountOnFiber node_modules/react-dom/cjs/react-dom-client.development.js:15484:12
+
+[2m21:42:16[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[bootstrap] start_backend failed: Cannot read properties of undefined (reading 'invoke')
+INFO:     connection closed
+INFO:     connection closed
+[2m21:42:16[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] visibility listen failed: TypeError: Cannot read properties of undefined (reading 'transformCallback')
+    at transformCallback (http://localhost:5173/node_modules/.vite/deps/core-CiOu3334.js?v=306776e7:90:36)
+    at Module.listen (http://localhost:5173/node_modules/.vite/deps/@tauri-apps_api_event.js?v=306776e7:74:12)
+    at http://localhost:5173/src/App.tsx?t=1779456480373:251:26
+[2m21:42:16[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'transformCallback')
+[39m > transformCallback node_modules/@tauri-apps/api/core.js:72:38
+ > Module.listen node_modules/@tauri-apps/api/event.js:77:17
+ > wire src/hooks/useBackendLifecycle.ts:37:35
+    35 |        ];
+    36 |        for (const [name, kind] of events) {
+    37 |          const unlisten = await mod.listen<string>(name, (e) => {
+       |                                     ^
+    38 |            onEvent(kind, e.payload ?? "");
+    39 |          });
+
+[2m21:42:16[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] PixiJS created, loading cubism4...
+[2m21:42:16[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] loading model: /assets/live2d/hiyori/Hiyori.model3.json
+[2m21:42:16[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] model loaded: 2976 x 4175
+[2m21:42:16[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] render loop starting
+[2m21:42:16[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m    at Live2DModel._render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:17997:45)
+    at Container.render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:13540:9)
+    at _Container2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:10414:75)
+    at ObjectRendererSystem.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8869:186)
+    at _Renderer2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8949:23)
+    at _Application2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:13569:17)
+    at TickerListener.emit (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8324:38)
+    at _Ticker2.update (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8492:42)
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] viewport: 234 x 895 dpr: 2.129999876022339
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] starting PixiJS...
+INFO:     127.0.0.1:2930 - "WebSocket /ws/control?secret=" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:14214 - "WebSocket /ws/audio?secret=&session_id=default" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+[2m21:42:38[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'invoke')
+[39m > invoke node_modules/@tauri-apps/api/core.js:202:38
+ > Module.getRelayAccessToken src/bindings/relay.ts:21:20
+    19 |  
+    20 |  export async function getRelayAccessToken(): Promise<string | null> {
+    21 |    const out = await invoke<string | null>("get_relay_access_token");
+       |                      ^
+    22 |    return out ?? null;
+    23 |  }
+ > RelayAuthAdapter.restoreSession src/auth/RelayAuthAdapter.ts:174:39
+ > src/auth/RelayEdition.tsx:66:39
+ > src/auth/RelayEdition.tsx:65:5
+ > Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25989:19
+ > runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:871:29
+ > commitHookEffectListMount node_modules/react-dom/cjs/react-dom-client.development.js:13249:28
+ > commitHookPassiveMountEffects node_modules/react-dom/cjs/react-dom-client.development.js:13336:10
+ > commitPassiveMountOnFiber node_modules/react-dom/cjs/react-dom-client.development.js:15484:12
+
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[bootstrap] start_backend failed: Cannot read properties of undefined (reading 'invoke')
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] visibility listen failed: TypeError: Cannot read properties of undefined (reading 'transformCallback')
+    at transformCallback (http://localhost:5173/node_modules/.vite/deps/core-CiOu3334.js?v=306776e7:90:36)
+    at Module.listen (http://localhost:5173/node_modules/.vite/deps/@tauri-apps_api_event.js?v=306776e7:74:12)
+    at http://localhost:5173/src/App.tsx?t=1779456480373:251:26
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] PixiJS created, loading cubism4...
+[2m21:42:38[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'transformCallback')
+[39m > transformCallback node_modules/@tauri-apps/api/core.js:72:38
+ > Module.listen node_modules/@tauri-apps/api/event.js:77:17
+ > wire src/hooks/useBackendLifecycle.ts:37:35
+    35 |        ];
+    36 |        for (const [name, kind] of events) {
+    37 |          const unlisten = await mod.listen<string>(name, (e) => {
+       |                                     ^
+    38 |            onEvent(kind, e.payload ?? "");
+    39 |          });
+
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] loading model: /assets/live2d/hiyori/Hiyori.model3.json
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] model loaded: 2976 x 4175
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] render loop starting
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m    at Live2DModel._render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:17997:45)
+    at Container.render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:13540:9)
+    at _Container2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:10414:75)
+    at ObjectRendererSystem.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8869:186)
+    at _Renderer2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8949:23)
+    at _Application2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:13569:17)
+    at TickerListener.emit (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8324:38)
+    at _Ticker2.update (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8492:42)
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] viewport: 495 x 895 dpr: 2.129999876022339
+[2m21:42:38[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] starting PixiJS...
+INFO:     127.0.0.1:9930 - "WebSocket /ws/control?secret=" [accepted]
+INFO:     connection open
+[2m21:42:38[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'invoke')
+[39m > invoke node_modules/@tauri-apps/api/core.js:202:38
+ > Module.getRelayAccessToken src/bindings/relay.ts:21:20
+    19 |  
+    20 |  export async function getRelayAccessToken(): Promise<string | null> {
+    21 |    const out = await invoke<string | null>("get_relay_access_token");
+       |                      ^
+    22 |    return out ?? null;
+    23 |  }
+ > RelayAuthAdapter.restoreSession src/auth/RelayAuthAdapter.ts:174:39
+ > src/auth/RelayEdition.tsx:66:39
+ > src/auth/RelayEdition.tsx:65:5
+ > Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25989:19
+ > runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:871:29
+ > commitHookEffectListMount node_modules/react-dom/cjs/react-dom-client.development.js:13249:28
+ > commitHookPassiveMountEffects node_modules/react-dom/cjs/react-dom-client.development.js:13336:10
+ > commitPassiveMountOnFiber node_modules/react-dom/cjs/react-dom-client.development.js:15484:12
+
+INFO:     127.0.0.1:1556 - "WebSocket /ws/audio?secret=&session_id=default" [accepted]
+INFO:     connection open
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[bootstrap] start_backend failed: Cannot read properties of undefined (reading 'invoke')
+INFO:     connection closed
+INFO:     connection closed
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] visibility listen failed: TypeError: Cannot read properties of undefined (reading 'transformCallback')
+    at transformCallback (http://localhost:5173/node_modules/.vite/deps/core-CiOu3334.js?v=306776e7:90:36)
+    at Module.listen (http://localhost:5173/node_modules/.vite/deps/@tauri-apps_api_event.js?v=306776e7:74:12)
+    at http://localhost:5173/src/App.tsx?t=1779456480373:251:26
+[2m21:42:39[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'transformCallback')
+[39m > transformCallback node_modules/@tauri-apps/api/core.js:72:38
+ > Module.listen node_modules/@tauri-apps/api/event.js:77:17
+ > wire src/hooks/useBackendLifecycle.ts:37:35
+    35 |        ];
+    36 |        for (const [name, kind] of events) {
+    37 |          const unlisten = await mod.listen<string>(name, (e) => {
+       |                                     ^
+    38 |            onEvent(kind, e.payload ?? "");
+    39 |          });
+
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] PixiJS created, loading cubism4...
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] loading model: /assets/live2d/hiyori/Hiyori.model3.json
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] model loaded: 2976 x 4175
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] render loop starting
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m    at Live2DModel._render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:17997:45)
+    at Container.render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:13540:9)
+    at _Container2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:10414:75)
+    at ObjectRendererSystem.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8869:186)
+    at _Renderer2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8949:23)
+    at _Application2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:13569:17)
+    at TickerListener.emit (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8324:38)
+    at _Ticker2.update (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8492:42)
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] viewport: 495 x 895 dpr: 2.129999876022339
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] starting PixiJS...
+INFO:     127.0.0.1:10047 - "WebSocket /ws/control?secret=" [accepted]
+INFO:     connection open
+[2m21:42:39[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'invoke')
+[39m > invoke node_modules/@tauri-apps/api/core.js:202:38
+ > Module.getRelayAccessToken src/bindings/relay.ts:21:20
+    19 |  
+    20 |  export async function getRelayAccessToken(): Promise<string | null> {
+    21 |    const out = await invoke<string | null>("get_relay_access_token");
+       |                      ^
+    22 |    return out ?? null;
+    23 |  }
+ > RelayAuthAdapter.restoreSession src/auth/RelayAuthAdapter.ts:174:39
+ > src/auth/RelayEdition.tsx:66:39
+ > src/auth/RelayEdition.tsx:65:5
+ > Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25989:19
+ > runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:871:29
+ > commitHookEffectListMount node_modules/react-dom/cjs/react-dom-client.development.js:13249:28
+ > commitHookPassiveMountEffects node_modules/react-dom/cjs/react-dom-client.development.js:13336:10
+ > commitPassiveMountOnFiber node_modules/react-dom/cjs/react-dom-client.development.js:15484:12
+
+INFO:     127.0.0.1:10573 - "WebSocket /ws/audio?secret=&session_id=default" [accepted]
+INFO:     connection open
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[bootstrap] start_backend failed: Cannot read properties of undefined (reading 'invoke')
+INFO:     connection closed
+INFO:     connection closed
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] visibility listen failed: TypeError: Cannot read properties of undefined (reading 'transformCallback')
+    at transformCallback (http://localhost:5173/node_modules/.vite/deps/core-CiOu3334.js?v=306776e7:90:36)
+    at Module.listen (http://localhost:5173/node_modules/.vite/deps/@tauri-apps_api_event.js?v=306776e7:74:12)
+    at http://localhost:5173/src/App.tsx?t=1779456480373:251:26
+[2m21:42:39[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'transformCallback')
+[39m > transformCallback node_modules/@tauri-apps/api/core.js:72:38
+ > Module.listen node_modules/@tauri-apps/api/event.js:77:17
+ > wire src/hooks/useBackendLifecycle.ts:37:35
+    35 |        ];
+    36 |        for (const [name, kind] of events) {
+    37 |          const unlisten = await mod.listen<string>(name, (e) => {
+       |                                     ^
+    38 |            onEvent(kind, e.payload ?? "");
+    39 |          });
+
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] PixiJS created, loading cubism4...
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] loading model: /assets/live2d/hiyori/Hiyori.model3.json
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] model loaded: 2976 x 4175
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] render loop starting
+[2m21:42:39[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m    at Live2DModel._render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:17997:45)
+    at Container.render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:13540:9)
+    at _Container2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:10414:75)
+    at ObjectRendererSystem.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8869:186)
+    at _Renderer2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8949:23)
+    at _Application2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:13569:17)
+    at TickerListener.emit (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8324:38)
+    at _Ticker2.update (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8492:42)
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] viewport: 495 x 895 dpr: 2.129999876022339
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] starting PixiJS...
+INFO:     127.0.0.1:4056 - "WebSocket /ws/control?secret=" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:7727 - "WebSocket /ws/audio?secret=&session_id=default" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+[2m21:44:41[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'invoke')
+[39m > invoke node_modules/@tauri-apps/api/core.js:202:38
+ > Module.getRelayAccessToken src/bindings/relay.ts:21:20
+    19 |  
+    20 |  export async function getRelayAccessToken(): Promise<string | null> {
+    21 |    const out = await invoke<string | null>("get_relay_access_token");
+       |                      ^
+    22 |    return out ?? null;
+    23 |  }
+ > RelayAuthAdapter.restoreSession src/auth/RelayAuthAdapter.ts:174:39
+ > src/auth/RelayEdition.tsx:66:39
+ > src/auth/RelayEdition.tsx:65:5
+ > Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25989:19
+ > runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:871:29
+ > commitHookEffectListMount node_modules/react-dom/cjs/react-dom-client.development.js:13249:28
+ > commitHookPassiveMountEffects node_modules/react-dom/cjs/react-dom-client.development.js:13336:10
+ > commitPassiveMountOnFiber node_modules/react-dom/cjs/react-dom-client.development.js:15484:12
+
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[bootstrap] start_backend failed: Cannot read properties of undefined (reading 'invoke')
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] visibility listen failed: TypeError: Cannot read properties of undefined (reading 'transformCallback')
+    at transformCallback (http://localhost:5173/node_modules/.vite/deps/core-CiOu3334.js?v=306776e7:90:36)
+    at Module.listen (http://localhost:5173/node_modules/.vite/deps/@tauri-apps_api_event.js?v=306776e7:74:12)
+    at http://localhost:5173/src/App.tsx?t=1779456480373:251:26
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] PixiJS created, loading cubism4...
+[2m21:44:41[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'transformCallback')
+[39m > transformCallback node_modules/@tauri-apps/api/core.js:72:38
+ > Module.listen node_modules/@tauri-apps/api/event.js:77:17
+ > wire src/hooks/useBackendLifecycle.ts:37:35
+    35 |        ];
+    36 |        for (const [name, kind] of events) {
+    37 |          const unlisten = await mod.listen<string>(name, (e) => {
+       |                                     ^
+    38 |            onEvent(kind, e.payload ?? "");
+    39 |          });
+
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] loading model: /assets/live2d/hiyori/Hiyori.model3.json
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] model loaded: 2976 x 4175
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] render loop starting
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m    at Live2DModel._render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:17997:45)
+    at Container.render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:13540:9)
+    at _Container2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:10414:75)
+    at ObjectRendererSystem.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8869:186)
+    at _Renderer2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8949:23)
+    at _Application2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:13569:17)
+    at TickerListener.emit (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8324:38)
+    at _Ticker2.update (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8492:42)
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] viewport: 495 x 895 dpr: 2.129999876022339
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] starting PixiJS...
+INFO:     127.0.0.1:7676 - "WebSocket /ws/control?secret=" [accepted]
+INFO:     connection open
+[2m21:44:41[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'invoke')
+[39m > invoke node_modules/@tauri-apps/api/core.js:202:38
+ > Module.getRelayAccessToken src/bindings/relay.ts:21:20
+    19 |  
+    20 |  export async function getRelayAccessToken(): Promise<string | null> {
+    21 |    const out = await invoke<string | null>("get_relay_access_token");
+       |                      ^
+    22 |    return out ?? null;
+    23 |  }
+ > RelayAuthAdapter.restoreSession src/auth/RelayAuthAdapter.ts:174:39
+ > src/auth/RelayEdition.tsx:66:39
+ > src/auth/RelayEdition.tsx:65:5
+ > Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25989:19
+ > runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:871:29
+ > commitHookEffectListMount node_modules/react-dom/cjs/react-dom-client.development.js:13249:28
+ > commitHookPassiveMountEffects node_modules/react-dom/cjs/react-dom-client.development.js:13336:10
+ > commitPassiveMountOnFiber node_modules/react-dom/cjs/react-dom-client.development.js:15484:12
+
+INFO:     127.0.0.1:12350 - "WebSocket /ws/audio?secret=&session_id=default" [accepted]
+INFO:     connection open
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[bootstrap] start_backend failed: Cannot read properties of undefined (reading 'invoke')
+INFO:     connection closed
+INFO:     connection closed
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] visibility listen failed: TypeError: Cannot read properties of undefined (reading 'transformCallback')
+    at transformCallback (http://localhost:5173/node_modules/.vite/deps/core-CiOu3334.js?v=306776e7:90:36)
+    at Module.listen (http://localhost:5173/node_modules/.vite/deps/@tauri-apps_api_event.js?v=306776e7:74:12)
+    at http://localhost:5173/src/App.tsx?t=1779456480373:251:26
+[2m21:44:41[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'transformCallback')
+[39m > transformCallback node_modules/@tauri-apps/api/core.js:72:38
+ > Module.listen node_modules/@tauri-apps/api/event.js:77:17
+ > wire src/hooks/useBackendLifecycle.ts:37:35
+    35 |        ];
+    36 |        for (const [name, kind] of events) {
+    37 |          const unlisten = await mod.listen<string>(name, (e) => {
+       |                                     ^
+    38 |            onEvent(kind, e.payload ?? "");
+    39 |          });
+
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] PixiJS created, loading cubism4...
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] loading model: /assets/live2d/hiyori/Hiyori.model3.json
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] model loaded: 2976 x 4175
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] render loop starting
+[2m21:44:41[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m    at Live2DModel._render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:17997:45)
+    at Container.render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:13540:9)
+    at _Container2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:10414:75)
+    at ObjectRendererSystem.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8869:186)
+    at _Renderer2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8949:23)
+    at _Application2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:13569:17)
+    at TickerListener.emit (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8324:38)
+    at _Ticker2.update (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8492:42)
+[2m21:44:42[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] viewport: 495 x 895 dpr: 2.129999876022339
+[2m21:44:42[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] starting PixiJS...
+INFO:     127.0.0.1:13078 - "WebSocket /ws/control?secret=" [accepted]
+INFO:     connection open
+[2m21:44:42[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'invoke')
+[39m > invoke node_modules/@tauri-apps/api/core.js:202:38
+ > Module.getRelayAccessToken src/bindings/relay.ts:21:20
+    19 |  
+    20 |  export async function getRelayAccessToken(): Promise<string | null> {
+    21 |    const out = await invoke<string | null>("get_relay_access_token");
+       |                      ^
+    22 |    return out ?? null;
+    23 |  }
+ > RelayAuthAdapter.restoreSession src/auth/RelayAuthAdapter.ts:174:39
+ > src/auth/RelayEdition.tsx:66:39
+ > src/auth/RelayEdition.tsx:65:5
+ > Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25989:19
+ > runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:871:29
+ > commitHookEffectListMount node_modules/react-dom/cjs/react-dom-client.development.js:13249:28
+ > commitHookPassiveMountEffects node_modules/react-dom/cjs/react-dom-client.development.js:13336:10
+ > commitPassiveMountOnFiber node_modules/react-dom/cjs/react-dom-client.development.js:15484:12
+
+[2m21:44:42[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[bootstrap] start_backend failed: Cannot read properties of undefined (reading 'invoke')
+INFO:     127.0.0.1:10285 - "WebSocket /ws/audio?secret=&session_id=default" [accepted]
+INFO:     connection open
+INFO:     connection closed
+[2m21:44:42[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Pet] visibility listen failed: TypeError: Cannot read properties of undefined (reading 'transformCallback')
+    at transformCallback (http://localhost:5173/node_modules/.vite/deps/core-CiOu3334.js?v=306776e7:90:36)
+    at Module.listen (http://localhost:5173/node_modules/.vite/deps/@tauri-apps_api_event.js?v=306776e7:74:12)
+    at http://localhost:5173/src/App.tsx?t=1779456480373:251:26
+INFO:     connection closed
+[2m21:44:42[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [31m[Unhandled rejection] [1mTypeError[22m: Cannot read properties of undefined (reading 'transformCallback')
+[39m > transformCallback node_modules/@tauri-apps/api/core.js:72:38
+ > Module.listen node_modules/@tauri-apps/api/event.js:77:17
+ > wire src/hooks/useBackendLifecycle.ts:37:35
+    35 |        ];
+    36 |        for (const [name, kind] of events) {
+    37 |          const unlisten = await mod.listen<string>(name, (e) => {
+       |                                     ^
+    38 |            onEvent(kind, e.payload ?? "");
+    39 |          });
+
+[2m21:44:42[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] PixiJS created, loading cubism4...
+[2m21:44:42[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] loading model: /assets/live2d/hiyori/Hiyori.model3.json
+[2m21:44:42[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] model loaded: 2976 x 4175
+[2m21:44:42[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[Live2D] render loop starting
+[2m21:44:42[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m    at Live2DModel._render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:17997:45)
+    at Container.render (http://localhost:5173/node_modules/.vite/deps/pixi-live2d-display_cubism4.js?v=306776e7:13540:9)
+    at _Container2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:10414:75)
+    at ObjectRendererSystem.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8869:186)
+    at _Renderer2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8949:23)
+    at _Application2.render (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:13569:17)
+    at TickerListener.emit (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8324:38)
+    at _Ticker2.update (http://localhost:5173/node_modules/.vite/deps/pixi__js.js?v=306776e7:8492:42)
+       Error The "beforeDevCommand" terminated with a non-zero status code.

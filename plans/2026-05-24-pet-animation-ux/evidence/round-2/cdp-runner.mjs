@@ -470,6 +470,58 @@ const COMMANDS = {
     await cdp.send('Page.reload', { ignoreCache: true })
     return { off: key }
   },
+  dialogBox: async (cdp) =>
+    cdp.eval(`(function(){
+      const bar = document.querySelector('[data-testid="dialog-bar"]');
+      const txt = document.querySelector('[data-testid="dialog-bar-assistant"]');
+      if (!bar) return { error: 'no dialog-bar' };
+      const r = bar.getBoundingClientRect();
+      return {
+        bbox: { left: r.left, top: r.top, width: r.width, height: r.height },
+        text: txt ? txt.textContent : null,
+        isEmpty: txt ? txt.getAttribute('data-empty') : null,
+        zIndex: getComputedStyle(bar).zIndex,
+      };
+    })()`),
+  selection: async (cdp) =>
+    cdp.eval(`(function(){ const s = window.getSelection(); return { text: s.toString(), length: s.toString().length }; })()`),
+  setDialog: async (cdp, text) =>
+    cdp.exec(`(function(){
+      const t = document.querySelector('[data-testid="dialog-bar-assistant"]');
+      if (t) t.textContent = ${JSON.stringify(text || 'Lorem ipsum 测试 selection 这是一段需要被选中的助手回复文字 for verification.')};
+    })()`),
+  startdrag: async (cdp) =>
+    cdp.eval(`(async function(){
+      try {
+        const m = await import('/node_modules/.vite/deps/@tauri-apps_api_window.js');
+        const w = m.getCurrentWindow();
+        const r = await w.startDragging();
+        return 'startDragging returned: ' + JSON.stringify(r);
+      } catch (e) {
+        return 'err: ' + String(e);
+      }
+    })()`),
+  hzinfo: async (cdp) =>
+    cdp.eval(`(function(){
+      const el = document.querySelector('[data-pet-hitzone]');
+      if (!el) return 'no element';
+      const cs = getComputedStyle(el);
+      return { zIndex: cs.zIndex, pointerEvents: cs.pointerEvents, dragRegion: el.getAttribute('data-tauri-drag-region') };
+    })()`),
+  geom: async (cdp) =>
+    cdp.eval(`({
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      screenX: window.screenX,
+      screenY: window.screenY,
+      devicePixelRatio: window.devicePixelRatio,
+      hitZone: (function(){
+        const el = document.querySelector('[data-pet-hitzone]');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, width: r.width, height: r.height };
+      })(),
+    })`),
   flagDefault: async (cdp) => {
     await cdp.exec(`['deskpet_animation_v1','deskpet_anim_perlin','deskpet_anim_blink','deskpet_anim_saccade','deskpet_anim_gaze','deskpet_anim_motionpool','deskpet_anim_pointer'].forEach(k => localStorage.removeItem(k));`)
     await cdp.send('Page.reload', { ignoreCache: true })
