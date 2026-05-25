@@ -449,12 +449,26 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           }
         },
       };
+      // v2 observability bridge for ManualTest §0.2 helpers (round-1 FAIL fix).
+      // Exposes the AnimationOverlay instance + v2 debug surface to DevTools/CDP
+      // so manual tests can call setEmotion / setDragState / etc. directly and
+      // read getV2Debug() without going through the React tree.
+      Object.defineProperty(w, "__deskpet_anim_overlay", {
+        configurable: true,
+        get: () => overlayRef.current,
+      });
+      Object.defineProperty(w, "__deskpet_anim_debug_v2", {
+        configurable: true,
+        get: () => overlayRef.current?.getV2Debug(),
+      });
     }
     return () => {
       try {
         delete w["__deskpet_anim_metrics"];
         delete w["__deskpet_anim_debug"];
         delete w["__deskpet_anim_bench"];
+        delete w["__deskpet_anim_overlay"];
+        delete w["__deskpet_anim_debug_v2"];
       } catch {
         /* ignore */
       }

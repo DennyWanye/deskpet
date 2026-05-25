@@ -951,6 +951,116 @@ function App() {
     return unsub;
   }, [getChannel]);
 
+  // ─── v2 ManualTest §0.2 DevTools helpers (round-1 observability fix). ───
+  // Expose injection helpers so manual tests can drive scenarios that don't
+  // have natural triggers in dev (e.g. force low_energy without waiting 5min,
+  // mock emotion/milestone/DND without backend round-trip).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as Record<string, unknown>;
+    w["__deskpet_anim_fakeIdle"] = (ms_into_low_energy: number) => {
+      // Rewind last_activity_t so the next tick crosses the threshold.
+      const now = performance.now();
+      idleStateRef.current = {
+        ...idleStateRef.current,
+        last_activity_t: now - (300_000 + Math.max(0, ms_into_low_energy)),
+        low_energy: false,
+        low_energy_start_t: -Infinity,
+      };
+    };
+    w["__deskpet_fake_emotion"] = (emotion: string) => {
+      const now = performance.now();
+      // Cast via isEmotionCode for safety.
+      if (isEmotionCode(emotion)) {
+        liveRef.current?.setEmotion(emotion, now);
+      }
+    };
+    w["__deskpet_fake_milestone"] = (kind: string, message: string) => {
+      const ev = {
+        kind: kind as MilestoneEvent["kind"],
+        message: message || "成就达成！",
+        achieved_at: Date.now(),
+      };
+      milestoneStateRef.current = milestoneClientRef.current.enqueue(
+        milestoneStateRef.current,
+        ev,
+      );
+    };
+    w["__deskpet_fake_dnd"] = (active: boolean, reasons: string[] = ["fullscreen"]) => {
+      const now = performance.now();
+      const validReasons = reasons.filter(
+        (r): r is "fullscreen" | "typing" | "call" =>
+          r === "fullscreen" || r === "typing" || r === "call",
+      );
+      liveRef.current?.setDNDActive(active, validReasons, now);
+      setDndActiveUI(active);
+    };
+    w["__deskpet_fake_viseme"] = (v: string, t_ms?: number) => {
+      const t = Number.isFinite(t_ms as number) ? (t_ms as number) : performance.now();
+      if (v === "A" || v === "I" || v === "U" || v === "E" || v === "O" || v === "silent") {
+        liveRef.current?.setVisemeFrame({ v, t_ms: t });
+      }
+    };
+    w["__deskpet_fake_celebration"] = (
+      kind: "hourly" | "anniversary" | "milestone",
+      message: string,
+    ) => {
+      const now = performance.now();
+      liveRef.current?.triggerCelebration(kind, message, now);
+      setCelebrationBubble({ visible: true, message });
+    };
+    w["__deskpet_test_v2_smoke"] = async () => {
+      // 13-FR mini smoke: walk each FR through a minimal positive case so the
+      // QA agent can sanity-check wiring end-to-end before per-case detail tests.
+      const now = performance.now();
+      const log: string[] = [];
+      liveRef.current?.setDragState("being_held", now);
+      log.push("A1 held=being_held");
+      await new Promise((r) => setTimeout(r, 200));
+      liveRef.current?.setDragState("idle", performance.now());
+      liveRef.current?.setUserInputActive(true, performance.now());
+      log.push("B1 user_input=true");
+      liveRef.current?.setThinkingActive(true, performance.now());
+      log.push("B2 thinking=true");
+      liveRef.current?.setVisemeFrame({ v: "A", t_ms: performance.now() });
+      log.push("B3 viseme=A");
+      liveRef.current?.fadeMouthToZero(200, performance.now());
+      log.push("B4 fade(200)");
+      liveRef.current?.setLowEnergy(true, performance.now());
+      log.push("C1 low_energy=true");
+      liveRef.current?.triggerWelcome("normal", performance.now());
+      log.push("C2 welcome=normal");
+      liveRef.current?.triggerCelebration("hourly", "测试", performance.now());
+      log.push("C3 celebration=hourly");
+      liveRef.current?.setEmotion("happy", performance.now());
+      log.push("D1 emotion=happy");
+      milestoneStateRef.current = milestoneClientRef.current.enqueue(
+        milestoneStateRef.current,
+        { kind: "streak_7d", message: "测试", achieved_at: Date.now() },
+      );
+      log.push("D2 milestone");
+      liveRef.current?.setEdgeAttached("right", performance.now());
+      log.push("E1 edge=right");
+      liveRef.current?.setDNDActive(true, ["fullscreen"], performance.now());
+      setDndActiveUI(true);
+      log.push("F1 dnd=fullscreen");
+      return log;
+    };
+    return () => {
+      try {
+        delete w["__deskpet_anim_fakeIdle"];
+        delete w["__deskpet_fake_emotion"];
+        delete w["__deskpet_fake_milestone"];
+        delete w["__deskpet_fake_dnd"];
+        delete w["__deskpet_fake_viseme"];
+        delete w["__deskpet_fake_celebration"];
+        delete w["__deskpet_test_v2_smoke"];
+      } catch {
+        /* ignore */
+      }
+    };
+  }, []);
+
   // ─── v2 B1/B2 observer tick (drives trailing-window timeouts at 100ms). ───
   useEffect(() => {
     const interval = window.setInterval(() => {
