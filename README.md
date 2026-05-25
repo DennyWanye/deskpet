@@ -355,6 +355,70 @@ Schema 版本从 v9 升级到 v10。
 项目的设计文档、调研报告、内测就绪材料的速查表。代码改动遵循
 spec-first：3+ 文件的改动先有 plan/spec，再有实现。
 
+### 工具层优化 v3（2026-05-24）
+
+修复 last-mile 升级遗留的 **P0 接电缺口**（VerifyGate 没接进 AgentLoop 导致
+fake-completion 生产抓获率 0%）+ 替换 5 个 stub 工具为真实现 + 配置面扩展。
+
+| 文档 | 作用 |
+|------|------|
+| [`plans/2026-05-24-tool-layer-optimization-v3/00-PRD.md`](./plans/2026-05-24-tool-layer-optimization-v3/00-PRD.md) | **PRD v3** — 17 项决策 (D1-D17) + 15 个工作项 (WI-T2.1~T6.2) + 风险登记 + 排期 |
+| [`plans/2026-05-24-tool-layer-optimization-v3/01-TDD.md`](./plans/2026-05-24-tool-layer-optimization-v3/01-TDD.md) | **TDD v3** — 代码骨架 + 测试规格（含 build_agent 工厂签名 / 翻译表 / ToolNameConflictError 设计） |
+| [`plans/2026-05-24-tool-layer-optimization-v3/02-manual-test-cases.md`](./plans/2026-05-24-tool-layer-optimization-v3/02-manual-test-cases.md) | **人工测试** — MR-T-0~16，含 ★ 三大一票否决用例 |
+| [`plans/2026-05-24-tool-layer-optimization-v3/03-architect-review-round1.md`](./plans/2026-05-24-tool-layer-optimization-v3/03-architect-review-round1.md) | round1 架构评审（opus 4.7 资深视角）— 6 P0 + 5 P1 + 5 missing risks |
+| [`plans/2026-05-24-tool-layer-optimization-v3/04-architect-review-round2.md`](./plans/2026-05-24-tool-layer-optimization-v3/04-architect-review-round2.md) | round2 评审 — 6 新 P0（翻译表语义反 / 字典序反 / 工厂签名漏参 等） |
+| [`plans/2026-05-24-tool-layer-optimization-v3/06-implementation-progress.md`](./plans/2026-05-24-tool-layer-optimization-v3/06-implementation-progress.md) | M0~M7 实施进度记录 + 测试统计 |
+| [`plans/2026-05-24-tool-layer-optimization-v3/08-manual-test-report-round2-real-e2e.md`](./plans/2026-05-24-tool-layer-optimization-v3/08-manual-test-report-round2-real-e2e.md) | **windows-mcp 实机 E2E 报告** — round2 暴露并修复 2 个真接电缺口 |
+
+**核心修复 / 新增能力**（commits `322448b` → `48eaea8`）：
+
+- **WI-T2.1 build_agent 工厂接电 VerifyGate（核心）** — `backend/main.py` 新增
+  `build_agent(cfg, ...) -> _AgentLoop` 工厂，把 last-mile 已写好但漏接的
+  `verify_gate` / `receipt_store` / `max_verify_nudges` 三个 kwargs 真接到
+  `AgentLoop` ctor；fake-completion 生产抓获率从 **0% 升级到可测量**。
+  shadow 模式 metrics.jsonl 真出现 `verify_gate_init` event 作为硬证据。
+- **WI-T2.2 retention 截断修复** — `_AgentLoop` ReceiptStore 构造点
+  `min(retention, 7)` 删掉，用户配 30 天就真按 30 天 cutoff 跑。
+- **WI-T2.3 emit_receipt duration_ms 失真修复** — `registry.execute_tool`
+  顶部捕真 `_started_at`，duration 反映 dispatch 真实时长（原两次 `now()`
+  间隔仅微秒，p95 监控失效）。
+- **WI-T3.1 memory_* stub → 真实现** — `memory_tools.py` append
+  `memory_write` / `memory_read` / `memory_search`，旧 schema (tier l1/l2/l3)
+  透明翻译到 `facts.py:upsert/get_by_id/search`；`facts.py` 新加 `get_by_id`。
+- **WI-T3.2 skill_invoke 真实现** — 新建 `deskpet/tools/skill_tools.py`
+  接 `SkillLoader.invoke_script`（`bind(skill_loader)` 在 lifespan 注入）。
+- **WI-T3.3 mcp_call / delegate 直接 unregister** — 无真 caller，0-release
+  删（PRD D10）；真 MCP `mcp_<server>_<tool>` qualified 名走 manager 路径不受影响。
+- **WI-T4.1 ToolNameConflictError + replace_allowed opt-in** — 同名重复注册
+  且双方都未 opt-in `replace_allowed=True` 直接 raise，防 stubs 静默覆盖真
+  实现（last-mile / memory-stage2 教训）；`stubs.py` 改守卫模式。
+- **WI-T4.2 plugin/mcp source 自动加前缀** — `registry.register` 检测
+  `source="plugin:notion"` 自动改 name 为 `plugin_notion_<tool>`，防 0+ plugin
+  装载时同名冲突。
+- **WI-T5.1 `[tools]` 配置面扩展 5 字段** — `disabled_toolsets` 双层挡
+  (schemas + execute_tool) / `disabled_toolsets_schema_only` 仅 schemas 挡
+  / `dangerous_tools_allowlist` / `default_timeout_seconds` / `strict_unknown_toolset`；
+  并加 `load_config` mtime 失效缓存（process-wide 单例）。
+- **WI-T2.5 frontend CI workflow** — 新建 `.github/workflows/frontend-tests.yml`，
+  把 306 个 vitest 用例从"本地自觉跑"提升到 PR required check 级别。
+- **Observability 接电** — `metrics_sink.VALID_EVENTS` 加 `verify_gate_init`
+  + `verify_gate_nudge_injected`，`agent_loop` nudge 处真 emit metric（不只
+  `logger.info`），fake-completion 拦截事件计数化进 metrics.jsonl。
+
+**回归门控**（M7 终态）：
+- backend pytest **2051 → 2061 passed**（+38 新增 v3 用例）, 0 failed, 11 skipped
+- frontend vitest **306/306 passed**
+- cargo test **64/64 passed**
+- `scripts/acceptance/last_mile_smoke.py` → **SHIP**（4 一票否决全过）
+- windows-mcp 实机 E2E：`%APPDATA%/deskpet/metrics.jsonl` 真增 **14 条
+  `verify_*` event** + VerifyGate strict 真拦下伪 "已生成 fake.pptx" claim
+
+**Deferred**（PRD 自己标 / 工程价值低）：
+- WI-T2.4 cargo 新增覆盖（现有 64 PASS 已覆盖 artifact_ops.rs 路径）
+- WI-T2.6 session_iteration TTL（70KB/周非 leak）
+- WI-T2.7 metrics dashboard CLI（metrics.jsonl 已 emit，`cat | grep verify_` 等价）
+- WI-T6.1/T6.2 OpenSpec tasks 回填（开发文档已写实施进度）
+
 ### 100 人内测就绪（beta-100, 2026-05-22）
 
 | 文档 | 作用 |
