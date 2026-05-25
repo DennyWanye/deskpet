@@ -455,6 +455,56 @@ fake-completion 生产抓获率 0%）+ 替换 5 个 stub 工具为真实现 + �
 - **Phase E 反思 + 程序记忆** — `deskpet/memory/reflection.py`
 - 非侵入包装器 `enhanced_retriever.py` — 所有 plug-in 为空时与原 Retriever 字节一致
 
+---
+
+### 📝 开发日志：记忆系统 Stage 2 UI 层（2026-05-24）
+
+> 关联：[`plans/2026-05-23-memory-system-stage2/`](./plans/2026-05-23-memory-system-stage2/) — PRD v2 + TDD v2 + 手测 v2 + 三轮人工测试报告
+> 关联 commit：`9fe628d` (M1b 后端 + UI) → `8ab1b76` (round 2 真 LLM fix) → `28a93a7` (round 3 真 GUI fix) → `3b1415d` (补 vitest)
+
+#### 新增 UI 能力（`tauri-app/src/components/MemoryPanel.tsx` + `backend/p4_ipc.py`）
+
+| # | 功能 | 入口 | 触发 |
+|---|---|---|---|
+| 1 | **"事实" tab（第 5 个 view）** | 桌宠 toolbar → 📁 记忆管理 → 切到 **事实** | 自动拉 `memory_facts_list` ws，按 `updated_at` 倒序显示 active facts |
+| 2 | **fact 卡片渲染** | 事实 tab 列表项 | `category 徽章 + key: value + subject + 更新时间` |
+| 3 | **🗑 删除按钮** | 每条 fact 卡片右上角 | 单击 → ws `memory_forget {fact_id}` → 后端 `is_active=0 + forgotten_at=now()` |
+| 4 | **5 秒 undo 浮窗** | 删除后 panel 底部弹出 | "已忘记 X: Y，撤销？" + 实时倒计时；点撤销 → ws `memory_forget_undo {op_id}` → restore；超时自动消失 |
+| 5 | **tab 自适应换行** | 5 个 view tab | panel ~200px 装不下 5 个中文 tab，用 `flex-wrap` 让第二行显示"技能 / 事实" |
+| 6 | **后端 ws 桥** | `backend/p4_ipc.py` | 新增 3 个 message type：`memory_facts_list / memory_forget / memory_forget_undo` |
+
+#### 测试覆盖
+
+- **18 个 vitest 用例**（`tauri-app/src/components/__tests__/MemoryPanel.facts.test.tsx`）：
+  - ws builder 纯函数（5）
+  - forget reducer 主路径 + 错误分支（6）
+  - undo state 转移 + 5 秒窗口 fakeTimers（7）
+- 项目 vitest 总数：**21 files / 297 tests** 全绿；`tsc --noEmit` 0 error
+
+#### 真测试发现并修的 4 个 bug（round 2 in-process 真 LLM + round 3 windows-mcp 真 GUI）
+
+| Bug | 症状 | 修复 |
+|---|---|---|
+| #1 cross_key prompt 缺 evidence | 真 LLM 漏判"我搞错了，不是花生是海鲜"类修正信号 | `_CROSS_KEY_CONFLICT_PROMPT` 加 `new_evidence` 字段 |
+| #2 4 个 parser 不剥 `<think>` 块 | DeepSeek-V4 / Claude thinking 输出含 reasoning 块 → `json.loads` 失败 | 新增 `_strip_reasoning_blocks` helper，4 处接入 |
+| #3 facts tab 被 CSS overflow 截掉 | 5 个中文 tab 撑爆 panel 宽度，第 5 个静默消失 | `segGroup` 加 `flexWrap: wrap` |
+| #4 `os_tools/read_file` 没 workspace hook | `workspace_state` 表永远空 → workspace_recall 失效 | os_tools `_notify_workspace` + `file_tools.rebind_loop` + main.py lifespan 调用 |
+
+#### 验证指标
+
+- **真 LLM cross_key 误判率（N=30 真模型）**：召回 **80%** (target ≥70%) / 误判 **0%** (target ≤15%)
+- backend pytest：**1883 passed / 10 skipped / 0 failed**
+- workspace_state 表真填充验证：1 row (path / last_action / byte_size 全有)
+
+#### Stage 2 后端配套（4 个新 flag，全部默认 OFF，Strangler-Fig 第一代行为字节级一致）
+
+- **`cross_key_merge`** — 跨 key 矛盾治理：D3 v2 混合视野（最近 20 ∪ 语义最近 10）
+- **`memory_forget`** + `[memory.v2.forget] enable_natural_language=false`（默认禁用自然语言模式，防提示注入）
+- **`entity_path`** — entity 索引检索路：LIKE only value + 三档 NER（LLM → Regex+停用词 → Noop）+ `entity_weight=0.10`
+- **`episodic_to_semantic`** — summarizer 完成后异步抽 facts，落 `category='episodic_summary'`
+- **schema_v2_migrator** — 老库 `superseded_by / forgotten_at` 双列 ALTER + 失败时强制关相关 flag
+- **eval_gate strict + CI** — `eval_gate_ci.sh` 看 git diff 召回类改动自动加 `--strict`
+
 ### 新技能调研
 
 | 文档 | 作用 |
