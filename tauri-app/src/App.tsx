@@ -16,6 +16,24 @@ import {
 } from "./pet-anim/idleWatcher";
 import { V2_CLIENT_VERSION } from "./ws/ControlChannel";
 void V2_CLIENT_VERSION; // silence unused import (re-exported for diagnostics later)
+import { createTimeCelebration } from "./pet-anim/timeCelebration";
+import {
+  createMilestoneClient,
+  type MilestoneEvent,
+  type MilestoneClientState,
+} from "./pet-anim/milestoneClient";
+import { pickEdge, type Edge } from "./pet-anim/edgeWatcher";
+import {
+  createOcclusionWatcher,
+  type OcclusionState,
+  type TopWindowInfo,
+} from "./pet-anim/occlusionWatcher";
+import {
+  createDNDDetector,
+  type DNDState,
+} from "./pet-anim/dndDetector";
+import { PetCelebrationBubble } from "./pet-anim/PetCelebrationBubble";
+import { PetDNDBadge } from "./pet-anim/PetDNDBadge";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { ContextTracePanel } from "./components/ContextTracePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -319,6 +337,114 @@ function App() {
     ),
   );
   const idleStateRef = useRef<IdleWatcherState>(idleWatcherRef.current.init());
+
+  // ─── S3 modules ───
+  // C3 time celebration + bubble.
+  const [celebrationBubble, setCelebrationBubble] = useState<{
+    visible: boolean;
+    message: string;
+  }>({ visible: false, message: "" });
+  // F1 DND active mirror (state so badge re-renders).
+  const [dndActiveUI, setDndActiveUI] = useState(false);
+  const timeCelebrationRef = useRef(
+    createTimeCelebration(
+      {
+        hourly_enabled: true,
+        anniversaries: [],
+        dnd_check: () => liveRef.current?.getV2Debug().dnd_active ?? false,
+      },
+      (kind, message, now_t) => {
+        // anniversary suppresses DND check inside the module
+        liveRef.current?.triggerCelebration(kind, message, now_t);
+        setCelebrationBubble({ visible: true, message });
+      },
+    ),
+  );
+
+  // D2 milestone client (consumes backend pet_milestone ws → FIFO queue).
+  const milestoneClientRef = useRef(
+    createMilestoneClient(
+      { celebration_ms: 3000 },
+      {
+        onCelebrationStart: (ev, now_t) => {
+          liveRef.current?.triggerCelebration("milestone", ev.message, now_t);
+          setCelebrationBubble({ visible: true, message: ev.message });
+        },
+        onCelebrationEnd: () => {
+          setCelebrationBubble({ visible: false, message: "" });
+        },
+      },
+    ),
+  );
+  const milestoneStateRef = useRef<MilestoneClientState>(
+    milestoneClientRef.current.init(),
+  );
+
+  // E2 occlusion watcher (1Hz poll; degrades to 0.2Hz if Rust API absent).
+  const occlusionWatcherRef = useRef(
+    createOcclusionWatcher(
+      { threshold_ratio: 0.5, grace_ms: 5000 },
+      {
+        fetchTopWindows: async (): Promise<TopWindowInfo[]> => {
+          try {
+            // Rust command not yet wired (D0-07 FAIL → fallback).
+            const r = await invoke<TopWindowInfo[]>("enumerate_top_windows");
+            return Array.isArray(r) ? r : [];
+          } catch {
+            // Silent disable per PRD §3 E2 graceful degrade.
+            throw new Error("enumerate_top_windows unavailable");
+          }
+        },
+        onOccluded: (spot, now_t) => {
+          if (spot) {
+            void invoke("set_window_position", { x: spot.x, y: spot.y }).catch(
+              () => {
+                /* silent — Rust command absent */
+              },
+            );
+            liveRef.current?.setEdgeAttached(null, now_t); // ensure edge isn't stuck
+          }
+        },
+        onClear: () => {
+          /* no-op for now */
+        },
+      },
+    ),
+  );
+  const occlusionStateRef = useRef<OcclusionState>(
+    occlusionWatcherRef.current.init(),
+  );
+
+  // F1 DND detector (composes fullscreen + typing + audio session).
+  const dndDetectorRef = useRef(
+    createDNDDetector(
+      {
+        typing_kpm_threshold: 250,
+        typing_window_ms: 180_000,
+      },
+      {
+        fetchFullscreen: async () => {
+          try {
+            return Boolean(await invoke<boolean>("is_foreground_fullscreen"));
+          } catch {
+            throw new Error("fullscreen API unavailable");
+          }
+        },
+        fetchCallActive: async () => {
+          try {
+            return Boolean(await invoke<boolean>("is_any_audio_capture_active"));
+          } catch {
+            throw new Error("audio session API unavailable");
+          }
+        },
+        onChange: (active, reasons, now_t) => {
+          liveRef.current?.setDNDActive(active, reasons, now_t);
+          setDndActiveUI(active);
+        },
+      },
+    ),
+  );
+  const dndStateRef = useRef<DNDState>(dndDetectorRef.current.init());
 
   // P5-S3 — pet supervisor state machine. Single instance per App;
   // recomputed on every relevant store update. Refs (not state) to
@@ -769,6 +895,32 @@ function App() {
         break;
       }
 
+      case "pet_milestone" as string: {
+        // v2 D2 — backend pushed a milestone event. Enqueue via client
+        // (FIFO so same-tick milestones don't fire concurrent celebrations).
+        const mp: any = (lastMessage as any).payload || {};
+        const ev: MilestoneEvent = {
+          kind: mp.kind,
+          message: typeof mp.message === "string" ? mp.message : "成就达成！",
+          achieved_at: Number.isFinite(mp.achieved_at)
+            ? mp.achieved_at
+            : Date.now(),
+        };
+        if (
+          ev.kind === "streak_7d" ||
+          ev.kind === "streak_30d" ||
+          ev.kind === "msgs_1000" ||
+          ev.kind === "first_custom_prompt" ||
+          ev.kind === "first_pet_naming"
+        ) {
+          milestoneStateRef.current = milestoneClientRef.current.enqueue(
+            milestoneStateRef.current,
+            ev,
+          );
+        }
+        break;
+      }
+
       case "tts_barge_in":
         // P2-2: backend VAD detected user speech during TTS — stop playback.
         console.log("[App] TTS barge-in — stopping playback");
@@ -812,6 +964,128 @@ function App() {
       idleStateRef.current = idleWatcherRef.current.tick(idleStateRef.current, now);
     }, 100);
     return () => window.clearInterval(interval);
+  }, []);
+
+  // ─── S3 background polls — C3 + D2 + E2 + F1 ───
+  useEffect(() => {
+    // C3 / D2 tick every 1s (cheap; just clock math + queue check).
+    const slowInterval = window.setInterval(() => {
+      const now = performance.now();
+      timeCelebrationRef.current.tick(now);
+      milestoneStateRef.current = milestoneClientRef.current.tick(
+        milestoneStateRef.current,
+        now,
+      );
+    }, 1000);
+    // F1 DND tick every 2s (per PRD §3 F1 fullscreen_check_interval_ms).
+    const dndInterval = window.setInterval(async () => {
+      const now = performance.now();
+      dndStateRef.current = await dndDetectorRef.current.tick(dndStateRef.current, now);
+    }, 2000);
+    // E2 occlusion tick every 1s. Degrades to 0.2Hz on perf overrun (M-18).
+    const occInterval = window.setInterval(async () => {
+      const now = performance.now();
+      try {
+        const w = await import("@tauri-apps/api/window").then((m) =>
+          m.getCurrentWindow(),
+        );
+        const pos = await w.outerPosition();
+        const size = await w.outerSize();
+        const monitor = await w.currentMonitor();
+        if (!monitor) return;
+        const petRect = {
+          x: pos.x,
+          y: pos.y,
+          w: size.width,
+          h: size.height,
+        };
+        const screen = { width: monitor.size.width, height: monitor.size.height };
+        occlusionStateRef.current = await occlusionWatcherRef.current.tick(
+          occlusionStateRef.current,
+          now,
+          petRect,
+          screen,
+        );
+      } catch {
+        /* Tauri APIs unavailable (e.g. webview during HMR) — silent. */
+      }
+    }, 1000);
+    return () => {
+      window.clearInterval(slowInterval);
+      window.clearInterval(dndInterval);
+      window.clearInterval(occInterval);
+    };
+  }, []);
+
+  // ─── F1 typing tracker: wire window keydown to dndDetector ring buffer. ───
+  useEffect(() => {
+    const onKey = () => {
+      const now = performance.now();
+      dndStateRef.current = dndDetectorRef.current.notifyKeyEvent(
+        dndStateRef.current,
+        now,
+      );
+    };
+    window.addEventListener("keydown", onKey, { passive: true });
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // ─── E1 edge detection: after a drag ends, check window position vs screen ───
+  // We listen for Tauri move events; if not available, fall back to onPointerUp
+  // in Live2DCanvas (already wired to setDragState).
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const w = getCurrentWindow();
+        const off = await w.onMoved(async () => {
+          try {
+            const pos = await w.outerPosition();
+            const size = await w.outerSize();
+            const monitor = await w.currentMonitor();
+            if (!monitor) return;
+            const edge: Edge = pickEdge(
+              { x: pos.x, y: pos.y, w: size.width, h: size.height },
+              { width: monitor.size.width, height: monitor.size.height },
+              100,
+            );
+            const now = performance.now();
+            liveRef.current?.setEdgeAttached(edge, now);
+            if (edge !== null) {
+              // Snap by re-positioning slightly out past edge.
+              const { snapTarget } = await import("./pet-anim/edgeWatcher");
+              const t = snapTarget(
+                { x: pos.x, y: pos.y, w: size.width, h: size.height },
+                { width: monitor.size.width, height: monitor.size.height },
+                edge,
+                10,
+              );
+              if (t) {
+                const { PhysicalPosition } = await import(
+                  "@tauri-apps/api/window"
+                );
+                await w.setPosition(new PhysicalPosition(t.x, t.y));
+              }
+            }
+          } catch {
+            /* silent — Tauri API issue */
+          }
+        });
+        if (cancelled) {
+          off();
+        } else {
+          unlisten = off;
+        }
+      } catch {
+        /* not running under Tauri (dev/preview) */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   // ─── v2 C1/C2 global activity listener (PRD §3 C1 events list). ───
@@ -1223,6 +1497,18 @@ function App() {
           onChoice={handleBubbleChoice}
         />
       )}
+
+      {/* v2 C3 / D2 — celebration bubble (hourly / anniversary / milestone). */}
+      <PetCelebrationBubble
+        visible={celebrationBubble.visible}
+        message={celebrationBubble.message}
+        duration_ms={3000}
+        onDismiss={() => setCelebrationBubble({ visible: false, message: "" })}
+      />
+
+      {/* v2 F1 — DND ZZZ badge. */}
+      <PetDNDBadge visible={dndActiveUI} />
+
 
       {/* P4-S22 — Code mode UI (banner + suggest + todos) */}
       <CodeModePanel

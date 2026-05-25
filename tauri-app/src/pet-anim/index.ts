@@ -69,8 +69,10 @@ import {
 } from './visemeLipsync'
 import { getEmotionParams, type EmotionCode } from './emotionMapper'
 import type { WelcomeIntensity } from './idleWatcher'
+import { poseForEdge, type Edge } from './edgeWatcher'
+import type { DNDReason } from './dndDetector'
 
-export type { MotionTag, InteractionKind, DragState, EmotionCode, WelcomeIntensity, VisemeFrame }
+export type { MotionTag, InteractionKind, DragState, EmotionCode, WelcomeIntensity, VisemeFrame, Edge, DNDReason }
 
 export interface CoreModelLike {
   getParameterIndex(name: string): number
@@ -186,6 +188,18 @@ export class AnimationOverlay {
   private c2_welcome_intensity: WelcomeIntensity = 'normal'
   /** C2 intense path: 2nd TapBody at +800ms after first. -Infinity if not pending. */
   private c2_second_tap_at = -Infinity
+
+  /** E1 edge attached state — null when not attached. */
+  private e1_edge: Edge = null
+
+  /** F1 DND active state + reasons. */
+  private f1_dnd_active = false
+  private f1_dnd_reasons: DNDReason[] = []
+
+  /** D2/C3 celebration state — when active_until > now, treat as happy_intense. */
+  private celebration_active_until = -Infinity
+  /** Marker: red supervisor alert active (AC-10-03 — DND must NOT suppress). */
+  private red_alert_active = false
 
   constructor(opts: OverlayOpts = {}) {
     const rng = opts.rng ?? Math.random
@@ -336,6 +350,38 @@ export class AnimationOverlay {
     void now_t
   }
 
+  /** E1: caller decided the pet is attached to a screen edge — applies SET pose. */
+  setEdgeAttached(edge: Edge, _now_t: number): void {
+    this.e1_edge = edge
+  }
+
+  /** F1: DND active state with reasons (used by step 2/3/4 force-block + AngleX/Y/Z force 0). */
+  setDNDActive(active: boolean, reasons: DNDReason[], _now_t: number): void {
+    this.f1_dnd_active = !!active
+    this.f1_dnd_reasons = Array.isArray(reasons) ? reasons.slice() : []
+  }
+
+  /** AC-10-03: supervisor red severity is independent of DND — must not be suppressed. */
+  setRedAlertActive(active: boolean): void {
+    this.red_alert_active = !!active
+  }
+
+  /**
+   * C3 / D2 celebration trigger: 3s happy_intense with TapBody. Bubble UI is
+   * managed by App.tsx (PetCelebrationBubble component).
+   */
+  triggerCelebration(_kind: 'hourly' | 'anniversary' | 'milestone', _message: string, now_t: number): void {
+    if (!Number.isFinite(now_t)) return
+    this.celebration_active_until = now_t + 3000
+    if (this.motion_player) {
+      try {
+        this.motion_player('TapBody', 0)
+      } catch {
+        /* swallow */
+      }
+    }
+  }
+
   /**
    * C2: trigger a welcome pulse. Fires immediate happy params + TapBody.
    * Duration: 1500ms (normal/bubble) or 3000ms (intense). Intense also schedules
@@ -373,6 +419,11 @@ export class AnimationOverlay {
     low_energy: boolean
     welcome_active: boolean
     welcome_intensity: WelcomeIntensity
+    edge_attached: Edge
+    dnd_active: boolean
+    dnd_reasons: DNDReason[]
+    celebration_active: boolean
+    red_alert_active: boolean
   } {
     return {
       held_state: this.heldCtx.state,
@@ -386,6 +437,11 @@ export class AnimationOverlay {
       low_energy: this.c1_low_energy,
       welcome_active: this.c2_welcome_active_until > 0,
       welcome_intensity: this.c2_welcome_intensity,
+      edge_attached: this.e1_edge,
+      dnd_active: this.f1_dnd_active,
+      dnd_reasons: this.f1_dnd_reasons.slice(),
+      celebration_active: this.celebration_active_until > 0,
+      red_alert_active: this.red_alert_active,
     }
   }
 
@@ -617,6 +673,10 @@ export class AnimationOverlay {
     }
     const v2HeldActive =
       v2On && isEnabled('held', this.storage) && this.heldCtx.state === 'being_held'
+    // F1 DND active path: blocks Perlin/gaze/saccade, forces Angle{X,Y,Z}=0, lowers blink_hz.
+    // AC-10-03: red alert ignores DND below (it's surfaced by the supervisor independently).
+    const v2DNDActive = v2On && isEnabled('dnd', this.storage) && this.f1_dnd_active
+    const blocksTransients = v2HeldActive || v2DNDActive
 
     // ───────── step 1: mouth — priority §6.2 matrix L524: DND > B4 fade > B3 viseme > D1 surprised ─────────
     let mouth_to_write = this.mouth_open_y
@@ -656,7 +716,7 @@ export class AnimationOverlay {
     this.last_mouth_observed = mouth_to_write
 
     // ───────── step 2: perlin micro-motion (held active blocks per PRD §3 A1) ─────────
-    if (isEnabled('perlin', this.storage) && !v2HeldActive) {
+    if (isEnabled('perlin', this.storage) && !blocksTransients) {
       addParam('ParamAngleX', this.perlinAngleX(now_t))
       addParam('ParamAngleY', this.perlinAngleY(now_t))
       addParam('ParamBodyAngleX', this.perlinBodyAngleX(now_t))
@@ -667,7 +727,7 @@ export class AnimationOverlay {
     let gaze_head_pitch_deg = 0
     let eye_yaw_norm = 0
     let eye_pitch_norm = 0
-    if (isEnabled('gaze', this.storage) && !v2HeldActive) {
+    if (isEnabled('gaze', this.storage) && !blocksTransients) {
       const r = this.gaze.tick(this.gazeState, now_t)
       this.gazeState = r.state
       gaze_head_yaw_deg = r.head_yaw_deg
@@ -679,13 +739,13 @@ export class AnimationOverlay {
     }
     let sac_x = 0
     let sac_y = 0
-    if (isEnabled('saccade', this.storage) && !v2HeldActive) {
+    if (isEnabled('saccade', this.storage) && !blocksTransients) {
       const r = this.saccade.tick(this.saccadeState, now_t)
       this.saccadeState = r.state
       sac_x = r.offset_x
       sac_y = r.offset_y
     }
-    if ((isEnabled('gaze', this.storage) || isEnabled('saccade', this.storage)) && !v2HeldActive) {
+    if ((isEnabled('gaze', this.storage) || isEnabled('saccade', this.storage)) && !blocksTransients) {
       addParam('ParamEyeBallX', eye_yaw_norm + sac_x)
       addParam('ParamEyeBallY', eye_pitch_norm + sac_y)
     }
@@ -735,11 +795,17 @@ export class AnimationOverlay {
     if (v2On && isEnabled('user_input', this.storage) && this.b1_active) {
       v2_angle_z_extra += 3
     }
-    const angle_z = Math.max(
-      -15,
-      Math.min(15, this.state_base_tilt_deg + transient + v2_angle_z_extra),
-    )
-    setParam('ParamAngleZ', angle_z)
+    // E1 edge pose: SET overrides A1/B1/base — matrix §6.2 ParamAngleZ row.
+    let angle_z = this.state_base_tilt_deg + transient + v2_angle_z_extra
+    if (v2On && isEnabled('edge', this.storage) && this.e1_edge !== null) {
+      angle_z = poseForEdge(this.e1_edge)
+    }
+    if (v2DNDActive) {
+      // DND force 0 — matrix highest priority for AngleZ.
+      angle_z = 0
+    }
+    // E1 / pose may exceed v1 ±15° clamp (180° upside-down) — use ±180 cap.
+    setParam('ParamAngleZ', Math.max(-180, Math.min(180, angle_z)))
 
     // ───────── step 7: v2 additive head-X / eyeball-Y / body-Z / hair / brow / surprise ─────────
     if (v2On) {
@@ -753,18 +819,28 @@ export class AnimationOverlay {
         addParam('ParamHairFront', hair)
       }
       // B2 thinking: head up + eyeball up + brow up (PRD §3 B2).
-      if (isEnabled('thinking', this.storage) && this.b2_active) {
+      if (isEnabled('thinking', this.storage) && this.b2_active && !v2DNDActive) {
         addParam('ParamAngleX', 5)
         addParam('ParamEyeBallY', 0.6)
         // B2 brow conflict with D1: PRD §6.2 matrix L534 says B2 > D1; SET is fine here in S1.
         setParam('ParamBrowLY', 0.3)
         setParam('ParamBrowRY', 0.3)
       }
+
+      // F1 DND: force AngleX/Y to 0 (matrix highest priority).
+      if (v2DNDActive) {
+        setParam('ParamAngleX', 0)
+        setParam('ParamAngleY', 0)
+      }
       // ───────── step 8: D1 emotion face params (PRD §6.2 matrix step 9 SET set) ─────────
       // Priority order at this step: A1 surprise (below) > C2 welcome (intense) > D1 > B2 brow (set above).
       // B3 viseme already wrote MouthForm in step 1 path; we honour matrix priority "B3 > D1" for MouthForm.
       const welcomeActive = isEnabled('welcome', this.storage) && now_t < this.c2_welcome_active_until
-      const effectiveEmotion: EmotionCode = welcomeActive ? 'happy' : this.current_emotion
+      const celebrationActive =
+        (isEnabled('time_celebration', this.storage) || isEnabled('milestone', this.storage)) &&
+        now_t < this.celebration_active_until
+      const effectiveEmotion: EmotionCode =
+        welcomeActive || celebrationActive ? 'happy' : this.current_emotion
       if (isEnabled('emotion', this.storage) && effectiveEmotion !== 'neutral') {
         const emo = getEmotionParams(effectiveEmotion)
         if (typeof emo.ParamMouthForm === 'number' && !this.b3_active_this_frame) {

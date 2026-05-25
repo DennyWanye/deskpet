@@ -88,6 +88,25 @@ export interface Live2DHandle {
     intensity: import("../pet-anim/idleWatcher").WelcomeIntensity,
     now_t: number,
   ) => void;
+  /** v2 PRD §6.1: E1 edge attached state. */
+  setEdgeAttached: (
+    edge: import("../pet-anim/edgeWatcher").Edge,
+    now_t: number,
+  ) => void;
+  /** v2 PRD §6.1: F1 DND state with reasons. */
+  setDNDActive: (
+    active: boolean,
+    reasons: import("../pet-anim/dndDetector").DNDReason[],
+    now_t: number,
+  ) => void;
+  /** v2 PRD §6.1: AC-10-03 — red supervisor severity (DND must not suppress). */
+  setRedAlertActive: (active: boolean) => void;
+  /** v2 PRD §6.1: C3 / D2 celebration trigger (3s happy_intense + TapBody). */
+  triggerCelebration: (
+    kind: "hourly" | "anniversary" | "milestone",
+    message: string,
+    now_t: number,
+  ) => void;
   /** v2 PRD §6.1: full v2 debug surface. */
   getV2Debug: () => ReturnType<AnimationOverlay["getV2Debug"]>;
 }
@@ -295,6 +314,18 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
       triggerWelcome(intensity, now_t) {
         overlayRef.current?.triggerWelcome(intensity, now_t);
       },
+      setEdgeAttached(edge, now_t) {
+        overlayRef.current?.setEdgeAttached(edge, now_t);
+      },
+      setDNDActive(active, reasons, now_t) {
+        overlayRef.current?.setDNDActive(active, reasons, now_t);
+      },
+      setRedAlertActive(active) {
+        overlayRef.current?.setRedAlertActive(active);
+      },
+      triggerCelebration(kind, message, now_t) {
+        overlayRef.current?.triggerCelebration(kind, message, now_t);
+      },
       getV2Debug() {
         return (
           overlayRef.current?.getV2Debug() ?? {
@@ -309,6 +340,11 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
             low_energy: false,
             welcome_active: false,
             welcome_intensity: "normal" as const,
+            edge_attached: null,
+            dnd_active: false,
+            dnd_reasons: [],
+            celebration_active: false,
+            red_alert_active: false,
           }
         );
       },
