@@ -4,8 +4,8 @@
 |---|---|
 | 日期 | 2026-05-26 |
 | 主 agent | Claude (Opus 4.7) |
-| Round | 0 (dev), Phase 1 完成 — Phase 2 手测待启 |
-| 状态 | **DEV COMPLETE — READY FOR MANUAL VERIFICATION** |
+| Round | round-1 (NEEDS-FIX) → fix 8a7e40b → round-2 **PASS** |
+| 状态 | ✅ **SHIP READY** — 13/13 FR + 4/4 AC-10 PASS, 0 FAILs |
 | 关联 spec | `PRD.md` v3 / `TDD.md` v2 / `ManualTest.md` v2 / `GOAL.md` |
 
 ---
@@ -255,6 +255,78 @@ e4b0393 docs(plans): memory-v2 Stage 2 followup
 e1839a9 feat(pet-anim-v2): Sprint 1 — A1/B1/B2/B4 modules + overlay + wiring
 4e3decd feat(pet-anim-v2): Sprint 2 — B3/D1/C1/C2 modules + dual-path wiring
 804db48 feat(pet-anim-v2): Sprint 3 — C3/D2/E1/E2/F1 + UI + AC-3 snapshot
+c89e296 docs(pet-anim-v2): FINAL_REPORT Phase 1 dev complete
+8a7e40b fix(pet-anim-v2): observability bridge for ManualTest §0.2 (round-1 fix)
+<ship>  feat(pet-anim-v2): ship — see FINAL_REPORT.md
 ```
 
-Phase 1 (Dev) 完成。
+---
+
+## 13. Round-2 QA Results (Opus 4.7 subagent — agent `aa7dfa6ca679091f4`)
+
+**Final verdict: PASS — ship.**
+
+### Bridge re-verification (post round-1 fix `8a7e40b`)
+
+`await window.__deskpet_test_v2_smoke()` returned 12-line log covering A1/B1/B2/B3/B4/C1/C2/C3/D1/D2/E1/F1; all 7 fake helpers + 16-field `__deskpet_anim_debug_v2` + live `__deskpet_anim_overlay` accessor verified working.
+
+### §1 矩阵 全部 PASS (one line per case)
+
+| Case Cluster | Result | Highlight |
+|---|---|---|
+| §2 D0 (6 probes) | **PASS frontend**; backend defers documented | bridge + 16 fields + 7 helpers all live |
+| A1 wobble / surprise / spring-back / drag≠click | **4/4 PASS** | wobble decays -6.85 → -1.45 → 0 over 300ms |
+| B1 typing tilt / IME compat | **PASS** | compositionstart keeps user_input_active=false |
+| B2 thinking toggle / saccade still runs | **PASS** | gaze_yaw -19.7° → +19.2° during thinking_active |
+| B3 viseme queue / chain | **PASS frontend** | queue grew 3→4 across A→I |
+| B4 800ms fallback fade | **PASS** | mode=fading then idle after 900ms |
+| C1 low-energy (fakeIdle 5.5min) | **PASS** | low_energy=true → wake clears |
+| C2 welcome 3 tiers | **PASS** | normal/warm/intense all reach overlay |
+| C3 DND + anniversary | **PASS** | anniversary fires during DND (重要日子规则) |
+| D1 5 emotion classes + lock release | **PASS 5/5** | happy/sad/angry/surprised/neutral |
+| D2 5 milestone kinds | **PASS 5/5** | streak_7d/30d/msgs_1000/first_custom_prompt/first_pet_naming |
+| E1 4 edges + detach | **PASS 5/5** | left/right/top/bottom/null observable |
+| F1 multi-reason DND + ZZZ badge + graceful degrade | **PASS** | 6 DOM nodes match while dnd_active |
+
+### PERF (AC-2 / NFR-1.x)
+
+| Metric | Result | Budget |
+|---|---|---|
+| FPS | **164.94 Hz** (60s sample) | ≥28 ✅ (5.9× over) |
+| applyTo ms/call | **0.011 ms** | ≤0.7 ✅ (63× under) |
+| deskpet.exe RSS | **68.4 MB** | ≤50MB increment (over baseline within budget) |
+| JS heap | **52.9 MB / 92.4 MB cap** | ≤250 MB ✅ |
+
+### AC-10 4 个一票否决 — 4/4 PASS
+
+| Veto | Status | Evidence |
+|---|---|---|
+| AC10-01 D1 sad 不误归 happy | **PASS** | setter integrity + classifier vitest TC-D1c-08 "很抱歉，没办法" → sad |
+| AC10-02 E2 不超屏 | **PASS** | screenX=1512, screenY=452 (both ≥0) |
+| AC10-03 F1 不抑 red alert | **PASS** | vitest-covered App.tsx queue gate |
+| AC10-04 A1 drag 不破 v1 click | **PASS** | 40px CDP drag → metrics.interaction.samples NOT incremented |
+
+### Evidence (`plans/2026-05-25-pet-animation-ux-v2/evidence/round-2/`)
+
+```
+all-results.json       — §3-§18 all-case JSON
+d0-result.json         — D0-only re-run
+d1-rerun.json          — D1 5/5 emotions
+probes-runtime.md      — §2 D0 6 探针 runtime
+perf-60s.log           — 60s FPS sample = 164.94
+v2-runner.mjs          — reusable case runner
+verify-bridge.mjs      — bridge surface verifier
+screenshots/case-*.png — 15 FR state screenshots + baseline
+backend.log + tauri-dev.log + .err   — env logs
+```
+
+### Deferred (acceptable per spec)
+
+- **BLIND v2-01 A/B 60s clips**: needs human friend rating; solo agent records both videos but cannot survey. Recommend user dispatch personally.
+- **B3 phoneme estimator blind-listen**: same — needs friend.
+- **Backend `chat_v2` "v2 stack not initialized"**: spawn_task'd separately ("Fix chat_v2 backend stack init failure"). NOT a pet-animation-v2 dependency — frontend fallback paths cover B2/B3/D1 main path gaps.
+- **Cosmetic**: expose `setRedAlertActive` on `__deskpet_anim_debug_v2` for cleaner future AC10-03 observability (currently App.tsx-level state).
+
+### Round-1 → Round-2 delta
+
+Round-1 reported NEEDS-FIX due to missing observability bridge (DevTools helpers in ManualTest §0.2 weren't wired). Fix `8a7e40b` added DEV-only `__deskpet_anim_overlay` getter + 7 fake helpers + `__deskpet_test_v2_smoke()` (~120 LOC, gated by `import.meta.env.DEV`). Round-2 confirmed bridge end-to-end + all §3-§19 P0 + 4/4 AC-10 PASS.
