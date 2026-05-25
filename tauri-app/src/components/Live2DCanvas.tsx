@@ -67,6 +67,27 @@ export interface Live2DHandle {
   armMouthFadeTimeout: (silence_timeout_ms: number, now_t: number) => void;
   /** v2 PRD §6.1: cancel pending/in-flight mouth fade (new viseme arrived). */
   cancelMouthFade: () => void;
+  /** v2 PRD §6.1: B3 main path — push a single viseme frame. */
+  setVisemeFrame: (frame: import("../pet-anim/visemeLipsync").VisemeFrame) => void;
+  /** v2 PRD §6.1: B3 fallback — bulk-load estimated viseme stream. */
+  setPhonemeEstimatorReady: (
+    stream: import("../pet-anim/visemeLipsync").VisemeFrame[],
+    now_t: number,
+  ) => void;
+  /** v2 PRD §6.1: flush viseme queue on tts_end. */
+  flushVisemeQueue: () => void;
+  /** v2 PRD §6.1: D1 emotion lock setter. */
+  setEmotion: (
+    emotion: import("../pet-anim/emotionMapper").EmotionCode,
+    now_t: number,
+  ) => void;
+  /** v2 PRD §6.1: C1 low_energy state. */
+  setLowEnergy: (active: boolean, now_t: number) => void;
+  /** v2 PRD §6.1: C2 welcome pulse trigger. */
+  triggerWelcome: (
+    intensity: import("../pet-anim/idleWatcher").WelcomeIntensity,
+    now_t: number,
+  ) => void;
   /** v2 PRD §6.1: full v2 debug surface. */
   getV2Debug: () => ReturnType<AnimationOverlay["getV2Debug"]>;
 }
@@ -256,6 +277,24 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
       cancelMouthFade() {
         overlayRef.current?.cancelMouthFade();
       },
+      setVisemeFrame(frame) {
+        overlayRef.current?.setVisemeFrame(frame);
+      },
+      setPhonemeEstimatorReady(stream, now_t) {
+        overlayRef.current?.setPhonemeEstimatorReady(stream, now_t);
+      },
+      flushVisemeQueue() {
+        overlayRef.current?.flushVisemeQueue();
+      },
+      setEmotion(emotion, now_t) {
+        overlayRef.current?.setEmotion(emotion, now_t);
+      },
+      setLowEnergy(active, now_t) {
+        overlayRef.current?.setLowEnergy(active, now_t);
+      },
+      triggerWelcome(intensity, now_t) {
+        overlayRef.current?.triggerWelcome(intensity, now_t);
+      },
       getV2Debug() {
         return (
           overlayRef.current?.getV2Debug() ?? {
@@ -265,6 +304,11 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
             user_input_active: false,
             thinking_active: false,
             mouth_fade_mode: "idle" as const,
+            current_emotion: "neutral" as const,
+            viseme_queue_size: 0,
+            low_energy: false,
+            welcome_active: false,
+            welcome_intensity: "normal" as const,
           }
         );
       },

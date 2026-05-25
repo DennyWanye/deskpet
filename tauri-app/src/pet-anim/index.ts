@@ -62,8 +62,15 @@ import {
   type DragStateMachine,
 } from './heldStateMachine'
 import { createMouthFader, type MouthFader } from './mouthFader'
+import {
+  createVisemeLipsync,
+  type VisemeLipsync,
+  type VisemeFrame,
+} from './visemeLipsync'
+import { getEmotionParams, type EmotionCode } from './emotionMapper'
+import type { WelcomeIntensity } from './idleWatcher'
 
-export type { MotionTag, InteractionKind, DragState }
+export type { MotionTag, InteractionKind, DragState, EmotionCode, WelcomeIntensity, VisemeFrame }
 
 export interface CoreModelLike {
   getParameterIndex(name: string): number
@@ -164,6 +171,22 @@ export class AnimationOverlay {
   /** Tracks the last mouth_open_y written to model (for B4 800ms fallback origin). */
   private last_mouth_observed = 0
 
+  /** B3 viseme lipsync (main path). Frames pushed via setVisemeFrame/setPhonemeEstimatorReady. */
+  private visemeLipsync: VisemeLipsync
+  /** Tracks whether the viseme queue is actively driving the mouth (gates step-9 MouthForm conflict). */
+  private b3_active_this_frame = false
+
+  /** D1 current locked emotion. Lock release is caller-driven (see Live2DCanvas / App.tsx). */
+  private current_emotion: EmotionCode = 'neutral'
+
+  /** C1 low_energy active flag (drives blink_hz / breath rate / motion tag pool overrides). */
+  private c1_low_energy = false
+  /** C2 welcome state: happy boost until welcome_active_until ms, current intensity. */
+  private c2_welcome_active_until = -Infinity
+  private c2_welcome_intensity: WelcomeIntensity = 'normal'
+  /** C2 intense path: 2nd TapBody at +800ms after first. -Infinity if not pending. */
+  private c2_second_tap_at = -Infinity
+
   constructor(opts: OverlayOpts = {}) {
     const rng = opts.rng ?? Math.random
     this.storage = opts.storage
@@ -193,10 +216,11 @@ export class AnimationOverlay {
     this.interaction_metrics = createMetricsRing(100)
     this.visual_metrics = createMetricsRing(100)
 
-    // v2: A1/B4 internal sub-machines.
+    // v2: A1/B4/B3 internal sub-machines.
     this.heldFSM = createDragStateMachine()
     this.heldCtx = this.heldFSM.init()
     this.mouthFader = createMouthFader()
+    this.visemeLipsync = createVisemeLipsync({ blend_ms: 60 })
   }
 
   dispose(): void {
@@ -206,8 +230,13 @@ export class AnimationOverlay {
     // v2 cleanup
     this.heldCtx = this.heldFSM.init()
     this.mouthFader.cancel()
+    this.visemeLipsync.flush()
     this.b1_active = false
     this.b2_active = false
+    this.current_emotion = 'neutral'
+    this.c1_low_energy = false
+    this.c2_welcome_active_until = -Infinity
+    this.c2_second_tap_at = -Infinity
   }
 
   // ───────── v2 setters (PRD §6.1) ─────────
@@ -267,6 +296,70 @@ export class AnimationOverlay {
     this.mouthFader.cancel()
   }
 
+  /** B3 main path: queue a single viseme frame for lipsync. Caller passes absolute t_ms. */
+  setVisemeFrame(frame: VisemeFrame): void {
+    this.visemeLipsync.push(frame)
+    // A new viseme always cancels any pending mouth fade — B3 takes over the mouth.
+    this.mouthFader.cancel()
+  }
+
+  /** B3 fallback path: bulk-load an estimated frame stream (phonemeEstimator output). */
+  setPhonemeEstimatorReady(stream: VisemeFrame[], _now_t: number): void {
+    if (!Array.isArray(stream)) return
+    this.visemeLipsync.pushMany(stream)
+    this.mouthFader.cancel()
+  }
+
+  /** B3: flush the viseme queue (e.g. on tts_end). The mouth fader will take over for B4. */
+  flushVisemeQueue(): void {
+    this.visemeLipsync.flush()
+  }
+
+  /** D1: lock current emotion. Caller releases by passing 'neutral'. */
+  setEmotion(emotion: EmotionCode, _now_t: number): void {
+    this.current_emotion = emotion
+  }
+
+  /** C1: enter / leave low_energy. Affects blink_hz + motion tag pool + breath. */
+  setLowEnergy(active: boolean, now_t: number): void {
+    if (active === this.c1_low_energy) return
+    this.c1_low_energy = active
+    if (active) {
+      this.setBlinkHz(0.1)
+      // Caller (Live2DCanvas / App.tsx) is responsible for setMotionTagPool(['low-energy','slow','yawn']);
+      // we keep that decision outside the overlay so callers can compose with their own pools.
+    } else {
+      // Restore default blink_hz (caller may override with another setBlinkHz).
+      this.setBlinkHz(0.2)
+    }
+    // No need to use now_t for state changes — kept in signature for parity.
+    void now_t
+  }
+
+  /**
+   * C2: trigger a welcome pulse. Fires immediate happy params + TapBody.
+   * Duration: 1500ms (normal/bubble) or 3000ms (intense). Intense also schedules
+   * a second TapBody at +800ms (tracked via internal flag, fired in applyTo).
+   */
+  triggerWelcome(intensity: WelcomeIntensity, now_t: number): void {
+    if (!Number.isFinite(now_t)) return
+    const duration_ms = intensity === 'intense' ? 3000 : 1500
+    this.c2_welcome_active_until = now_t + duration_ms
+    this.c2_welcome_intensity = intensity
+    if (this.motion_player) {
+      try {
+        this.motion_player('TapBody', 0)
+      } catch {
+        /* swallow */
+      }
+    }
+    if (intensity === 'intense') {
+      this.c2_second_tap_at = now_t + 800
+    } else {
+      this.c2_second_tap_at = -Infinity
+    }
+  }
+
   /** Debug snapshot for v2 instrumentation. */
   getV2Debug(): {
     held_state: DragState
@@ -275,6 +368,11 @@ export class AnimationOverlay {
     user_input_active: boolean
     thinking_active: boolean
     mouth_fade_mode: 'idle' | 'pending' | 'fading'
+    current_emotion: EmotionCode
+    viseme_queue_size: number
+    low_energy: boolean
+    welcome_active: boolean
+    welcome_intensity: WelcomeIntensity
   } {
     return {
       held_state: this.heldCtx.state,
@@ -283,6 +381,11 @@ export class AnimationOverlay {
       user_input_active: this.b1_active,
       thinking_active: this.b2_active,
       mouth_fade_mode: this.mouthFader.debug().mode,
+      current_emotion: this.current_emotion,
+      viseme_queue_size: this.visemeLipsync.debug().queue_size,
+      low_energy: this.c1_low_energy,
+      welcome_active: this.c2_welcome_active_until > 0,
+      welcome_intensity: this.c2_welcome_intensity,
     }
   }
 
@@ -515,12 +618,40 @@ export class AnimationOverlay {
     const v2HeldActive =
       v2On && isEnabled('held', this.storage) && this.heldCtx.state === 'being_held'
 
-    // ───────── step 1: mouth (B4 fade overrides static mouth_open_y when v2 active) ─────────
+    // ───────── step 1: mouth — priority §6.2 matrix L524: DND > B4 fade > B3 viseme > D1 surprised ─────────
     let mouth_to_write = this.mouth_open_y
+    let viseme_mouth_form: number | null = null
+    this.b3_active_this_frame = false
+
+    // B3 viseme: read first; if active, override mouth + capture form.
+    if (v2On && isEnabled('viseme', this.storage)) {
+      const vs = this.visemeLipsync.sample(now_t)
+      if (vs.v !== 'silent') {
+        mouth_to_write = vs.mouthY
+        viseme_mouth_form = vs.mouthForm
+        this.b3_active_this_frame = true
+      }
+    }
+
+    // B4 fade overrides B3 (matrix priority).
     if (v2On && isEnabled('mouth_fade', this.storage)) {
       const faded = this.mouthFader.sample(now_t)
       if (faded !== null) mouth_to_write = faded
     }
+
+    // D1 surprised has MouthOpenY=0.4 — applies only if neither B3 nor B4 is active.
+    if (
+      v2On &&
+      !this.b3_active_this_frame &&
+      isEnabled('emotion', this.storage) &&
+      this.current_emotion === 'surprised'
+    ) {
+      const emo = getEmotionParams('surprised')
+      if (typeof emo.ParamMouthOpenY === 'number') {
+        mouth_to_write = emo.ParamMouthOpenY
+      }
+    }
+
     setParam('ParamMouthOpenY', mouth_to_write)
     this.last_mouth_observed = mouth_to_write
 
@@ -559,7 +690,18 @@ export class AnimationOverlay {
       addParam('ParamEyeBallY', eye_pitch_norm + sac_y)
     }
 
-    // ───────── step 5a: B1 eye-open boost (MUL chain — must precede blink mul per §6.2 matrix L529) ─────────
+    // ───────── step 5a: D1 EyeOpenMul (§6.2 matrix L529 chain: baseline × D1 × B1 × blink) ─────────
+    if (v2On && isEnabled('emotion', this.storage) && this.current_emotion !== 'neutral') {
+      const emo = getEmotionParams(this.current_emotion)
+      if (typeof emo.ParamEyeLOpenMul === 'number' && emo.ParamEyeLOpenMul !== 1) {
+        mulParam('ParamEyeLOpen', emo.ParamEyeLOpenMul)
+      }
+      if (typeof emo.ParamEyeROpenMul === 'number' && emo.ParamEyeROpenMul !== 1) {
+        mulParam('ParamEyeROpen', emo.ParamEyeROpenMul)
+      }
+    }
+
+    // ───────── step 5b: B1 eye-open boost (MUL chain after D1, before blink). ─────────
     if (v2On && isEnabled('user_input', this.storage) && this.b1_active) {
       mulParam('ParamEyeLOpen', 1.15)
       mulParam('ParamEyeROpen', 1.15)
@@ -618,6 +760,48 @@ export class AnimationOverlay {
         setParam('ParamBrowLY', 0.3)
         setParam('ParamBrowRY', 0.3)
       }
+      // ───────── step 8: D1 emotion face params (PRD §6.2 matrix step 9 SET set) ─────────
+      // Priority order at this step: A1 surprise (below) > C2 welcome (intense) > D1 > B2 brow (set above).
+      // B3 viseme already wrote MouthForm in step 1 path; we honour matrix priority "B3 > D1" for MouthForm.
+      const welcomeActive = isEnabled('welcome', this.storage) && now_t < this.c2_welcome_active_until
+      const effectiveEmotion: EmotionCode = welcomeActive ? 'happy' : this.current_emotion
+      if (isEnabled('emotion', this.storage) && effectiveEmotion !== 'neutral') {
+        const emo = getEmotionParams(effectiveEmotion)
+        if (typeof emo.ParamMouthForm === 'number' && !this.b3_active_this_frame) {
+          // B3 > D1 for MouthForm — write only when B3 not active.
+          setParam('ParamMouthForm', emo.ParamMouthForm)
+        }
+        if (typeof emo.ParamEyeLSmile === 'number') setParam('ParamEyeLSmile', emo.ParamEyeLSmile)
+        if (typeof emo.ParamEyeRSmile === 'number') setParam('ParamEyeRSmile', emo.ParamEyeRSmile)
+        if (typeof emo.ParamCheek === 'number') setParam('ParamCheek', emo.ParamCheek)
+        // BrowLY/RY: D1 < B2 (B2 set above already); only write if B2 didn't.
+        if (!(isEnabled('thinking', this.storage) && this.b2_active)) {
+          if (typeof emo.ParamBrowLY === 'number') setParam('ParamBrowLY', emo.ParamBrowLY)
+          if (typeof emo.ParamBrowRY === 'number') setParam('ParamBrowRY', emo.ParamBrowRY)
+        }
+        if (typeof emo.ParamBrowLAngle === 'number') setParam('ParamBrowLAngle', emo.ParamBrowLAngle)
+        if (typeof emo.ParamBrowRAngle === 'number') setParam('ParamBrowRAngle', emo.ParamBrowRAngle)
+        // D1 sad pitches head down — ADD to ParamAngleY (matrix L527).
+        if (typeof emo.ParamAngleY === 'number') addParam('ParamAngleY', emo.ParamAngleY)
+      }
+
+      // ───────── step 8b: B3 viseme MouthForm (writes here, AFTER D1 emotion SET above, so it wins). ─────────
+      if (this.b3_active_this_frame && viseme_mouth_form !== null) {
+        setParam('ParamMouthForm', viseme_mouth_form)
+      }
+
+      // ───────── step 8c: C2 intense path — schedule a second TapBody at +800ms. ─────────
+      if (isEnabled('welcome', this.storage) && this.c2_second_tap_at !== -Infinity && now_t >= this.c2_second_tap_at) {
+        if (this.motion_player) {
+          try {
+            this.motion_player('TapBody', 0)
+          } catch {
+            /* swallow */
+          }
+        }
+        this.c2_second_tap_at = -Infinity
+      }
+
       // A1 surprise pulse: SET face params interpolated by surprise_factor (PRD §3 A1 surprise).
       // Note: this can override B2 brow values transiently — matches the "drag interrupts thinking" UX.
       if (isEnabled('held', this.storage) && this.last_surprise_factor > 0) {

@@ -1,11 +1,21 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
-// Pet Animation UX v2 — B1/B2 observer modules.
+// Pet Animation UX v2 — B1/B2/B3/D1/C1/C2 observer modules.
 import {
   createUserInputObserver,
   type UserInputState,
 } from "./pet-anim/userInputObserver";
 import { createThinkingObserver } from "./pet-anim/thinkingObserver";
+import { createPhonemeEstimator } from "./pet-anim/phonemeEstimator";
+import { classifyEmotionVoting } from "./pet-anim/emotionClassifier";
+import { isEmotionCode } from "./pet-anim/emotionMapper";
+import {
+  createIdleWatcher,
+  type IdleWatcherState,
+  type WelcomeIntensity,
+} from "./pet-anim/idleWatcher";
+import { V2_CLIENT_VERSION } from "./ws/ControlChannel";
+void V2_CLIENT_VERSION; // silence unused import (re-exported for diagnostics later)
 import { MemoryPanel } from "./components/MemoryPanel";
 import { ContextTracePanel } from "./components/ContextTracePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -277,6 +287,38 @@ function App() {
 
   // B4 helper: track last lip_sync timestamp so we can arm the 800ms fallback.
   const lastLipSyncTsRef = useRef<number>(-Infinity);
+
+  // B3 phoneme estimator (fallback path — runs when backend lacks 'viseme' feature).
+  const phonemeEstimatorRef = useRef(createPhonemeEstimator({ ms_per_char: 200 }));
+
+  // C1/C2 idle watcher. onLowEnergy → setLowEnergy(true); onWakeup → triggerWelcome.
+  const idleCallbacksRef = useRef<{
+    onLowEnergy: (now_t: number) => void;
+    onWakeup: (now_t: number, dur: number, intensity: WelcomeIntensity) => void;
+  }>({
+    onLowEnergy: (now_t) => {
+      liveRef.current?.setLowEnergy(true, now_t);
+    },
+    onWakeup: (now_t, _dur, intensity) => {
+      liveRef.current?.setLowEnergy(false, now_t);
+      liveRef.current?.triggerWelcome(intensity, now_t);
+    },
+  });
+  const idleWatcherRef = useRef(
+    createIdleWatcher(
+      {
+        low_energy_threshold_ms: 300_000,
+        welcome_cooldown_ms: 60_000,
+        welcome_bubble_threshold_ms: 900_000,
+        welcome_intense_threshold_ms: 3_600_000,
+      },
+      {
+        onLowEnergy: (t) => idleCallbacksRef.current.onLowEnergy(t),
+        onWakeup: (t, d, i) => idleCallbacksRef.current.onWakeup(t, d, i),
+      },
+    ),
+  );
+  const idleStateRef = useRef<IdleWatcherState>(idleWatcherRef.current.init());
 
   // P5-S3 — pet supervisor state machine. Single instance per App;
   // recomputed on every relevant store update. Refs (not state) to
@@ -561,17 +603,39 @@ function App() {
         }
         break;
       }
-      case "chat_v2_final":
+      case "chat_v2_final": {
         // v2 B2: defensive close in case first_chunk path was missed.
         thinkingObsRef.current.notifyEnd(performance.now());
+        const finalPayload = (lastMessage as any).payload || {};
+        const finalText = finalPayload.text || "(完成)";
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            text: (lastMessage as any).payload.text || "(完成)",
+            text: finalText,
           },
         ]);
+        // v2 D1: emotion — prefer backend-provided field, else fall back to voting classifier.
+        const now = performance.now();
+        const backendEmotion = finalPayload.emotion;
+        if (isEmotionCode(backendEmotion)) {
+          liveRef.current?.setEmotion(backendEmotion, now);
+        } else if (typeof finalText === "string" && finalText.trim().length > 0) {
+          const classified = classifyEmotionVoting(finalText);
+          liveRef.current?.setEmotion(classified, now);
+        }
+        // v2 B3 fallback: if the backend doesn't advertise viseme support, generate
+        // phoneme-estimated viseme frames so the lipsync still moves. Main-path
+        // 'tts_viseme' messages (when backend has the feature) handled below.
+        const channel = getControlChannel();
+        const visemeSupported = !!channel?.hasServerFeature("viseme");
+        if (!visemeSupported && typeof finalText === "string" && finalText.length > 0) {
+          const dur = Math.max(400, finalText.length * 200);
+          const frames = phonemeEstimatorRef.current.estimate(finalText, dur, now);
+          liveRef.current?.setPhonemeEstimatorReady(frames, now);
+        }
         break;
+      }
       case "session_messages_response": {
         // 2026-05-18: 重启/连接后从 SessionDB 回灌历史会话 → 左侧消息
         // 面板显示历史记录（之前只有实时消息，重启即空）。只取
@@ -685,11 +749,25 @@ function App() {
         // Bypasses setMouthOpenY because the overlay's B4 takes over MouthOpenY
         // for the fade duration (PRD §3 B4).
         liveRef.current?.fadeMouthToZero(200, performance.now());
+        // v2 B3: flush any remaining viseme frames now that TTS is over.
+        liveRef.current?.flushVisemeQueue();
         // Still set mouthOpenY to 0 so any non-v2 fallback path also returns
         // to a clean state. The overlay precedence keeps the fade smooth.
         setMouthOpenY(0);
         setVadStatus("listening");
         break;
+
+      case "tts_viseme" as string: {
+        // v2 B3 main path — backend pushed a viseme frame. We use the
+        // payload's t_ms directly (backend may emit absolute timestamps or
+        // ms-since-tts-start; either works because visemeLipsync sorts and
+        // blends on any monotonic series).
+        const vp: any = (lastMessage as any).payload || {};
+        if (typeof vp.v === "string" && Number.isFinite(vp.t_ms)) {
+          liveRef.current?.setVisemeFrame({ v: vp.v, t_ms: vp.t_ms });
+        }
+        break;
+      }
 
       case "tts_barge_in":
         // P2-2: backend VAD detected user speech during TTS — stop playback.
@@ -730,8 +808,43 @@ function App() {
         now,
       );
       thinkingObsRef.current.tick(now);
+      // v2 C1: drive low_energy threshold check.
+      idleStateRef.current = idleWatcherRef.current.tick(idleStateRef.current, now);
     }, 100);
     return () => window.clearInterval(interval);
+  }, []);
+
+  // ─── v2 C1/C2 global activity listener (PRD §3 C1 events list). ───
+  useEffect(() => {
+    const onActivity = () => {
+      const now = performance.now();
+      idleStateRef.current = idleWatcherRef.current.notifyActivity(
+        idleStateRef.current,
+        now,
+      );
+    };
+    const events: Array<keyof WindowEventMap> = [
+      "keydown",
+      "mousemove",
+      "wheel",
+      "pointermove",
+      "visibilitychange",
+      "focus",
+      "blur",
+    ];
+    for (const ev of events) {
+      window.addEventListener(ev, onActivity, { passive: true });
+    }
+    // Seed: first mount counts as activity so we don't immediately enter low_energy.
+    idleStateRef.current = idleWatcherRef.current.notifyActivity(
+      idleStateRef.current,
+      performance.now(),
+    );
+    return () => {
+      for (const ev of events) {
+        window.removeEventListener(ev, onActivity);
+      }
+    };
   }, []);
 
   const handleSend = () => {
@@ -763,6 +876,12 @@ function App() {
     resetPlaybackBuffer();
     sendInterrupt();
     setVadStatus("idle");
+    // v2 D1 (M-11): user-interrupt releases emotion lock immediately.
+    const now = performance.now();
+    liveRef.current?.setEmotion("neutral", now);
+    liveRef.current?.flushVisemeQueue();
+    liveRef.current?.cancelMouthFade();
+    thinkingObsRef.current.notifyEnd(now);
   }, [stopPlayback, resetPlaybackBuffer, sendInterrupt]);
 
   useEffect(() => {
