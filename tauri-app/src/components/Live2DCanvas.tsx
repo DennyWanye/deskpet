@@ -55,6 +55,20 @@ export interface Live2DHandle {
   getAnimationMetrics: () => ReturnType<AnimationOverlay["getAnimationMetrics"]>;
   /** v3 PRD §6.1 debug surface. */
   getAnimationDebug: () => ReturnType<AnimationOverlay["getAnimationDebug"]>;
+  /** v2 PRD §6.1: A1 drag state machine input. */
+  setDragState: (state: "idle" | "being_held", now_t: number) => void;
+  /** v2 PRD §6.1: B1 user-input observer wiring. */
+  setUserInputActive: (active: boolean, now_t: number) => void;
+  /** v2 PRD §6.1: B2 thinking observer wiring. */
+  setThinkingActive: (active: boolean, now_t: number) => void;
+  /** v2 PRD §6.1: B4 deterministic mouth fade. */
+  fadeMouthToZero: (duration_ms: number, now_t: number) => void;
+  /** v2 PRD §6.1: B4 800ms silence-timeout fallback (M-4). */
+  armMouthFadeTimeout: (silence_timeout_ms: number, now_t: number) => void;
+  /** v2 PRD §6.1: cancel pending/in-flight mouth fade (new viseme arrived). */
+  cancelMouthFade: () => void;
+  /** v2 PRD §6.1: full v2 debug surface. */
+  getV2Debug: () => ReturnType<AnimationOverlay["getV2Debug"]>;
 }
 
 interface FaceFrame {
@@ -220,6 +234,37 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
             last_input_age_ms: 0,
             current_state: "rest",
             current_motion_idx: null,
+          }
+        );
+      },
+      // ───────── v2 setters ─────────
+      setDragState(state, now_t) {
+        overlayRef.current?.setDragState(state, now_t);
+      },
+      setUserInputActive(active, now_t) {
+        overlayRef.current?.setUserInputActive(active, now_t);
+      },
+      setThinkingActive(active, now_t) {
+        overlayRef.current?.setThinkingActive(active, now_t);
+      },
+      fadeMouthToZero(duration_ms, now_t) {
+        overlayRef.current?.fadeMouthToZero(duration_ms, now_t);
+      },
+      armMouthFadeTimeout(silence_timeout_ms, now_t) {
+        overlayRef.current?.armMouthFadeTimeout(silence_timeout_ms, now_t);
+      },
+      cancelMouthFade() {
+        overlayRef.current?.cancelMouthFade();
+      },
+      getV2Debug() {
+        return (
+          overlayRef.current?.getV2Debug() ?? {
+            held_state: "idle" as const,
+            held_wobble_deg: 0,
+            held_surprise: 0,
+            user_input_active: false,
+            thinking_active: false,
+            mouth_fade_mode: "idle" as const,
           }
         );
       },
@@ -710,6 +755,9 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           const dy = e.clientY - start.y;
           if (dx * dx + dy * dy > 25 /* 5px threshold squared */) {
             dragStartRef.current = null;
+            // v2 A1: hand the overlay into being_held so wobble + surprise fire
+            // for the duration of the drag. Cleared on pointerup below.
+            overlayRef.current?.setDragState("being_held", e.timeStamp);
             // Synchronous call — the cached startDragging was prepared
             // at mount, so SendMessage WM_NCLBUTTONDOWN runs before the
             // user can release the button.
@@ -723,8 +771,14 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
             }
           }
         }}
-        onPointerUp={() => {
+        onPointerUp={(e) => {
           dragStartRef.current = null;
+          // v2 A1: tell overlay drag ended → spring_back begins.
+          overlayRef.current?.setDragState("idle", e.timeStamp);
+        }}
+        onPointerCancel={(e) => {
+          dragStartRef.current = null;
+          overlayRef.current?.setDragState("idle", e.timeStamp);
         }}
         onClick={(e) => {
           const ts = e.timeStamp;

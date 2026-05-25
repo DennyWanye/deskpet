@@ -55,8 +55,15 @@ import {
 } from './pointerReaction'
 import { createMetricsRing, type MetricsRing, type MetricsSnapshot } from './metricsRing'
 import { isEnabled, type AnimFlag } from './featureFlags'
+import {
+  createDragStateMachine,
+  type DragContext,
+  type DragState,
+  type DragStateMachine,
+} from './heldStateMachine'
+import { createMouthFader, type MouthFader } from './mouthFader'
 
-export type { MotionTag, InteractionKind }
+export type { MotionTag, InteractionKind, DragState }
 
 export interface CoreModelLike {
   getParameterIndex(name: string): number
@@ -137,6 +144,26 @@ export class AnimationOverlay {
   private storage: Storage | undefined
   private motionLabelsLoader: () => Record<MotionTag, number[]> | null
 
+  // ───────── v2 state (Pet Animation UX v2) ─────────
+  /** A1 wobble/spring FSM. */
+  private heldFSM: DragStateMachine
+  private heldCtx: DragContext
+  /** Latest wobble degrees from heldFSM tick (re-used across step 6 + step 7). */
+  private last_wobble_deg = 0
+  /** A1 surprise factor 0..1 (decays linearly over surprise_duration_ms). */
+  private last_surprise_factor = 0
+
+  /** B1 user-input observer state — driven by external observer; we only store the active flag here. */
+  private b1_active = false
+
+  /** B2 thinking active flag — driven by external observer. */
+  private b2_active = false
+
+  /** B4 mouth fade controller — sample() is consulted in step 1. */
+  private mouthFader: MouthFader
+  /** Tracks the last mouth_open_y written to model (for B4 800ms fallback origin). */
+  private last_mouth_observed = 0
+
   constructor(opts: OverlayOpts = {}) {
     const rng = opts.rng ?? Math.random
     this.storage = opts.storage
@@ -165,12 +192,98 @@ export class AnimationOverlay {
     this.reactorCtx = this.reactor.init()
     this.interaction_metrics = createMetricsRing(100)
     this.visual_metrics = createMetricsRing(100)
+
+    // v2: A1/B4 internal sub-machines.
+    this.heldFSM = createDragStateMachine()
+    this.heldCtx = this.heldFSM.init()
+    this.mouthFader = createMouthFader()
   }
 
   dispose(): void {
     this.disposed = true
     this.motion_player = null
     this.pending_clicks = []
+    // v2 cleanup
+    this.heldCtx = this.heldFSM.init()
+    this.mouthFader.cancel()
+    this.b1_active = false
+    this.b2_active = false
+  }
+
+  // ───────── v2 setters (PRD §6.1) ─────────
+
+  /**
+   * A1: Drag state machine input. Callers feed 'being_held' on drag start (>5px
+   * movement after pointerdown) and 'idle' on drag end. The 'spring_back'
+   * intermediate state is owned by the FSM — callers do not pass it directly.
+   */
+  setDragState(state: DragState, now_t: number): void {
+    if (!Number.isFinite(now_t)) return
+    if (state === 'being_held' && this.heldCtx.state !== 'being_held') {
+      const r = this.heldFSM.onDragStart(this.heldCtx, now_t)
+      this.heldCtx = r.ctx
+      this.last_wobble_deg = r.wobble_delta
+      this.last_surprise_factor = r.surprise_factor
+    } else if (state === 'idle' && this.heldCtx.state === 'being_held') {
+      const r = this.heldFSM.onDragEnd(this.heldCtx, now_t)
+      this.heldCtx = r.ctx
+      this.last_wobble_deg = r.wobble_delta
+      this.last_surprise_factor = r.surprise_factor
+    } else if (state === 'idle') {
+      // Force reset (covers edge cases like spring_back → external cancel).
+      this.heldCtx = this.heldFSM.init()
+      this.last_wobble_deg = 0
+      this.last_surprise_factor = 0
+    }
+  }
+
+  /** B1: User-input observer callback wiring. */
+  setUserInputActive(active: boolean, _now_t: number): void {
+    this.b1_active = !!active
+  }
+
+  /** B2: Thinking observer callback wiring. */
+  setThinkingActive(active: boolean, _now_t: number): void {
+    this.b2_active = !!active
+  }
+
+  /** B4: Start a deterministic mouth fade now (caller observed tts_end). */
+  fadeMouthToZero(duration_ms: number, now_t: number): void {
+    // Origin priority:
+    //   1. last_mouth_observed if it has been written in a previous frame
+    //   2. mouth_open_y (the static input value, in case applyTo hasn't run yet)
+    const origin = this.last_mouth_observed > 0 ? this.last_mouth_observed : this.mouth_open_y
+    this.mouthFader.start(origin, duration_ms, now_t)
+  }
+
+  /** B4: Arm the 800ms silence-timeout fallback. */
+  armMouthFadeTimeout(silence_timeout_ms: number, now_t: number): void {
+    this.mouthFader.noteCurrentMouth(this.last_mouth_observed)
+    this.mouthFader.startWithTimeout(silence_timeout_ms, now_t)
+  }
+
+  /** B3 (will be used in S2): cancels any pending mouth fade because a new viseme arrived. */
+  cancelMouthFade(): void {
+    this.mouthFader.cancel()
+  }
+
+  /** Debug snapshot for v2 instrumentation. */
+  getV2Debug(): {
+    held_state: DragState
+    held_wobble_deg: number
+    held_surprise: number
+    user_input_active: boolean
+    thinking_active: boolean
+    mouth_fade_mode: 'idle' | 'pending' | 'fading'
+  } {
+    return {
+      held_state: this.heldCtx.state,
+      held_wobble_deg: this.last_wobble_deg,
+      held_surprise: this.last_surprise_factor,
+      user_input_active: this.b1_active,
+      thinking_active: this.b2_active,
+      mouth_fade_mode: this.mouthFader.debug().mode,
+    }
   }
 
   // ───────── supervisor → overlay ─────────
@@ -387,22 +500,43 @@ export class AnimationOverlay {
       model.setParameterValueByIndex(idx, cur * mul)
     }
 
-    // ───────── step 1: mouth ─────────
-    setParam('ParamMouthOpenY', this.mouth_open_y)
+    // ───────── v2 pre-step: tick A1 held FSM (sets last_wobble/surprise for this frame) ─────────
+    const v2On = isEnabled('v2_all', this.storage)
+    if (v2On && (this.heldCtx.state === 'being_held' || this.heldCtx.state === 'spring_back')) {
+      const r = this.heldFSM.tick(this.heldCtx, now_t)
+      this.heldCtx = r.ctx
+      this.last_wobble_deg = r.wobble_delta
+      this.last_surprise_factor = r.surprise_factor
+    } else if (!v2On) {
+      // v2 hard kill: ensure no v2 state leaks into v1 frames.
+      this.last_wobble_deg = 0
+      this.last_surprise_factor = 0
+    }
+    const v2HeldActive =
+      v2On && isEnabled('held', this.storage) && this.heldCtx.state === 'being_held'
 
-    // ───────── step 2: perlin micro-motion ─────────
-    if (isEnabled('perlin', this.storage)) {
+    // ───────── step 1: mouth (B4 fade overrides static mouth_open_y when v2 active) ─────────
+    let mouth_to_write = this.mouth_open_y
+    if (v2On && isEnabled('mouth_fade', this.storage)) {
+      const faded = this.mouthFader.sample(now_t)
+      if (faded !== null) mouth_to_write = faded
+    }
+    setParam('ParamMouthOpenY', mouth_to_write)
+    this.last_mouth_observed = mouth_to_write
+
+    // ───────── step 2: perlin micro-motion (held active blocks per PRD §3 A1) ─────────
+    if (isEnabled('perlin', this.storage) && !v2HeldActive) {
       addParam('ParamAngleX', this.perlinAngleX(now_t))
       addParam('ParamAngleY', this.perlinAngleY(now_t))
       addParam('ParamBodyAngleX', this.perlinBodyAngleX(now_t))
     }
 
-    // ───────── step 3 + 4: gaze + saccade ─────────
+    // ───────── step 3 + 4: gaze + saccade (held active blocks both per PRD §3 A1) ─────────
     let gaze_head_yaw_deg = 0
     let gaze_head_pitch_deg = 0
     let eye_yaw_norm = 0
     let eye_pitch_norm = 0
-    if (isEnabled('gaze', this.storage)) {
+    if (isEnabled('gaze', this.storage) && !v2HeldActive) {
       const r = this.gaze.tick(this.gazeState, now_t)
       this.gazeState = r.state
       gaze_head_yaw_deg = r.head_yaw_deg
@@ -414,15 +548,21 @@ export class AnimationOverlay {
     }
     let sac_x = 0
     let sac_y = 0
-    if (isEnabled('saccade', this.storage)) {
+    if (isEnabled('saccade', this.storage) && !v2HeldActive) {
       const r = this.saccade.tick(this.saccadeState, now_t)
       this.saccadeState = r.state
       sac_x = r.offset_x
       sac_y = r.offset_y
     }
-    if (isEnabled('gaze', this.storage) || isEnabled('saccade', this.storage)) {
+    if ((isEnabled('gaze', this.storage) || isEnabled('saccade', this.storage)) && !v2HeldActive) {
       addParam('ParamEyeBallX', eye_yaw_norm + sac_x)
       addParam('ParamEyeBallY', eye_pitch_norm + sac_y)
+    }
+
+    // ───────── step 5a: B1 eye-open boost (MUL chain — must precede blink mul per §6.2 matrix L529) ─────────
+    if (v2On && isEnabled('user_input', this.storage) && this.b1_active) {
+      mulParam('ParamEyeLOpen', 1.15)
+      mulParam('ParamEyeROpen', 1.15)
     }
 
     // ───────── step 5: blink ─────────
@@ -437,7 +577,7 @@ export class AnimationOverlay {
       }
     }
 
-    // ───────── step 6: head tilt = base + transient ─────────
+    // ───────── step 6: head tilt = base + transient + A1 wobble + B1 tilt (§6.2 ParamAngleZ row) ─────────
     let transient = 0
     if (this.transient_tilt) {
       if (now_t <= this.transient_tilt.end_t) {
@@ -446,8 +586,51 @@ export class AnimationOverlay {
         this.transient_tilt = null
       }
     }
-    const angle_z = Math.max(-15, Math.min(15, this.state_base_tilt_deg + transient))
+    let v2_angle_z_extra = 0
+    if (v2On && isEnabled('held', this.storage)) {
+      v2_angle_z_extra += this.last_wobble_deg
+    }
+    if (v2On && isEnabled('user_input', this.storage) && this.b1_active) {
+      v2_angle_z_extra += 3
+    }
+    const angle_z = Math.max(
+      -15,
+      Math.min(15, this.state_base_tilt_deg + transient + v2_angle_z_extra),
+    )
     setParam('ParamAngleZ', angle_z)
+
+    // ───────── step 7: v2 additive head-X / eyeball-Y / body-Z / hair / brow / surprise ─────────
+    if (v2On) {
+      // A1: wobble also drives ParamBodyAngleZ (§6.2 matrix L536).
+      if (isEnabled('held', this.storage) && this.last_wobble_deg !== 0) {
+        addParam('ParamBodyAngleZ', this.last_wobble_deg)
+      }
+      // B1: HairFront oscillation (PRD §3 B1: amp 0.2, period 600ms).
+      if (isEnabled('user_input', this.storage) && this.b1_active) {
+        const hair = 0.2 * Math.sin((2 * Math.PI * now_t) / 600)
+        addParam('ParamHairFront', hair)
+      }
+      // B2 thinking: head up + eyeball up + brow up (PRD §3 B2).
+      if (isEnabled('thinking', this.storage) && this.b2_active) {
+        addParam('ParamAngleX', 5)
+        addParam('ParamEyeBallY', 0.6)
+        // B2 brow conflict with D1: PRD §6.2 matrix L534 says B2 > D1; SET is fine here in S1.
+        setParam('ParamBrowLY', 0.3)
+        setParam('ParamBrowRY', 0.3)
+      }
+      // A1 surprise pulse: SET face params interpolated by surprise_factor (PRD §3 A1 surprise).
+      // Note: this can override B2 brow values transiently — matches the "drag interrupts thinking" UX.
+      if (isEnabled('held', this.storage) && this.last_surprise_factor > 0) {
+        const sf = this.last_surprise_factor
+        setParam('ParamMouthForm', -0.5 * sf)
+        // EyeOpen surprise pulse: 1.0 → 1.3 modulated by surprise_factor
+        const eyeOpenPulse = 1 + 0.3 * sf
+        setParam('ParamEyeLOpen', eyeOpenPulse)
+        setParam('ParamEyeROpen', eyeOpenPulse)
+        setParam('ParamBrowLY', 0.5 * sf)
+        setParam('ParamBrowRY', 0.5 * sf)
+      }
+    }
 
     // ───────── motion scheduling ─────────
     if (

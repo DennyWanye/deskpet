@@ -1,5 +1,11 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Live2DCanvas, type Live2DHandle } from "./components/Live2DCanvas";
+// Pet Animation UX v2 — B1/B2 observer modules.
+import {
+  createUserInputObserver,
+  type UserInputState,
+} from "./pet-anim/userInputObserver";
+import { createThinkingObserver } from "./pet-anim/thinkingObserver";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { ContextTracePanel } from "./components/ContextTracePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -251,6 +257,26 @@ function App() {
   // Ref to the Live2D canvas — exposes setExpression/playMotion so control
   // channel events can drive the character directly without re-rendering.
   const liveRef = useRef<Live2DHandle>(null);
+
+  // ─── Pet Animation UX v2 observer refs (B1/B2). Singletons per App mount. ───
+  // B1: user-input observer wraps focus/blur/keydown/composition events on
+  // chat-input. Trailing 1.5s idle timer is driven by an animation-frame tick.
+  const userInputObsRef = useRef(
+    createUserInputObserver({ stop_after_idle_ms: 1500, ime_aware: true }, (active, t) => {
+      liveRef.current?.setUserInputActive(active, t);
+    }),
+  );
+  const userInputStateRef = useRef<UserInputState>(userInputObsRef.current.init());
+
+  // B2: thinking observer fires on sendChatV2 and exits on first chunk / final / error.
+  const thinkingObsRef = useRef(
+    createThinkingObserver({ max_duration_ms: 90_000 }, (active, t) => {
+      liveRef.current?.setThinkingActive(active, t);
+    }),
+  );
+
+  // B4 helper: track last lip_sync timestamp so we can arm the 800ms fallback.
+  const lastLipSyncTsRef = useRef<number>(-Infinity);
 
   // P5-S3 — pet supervisor state machine. Single instance per App;
   // recomputed on every relevant store update. Refs (not state) to
@@ -512,6 +538,8 @@ function App() {
         break;
       // P4-S20 chat_v2 stream events
       case "tool_use_event": {
+        // v2 B2 M-1: first stream chunk → exit thinking immediately.
+        thinkingObsRef.current.notifyFirstChunk(performance.now());
         const payload = (lastMessage as any).payload || {};
         const kind = payload.kind || "";
         const tool = payload.tool_name || "";
@@ -534,6 +562,8 @@ function App() {
         break;
       }
       case "chat_v2_final":
+        // v2 B2: defensive close in case first_chunk path was missed.
+        thinkingObsRef.current.notifyEnd(performance.now());
         setMessages((prev) => [
           ...prev,
           {
@@ -559,6 +589,8 @@ function App() {
         break;
       }
       case "chat_v2_error": {
+        // v2 B2: error closes thinking state.
+        thinkingObsRef.current.notifyEnd(performance.now());
         // P4-S22 fix: render whatever the backend sent — `error`
         // (catch-all path), `detail` (AgentLoop ErrorEvent), or
         // `reason`. WI-R5: a relay `error_class` (insufficient_balance /
@@ -649,8 +681,12 @@ function App() {
         break;
 
       case "tts_end":
-        // PCM 流式模式下每块已实时播放，tts_end 只是终态信号：关嘴 +
-        // 回到 listening。jitter buffer 的 startedRef 由 hook 内自行复位。
+        // v2 B4 — replace the v1 instant snap with a 200ms ease-out fade.
+        // Bypasses setMouthOpenY because the overlay's B4 takes over MouthOpenY
+        // for the fade duration (PRD §3 B4).
+        liveRef.current?.fadeMouthToZero(200, performance.now());
+        // Still set mouthOpenY to 0 so any non-v2 fallback path also returns
+        // to a clean state. The overlay precedence keeps the fade smooth.
         setMouthOpenY(0);
         setVadStatus("listening");
         break;
@@ -672,11 +708,31 @@ function App() {
     const unsub = channel.onJson((msg: AudioMessage) => {
       if (msg.type === "lip_sync" as string) {
         const lipMsg = msg as unknown as LipSyncMessage;
+        // v2 B4 — every new lip_sync cancels any pending fade and arms a
+        // fresh 800ms silence-timeout (M-4): if the next 800ms passes
+        // without another chunk and without tts_end, the fader auto-fades.
+        const now = performance.now();
+        liveRef.current?.cancelMouthFade();
+        liveRef.current?.armMouthFadeTimeout(800, now);
+        lastLipSyncTsRef.current = now;
         setMouthOpenY(lipMsg.payload.amplitude);
       }
     });
     return unsub;
   }, [getChannel]);
+
+  // ─── v2 B1/B2 observer tick (drives trailing-window timeouts at 100ms). ───
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const now = performance.now();
+      userInputStateRef.current = userInputObsRef.current.tick(
+        userInputStateRef.current,
+        now,
+      );
+      thinkingObsRef.current.tick(now);
+    }, 100);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const handleSend = () => {
     if (!chatText.trim()) return;
@@ -684,6 +740,8 @@ function App() {
     // 触发 UserBubble —— 每次用新对象 ref 重置淡出计时，避免相同文本重发时
     // React 因为字符串相等不重置 state（追加零宽空格保证每次 text prop 唯一）。
     setLatestUserInput(chatText + "\u200B".repeat(messages.length));
+    // v2 B2: enter thinking state right when the request goes out.
+    thinkingObsRef.current.notifyStart(performance.now());
     // P4-S21 #14: backend unified chat / chat_v2 — both route to tool_use
     // AgentLoop. Always send via sendChatV2 (the toolbar toggle is gone).
     sendChatV2(chatText);
@@ -1182,7 +1240,42 @@ function App() {
           type="text"
           value={chatText}
           onChange={(e) => setChatText(e.target.value)}
-          onKeyDown={handleKeyDown}
+          onFocus={(e) => {
+            // v2 B1: focus arms the observer but doesn't activate until keystroke.
+            userInputStateRef.current = userInputObsRef.current.onFocus(
+              userInputStateRef.current,
+              e.timeStamp,
+            );
+          }}
+          onBlur={(e) => {
+            // v2 B1: blur immediately drops active.
+            userInputStateRef.current = userInputObsRef.current.onBlur(
+              userInputStateRef.current,
+              e.timeStamp,
+            );
+          }}
+          onCompositionStart={(e) => {
+            // v2 B1 IME: composition keystrokes are pinyin chars, not real input.
+            userInputStateRef.current = userInputObsRef.current.onCompositionStart(
+              userInputStateRef.current,
+              e.timeStamp,
+            );
+          }}
+          onCompositionEnd={(e) => {
+            // v2 B1 IME: commit reawakens the trailing window.
+            userInputStateRef.current = userInputObsRef.current.onCompositionEnd(
+              userInputStateRef.current,
+              e.timeStamp,
+            );
+          }}
+          onKeyDown={(e) => {
+            // v2 B1: every keystroke resets the 1.5s trailing window (IME-guarded).
+            userInputStateRef.current = userInputObsRef.current.onKeydown(
+              userInputStateRef.current,
+              e.timeStamp,
+            );
+            handleKeyDown(e);
+          }}
           placeholder={
             state === "connected" ? "和桌宠说点什么…" : "连接中…"
           }
