@@ -6,7 +6,7 @@
 
 ## 🔑 开发期登录测试账号（**仅 DEV 环境**）
 
-DeskPet 的 LLM 调用走 chinzy 中转站（默认 gpt-5.5）。用户首次启动时走 onboarding 登录流程：
+DeskPet 的 LLM 调用走 中转站（默认 gpt-5.5）。用户首次启动时走 onboarding 登录流程：
 1. Tauri 弹登录窗 → 用户输入账号密码
 2. relay 反代 → 校验账号 → 下发 `tsk_xxx` access token + `key_xxx` device key
 3. token 写入 OS keychain（Windows DPAPI / macOS Keychain）

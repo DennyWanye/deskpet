@@ -41,7 +41,7 @@ INFO:__main__:event='config_loaded' level='info' timestamp='2026-05-22T12:53:09.
 [2m20:53:10[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[code-panel] get_shared_secret failed: No secret available (backend not started?)
 G:\projects\deskpet\backend\.venv\Lib\site-packages\transformers\utils\hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
   warnings.warn(
-INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-22T12:53:12.130321Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-22T12:53:12.130321Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
 INFO:__main__:event='llm_api_key_from_keychain' level='info' timestamp='2026-05-22T12:53:12.131321Z'
 INFO:__main__:event='sanitize_inline_cot_dsml_flag' level='info' timestamp='2026-05-22T12:53:12.131321Z' enabled=True
 INFO:__main__:event='provider_registry_initialized providers=%d' level='info' timestamp='2026-05-22T12:53:12.146323Z' positional_args=(0,)
@@ -93,7 +93,7 @@ INFO:deskpet.mcp.manager:event='mcp_server_connected' level='info' timestamp='20
 INFO:deskpet.mcp.bootstrap:event='mcp_bootstrap_started' level='info' timestamp='2026-05-22T12:53:18.148440Z' states={'filesystem': 'running', 'playwright': 'running'}
 INFO:__main__:event='p4_mcp_manager_ready' level='info' timestamp='2026-05-22T12:53:18.148440Z' states={'filesystem': 'running', 'playwright': 'running'}
 INFO:__main__:event='p5s2_circuit_breaker_wired threshold=%d cooldown=%.0fs' level='info' timestamp='2026-05-22T12:53:18.150439Z' positional_args=(3, 60.0)
-INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-22T12:53:18.150439Z' positional_args=('https://chinzy.com/v1',)
+INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-22T12:53:18.150439Z' positional_args=('https://your-llm-relay.example.com/v1',)
 INFO:deskpet.agent.watchdog:watchdog started (scan_interval=60s, stuck_threshold=900s, dedup=720s)
 INFO:__main__:event='p5_supervisor_watchdog_started' level='info' timestamp='2026-05-22T12:53:18.150439Z'
 INFO:__main__:event='p5s2_auto_resume_started enabled=%s max_attempts=%d' level='info' timestamp='2026-05-22T12:53:18.150439Z' positional_args=(True, 2)
@@ -121,15 +121,19 @@ INFO:__main__:event='p4_embedder_ready' level='info' timestamp='2026-05-22T12:53
 INFO:__main__:event='summarizer_starting age_days=30 min_messages=20 max_per_run=10' level='info' timestamp='2026-05-22T12:53:26.145972Z'
 INFO:__main__:event='summarizer_done scanned=%d summarized=%d archived=%d errors=%d' level='info' timestamp='2026-05-22T12:53:26.149972Z' positional_args=(0, 0, 0, 0)
 INFO:__main__:event='llm_runtime_overrides_saved path=%s' level='info' timestamp='2026-05-22T13:06:33.234229Z' positional_args=(WindowsPath('C:/Users/24378/AppData/Roaming/deskpet/llm_runtime.json'),)
-INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:06:33.234229Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:06:33.234229Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
 INFO:__main__:event='llm_runtime_overrides_saved path=%s' level='info' timestamp='2026-05-22T13:06:53.801094Z' positional_args=(WindowsPath('C:/Users/24378/AppData/Roaming/deskpet/llm_runtime.json'),)
 INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:06:53.801094Z' positional_args=('http://127.0.0.1:8123', 'mock-model')
 INFO:     127.0.0.1:4207 - "WebSocket /ws/control?secret=<redacted-shared-secret>&session_id=e2e-r6-test" [accepted]
 INFO:__main__:event='control channel connected' level='info' timestamp='2026-05-22T13:07:14.877424Z' session_id='e2e-r6-test'
 INFO:     connection open
-WARNING:deskpet.memory.embedder:[embedder-worker stderr] pre tokenize:   0%|          | 0/5 [00:00<?, ?it/s]pre tokenize: 100%|██████████| 5/5 [00:00<00:00, 1424.89it/s]
+WARNING:deskpet.memory.embedder:[embedder-worker stderr] 
+pre tokenize:   0%|          | 0/5 [00:00<?, ?it/s]
+pre tokenize: 100%|██████████| 5/5 [00:00<00:00, 1424.89it/s]
 WARNING:deskpet.memory.embedder:[embedder-worker stderr] You're using a XLMRobertaTokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
-WARNING:deskpet.memory.embedder:[embedder-worker stderr] Inference Embeddings:   0%|          | 0/5 [00:00<?, ?it/s]Inference Embeddings: 100%|██████████| 5/5 [00:00<00:00, 77.49it/s]
+WARNING:deskpet.memory.embedder:[embedder-worker stderr] 
+Inference Embeddings:   0%|          | 0/5 [00:00<?, ?it/s]
+Inference Embeddings: 100%|██████████| 5/5 [00:00<00:00, 77.49it/s]
 INFO:llm.model_info:model_context_resolved model=mock-model window=32000 source=builtin
 WARNING:__main__:event='p5s2_provider_chain_resolve_failed sid=%s err=%s — falling back to legacy single-provider path' level='warning' timestamp='2026-05-22T13:07:15.763795Z' positional_args=('e2e-r6-test', 'no LLM provider configured')
 INFO:providers.openai_compatible:event='openai_compat_outbound fn=chat_stream_with_tools model=%s reasoning_effort=%s extra_body=%s' level='info' timestamp='2026-05-22T13:07:15.765794Z' positional_args=('mock-model', None, None)
@@ -152,35 +156,35 @@ INFO:httpx:HTTP Request: POST http://127.0.0.1:8123/chat/completions "HTTP/1.0 4
 INFO:__main__:event='control channel disconnected' level='info' timestamp='2026-05-22T13:07:58.151649Z' session_id='e2e-r6-test'
 INFO:     connection closed
 INFO:__main__:event='llm_runtime_overrides_saved path=%s' level='info' timestamp='2026-05-22T13:08:11.049379Z' positional_args=(WindowsPath('C:/Users/24378/AppData/Roaming/deskpet/llm_runtime.json'),)
-INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:08:11.049379Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:08:11.049379Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
 INFO:     127.0.0.1:11705 - "WebSocket /ws/control?secret=<redacted-shared-secret>&session_id=e2e-r6-test" [accepted]
 INFO:__main__:event='control channel connected' level='info' timestamp='2026-05-22T13:11:02.539162Z' session_id='e2e-r6-test'
 INFO:     connection open
 INFO:llm.model_info:model_context_resolved model=gpt-5.5 window=32000 source=builtin
 WARNING:__main__:event='p5s2_provider_chain_resolve_failed sid=%s err=%s — falling back to legacy single-provider path' level='warning' timestamp='2026-05-22T13:11:02.652834Z' positional_args=('e2e-r6-test', 'no LLM provider configured')
 INFO:providers.openai_compatible:event='openai_compat_outbound fn=chat_stream_with_tools model=%s reasoning_effort=%s extra_body=%s' level='info' timestamp='2026-05-22T13:11:02.653833Z' positional_args=('gpt-5.5', None, None)
-INFO:httpx:HTTP Request: POST https://chinzy.com/v1/chat/completions "HTTP/1.1 401 Unauthorized"
+INFO:httpx:HTTP Request: POST https://your-llm-relay.example.com/v1/chat/completions "HTTP/1.1 401 Unauthorized"
 WARNING:deskpet.agent.loop:agent_loop_stream_failed_falling_back error=LLM HTTP 401 Unauthorized: 
 INFO:providers.openai_compatible:event='openai_compat_outbound fn=chat_stream_with_tools model=%s reasoning_effort=%s extra_body=%s' level='info' timestamp='2026-05-22T13:11:04.039922Z' positional_args=('gpt-5.5', None, None)
-INFO:httpx:HTTP Request: POST https://chinzy.com/v1/chat/completions "HTTP/1.1 401 Unauthorized"
+INFO:httpx:HTTP Request: POST https://your-llm-relay.example.com/v1/chat/completions "HTTP/1.1 401 Unauthorized"
 INFO:__main__:event='control channel disconnected' level='info' timestamp='2026-05-22T13:11:05.445449Z' session_id='e2e-r6-test'
 INFO:     connection closed
 INFO:__main__:event='llm_runtime_overrides_saved path=%s' level='info' timestamp='2026-05-22T13:11:28.043383Z' positional_args=(WindowsPath('C:/Users/24378/AppData/Roaming/deskpet/llm_runtime.json'),)
-INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:11:28.043383Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:11:28.043383Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
 INFO:     127.0.0.1:7999 - "WebSocket /ws/control?secret=<redacted-shared-secret>&session_id=e2e-r6-test" [accepted]
 INFO:__main__:event='control channel connected' level='info' timestamp='2026-05-22T13:11:35.950557Z' session_id='e2e-r6-test'
 INFO:     connection open
 INFO:llm.model_info:model_context_resolved model=gpt-5.5 window=32000 source=builtin
 WARNING:__main__:event='p5s2_provider_chain_resolve_failed sid=%s err=%s — falling back to legacy single-provider path' level='warning' timestamp='2026-05-22T13:11:36.069998Z' positional_args=('e2e-r6-test', 'no LLM provider configured')
 INFO:providers.openai_compatible:event='openai_compat_outbound fn=chat_stream_with_tools model=%s reasoning_effort=%s extra_body=%s' level='info' timestamp='2026-05-22T13:11:36.070998Z' positional_args=('gpt-5.5', None, None)
-INFO:httpx:HTTP Request: POST https://chinzy.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://your-llm-relay.example.com/v1/chat/completions "HTTP/1.1 200 OK"
 INFO:providers.openai_compatible:event='p4s25_stream_summary' level='info' timestamp='2026-05-22T13:11:43.523624Z' sse_lines=17 content_chars=9 reasoning_chars=0 tool_calls=0 delta_keys=['content', 'role'] stop_reason='end_turn'
 INFO:providers.openai_compatible:event='p4s25_prompt_cache_hit' level='info' timestamp='2026-05-22T13:11:43.524624Z' where='stream' cached_tokens=7680 prompt_tokens=8145 hit_rate=0.9429
 INFO:billing.ledger:event='billing_record' level='info' timestamp='2026-05-22T13:11:43.545308Z' provider='cloud' model='gpt-5.5' prompt_tokens=8145 completion_tokens=11 cost_cny=0.16312
 INFO:__main__:event='control channel disconnected' level='info' timestamp='2026-05-22T13:11:58.556108Z' session_id='e2e-r6-test'
 INFO:     connection closed
 INFO:__main__:event='llm_runtime_overrides_saved path=%s' level='info' timestamp='2026-05-22T13:25:04.532820Z' positional_args=(WindowsPath('C:/Users/24378/AppData/Roaming/deskpet/llm_runtime.json'),)
-INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:25:04.532820Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T13:25:04.532820Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
 INFO:llm.model_info:model_context_resolved model=deepseek-v4-pro window=1000000 source=builtin
 INFO:__main__:event='permission_auto_mode_set' level='info' timestamp='2026-05-22T13:25:47.700067Z' enabled=True
 INFO:__main__:event='supervisor_toggle_enabled' level='info' timestamp='2026-05-22T13:25:47.700067Z'

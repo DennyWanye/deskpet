@@ -195,7 +195,7 @@ Phase 0  ─→  Phase 2  ─→  Phase 4 ─┘
 ### 5.2 Dev 环境开启 flag
 
 - [ ] 5.5 修改 `.claude/settings.local.json` 默认 `P6_ENABLE_GATE=1`（仅本机 dev，不影响 prod 默认值）
-- [ ] 5.6 重启 deskpet，跑 chinzy 短对话 + 30 iter 长任务，对比新旧路径 log
+- [ ] 5.6 重启 deskpet，跑 the relay 短对话 + 30 iter 长任务，对比新旧路径 log
 - [ ] 5.7 写 evidence: `evidence/5.7-dev-shadow-test.md` 含截图 + log diff
 
 ### 5.3 验收

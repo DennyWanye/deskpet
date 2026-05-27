@@ -95,7 +95,7 @@ todos 4/4
 ## Bug 3：`<think>...</think>` reasoning tag 泄漏到 UI
 
 ### 根因
-Thinking-mode 模型（deepseek-v4-pro / chinzy proxy / GLM-4.5）会在
+Thinking-mode 模型（deepseek-v4-pro / the relay proxy / GLM-4.5）会在
 `assistant.content` 字段内嵌 `<think>...</think>` chain-of-thought。
 Backend 的 supervisor 和 plan 模块已经 strip 这类 tag（用于 JSON parse），
 但**chat content 流到 UI 时没 strip**。结果用户看到：

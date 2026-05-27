@@ -55,7 +55,7 @@
 ```json
 { "app_version": "0.6.0-phase4-rc3", "arch": "x86_64",
   "generated_at": 1779429244, "note_len": 39, "os": "windows",
-  "provider": { "base_url": "https://chinzy.com/v1",
+  "provider": { "base_url": "https://your-llm-relay.example.com/v1",
                 "has_api_key": true, "model": "deepseek-v4-pro" },
   "state_db_bytes": 72695808 }
 ```

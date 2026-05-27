@@ -3,7 +3,7 @@
 ## 背景
 
 经过 R1-R7 共 7 轮 live E2E 测试（10+ 小时累积运行 + 1000+ tool calls），
-以及最近 chinzy 403 outage / agent self-destruction（kill 5173 端口）事件，
+以及最近 the relay 403 outage / agent self-destruction（kill 5173 端口）事件，
 supervisor 的多个设计缺陷被暴露。本计划基于真实 log 证据系统梳理迭代方向，
 不拍脑袋。
 
@@ -29,14 +29,14 @@ _dispatch(action)
 
 | # | 问题 | 真实证据 |
 |---|---|---|
-| 1 | **无记忆 → 死循环** | chinzy 403 outage 期间 supervisor 每 ~2 分钟重复触发，自己也连不上 LLM，但仍 23 次 auto_continue + 28 次 followup，无意义燃烧请求 |
+| 1 | **无记忆 → 死循环** | the relay 403 outage 期间 supervisor 每 ~2 分钟重复触发，自己也连不上 LLM，但仍 23 次 auto_continue + 28 次 followup，无意义燃烧请求 |
 | 2 | **hint 不累积** | LLM 调 unknown tool `directory_tree`，supervisor 发 hint，但 agent 下次仍可能犯同样错——hint 没注入到 agent 的长期记忆 |
 | 3 | **不识别危险操作** | agent 用 `run_shell` kill 5173 端口（deskpet 自己的 vite），supervisor 无机制预审 → 整个 deskpet stack 崩溃，UI 显示"小说网站"网页 |
-| 4 | **与主 agent 共用 provider chain** | chinzy 死时主 agent 死，supervisor 用同一 chain 也死 → 给用户的 hint 退化成 `supervisor_unavailable: ConnectError`，无新信息 |
+| 4 | **与主 agent 共用 provider chain** | the relay 死时主 agent 死，supervisor 用同一 chain 也死 → 给用户的 hint 退化成 `supervisor_unavailable: ConnectError`，无新信息 |
 | 5 | **反应式而非预测式** | watchdog 触发条件 `idle > 900s`，实际 agent 早 5 分钟就有 retry / hallucination 模式可识别，等了 15 分钟才介入太晚 |
 | 6 | **user_message 空洞** | 典型："发现 session 卡住，要中断吗？" — 没说哪个 session、什么任务、上次进展、卡多久 |
 | 7 | **action 词汇过粗** | 只 4 种 (wait/nudge/ask_user/cancel)；缺 `restart_task` / `narrow_scope` / `summarize_pause` / `handoff` 这些常用解题动作 |
-| 8 | **auto-mode bypass 太激进** | 同 root cause 第 1 次就自动 continue，没有 escalation ladder。chinzy 403 时每次都被自动 continue，无意义死循环 |
+| 8 | **auto-mode bypass 太激进** | 同 root cause 第 1 次就自动 continue，没有 escalation ladder。the relay 403 时每次都被自动 continue，无意义死循环 |
 | 9 | **audit trail 没被复用** | `supervisor_hints` 表写得很全（alert_id / hint_text / action / severity / diagnosis），但下次 diagnose 不读，丢失历史教训 |
 
 ## 迭代方向（按 ROI 排序）
@@ -63,7 +63,7 @@ _dispatch(action)
     - auto_mode 下 → 不再 auto-continue，直接停在 ask_user 让用户看见
 - 启动时从 SessionDB 加载该 sid 最近 24h 的 supervisor_hints（恢复窗口）
 
-**ROI**：直接解决"chinzy 死时无限循环"和"反复弹同一气泡"两个用户最痛的体验。
+**ROI**：直接解决"the relay 死时无限循环"和"反复弹同一气泡"两个用户最痛的体验。
 
 **预估成本**：1 天（含单测）
 
@@ -141,7 +141,7 @@ _dispatch(action)
 
 #### E. supervisor 独立 provider（解 #4）
 
-**目标**：chinzy 死时 supervisor 不跟着死。
+**目标**：the relay 死时 supervisor 不跟着死。
 
 **设计**：
 - config.toml 加 `[supervisor.provider]` 段，可配独立 base_url/model
@@ -216,12 +216,12 @@ _dispatch(action)
 
 ### Sprint 1（1-2 天，立刻见效）：A + B + C
 
-- A 记忆去重：止住 chinzy outage 时的死循环
+- A 记忆去重：止住 the relay outage 时的死循环
 - B 结构化信号：用户体验飞跃
 - C action 词汇扩展：supervisor 真正能解题
 
 **Sprint 1 完成后预期**：
-- chinzy 突发死时不再循环烧请求；用户收到清晰报告"chain 死了请检查"
+- the relay 突发死时不再循环烧请求；用户收到清晰报告"chain 死了请检查"
 - supervisor 气泡含项目名/任务/历史，用户一眼看懂
 - supervisor 能下"重启任务"/"缩小范围"/"切换 provider"等命令
 
@@ -247,9 +247,9 @@ _dispatch(action)
 
 ## 验收标准（Sprint 1）
 
-落地后跑一次"chinzy 模拟 outage"测试：
+落地后跑一次"the relay 模拟 outage"测试：
 1. 启动 deskpet + 让两个 code session 跑
-2. 用 firewall block chinzy.com（或换错的 API key）
+2. 用 firewall block your-llm-relay.example.com（或换错的 API key）
 3. 观察 10 分钟
 4. **期望**：
    - 第 1 次 supervisor 触发后给用户**清晰错误信息**（chain 死，请检查）

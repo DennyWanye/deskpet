@@ -15,7 +15,7 @@ class _Reg:
     """Minimal registry stub: one global chain entry."""
 
     def get_chain(self):
-        return [{"id": "p0", "base_url": "https://chinzy.com/v1",
+        return [{"id": "p0", "base_url": "https://your-llm-relay.example.com/v1",
                  "model": "deepseek-v4-pro", "temperature": 0.7}]
 
     def get_entry(self, pid):

@@ -6,7 +6,7 @@
 
 - [ ] 1.1 写 `backend/tests/test_image_worker.py`（fake notifier + fake httpx，TDD 先行）：
   - enqueue 一个 job → _process → notifier 收到成功文案（含 filename/model/size）
-  - chinzy 失败（断连/4xx）→ notifier 收到 graceful 文案（不编造）
+  - the relay 失败（断连/4xx）→ notifier 收到 graceful 文案（不编造）
   - dedup：同 (session,prompt,size) key 第二次 submit 不入队
   - 并发：Semaphore(max_concurrent) 上限生效
   - start/stop 幂等；stop 取消在途

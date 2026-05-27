@@ -10,9 +10,9 @@ log_level = "INFO"
 # 不再区分 local 和 cloud — 想用本地 Ollama 就配 localhost:11434/v1，
 # 想用云端就改 base_url + 设环境变量 DESKPET_LLM_API_KEY。
 #
-# 2026-05-22 beta-100 默认模型：chinzy 中转站 + gpt-5.5。内置办公技能
+# 2026-05-22 beta-100 默认模型：中转站 + gpt-5.5。内置办公技能
 # （excel/doc/ppt/file-organize/...）依赖稳定的 function-calling —— 本地
-# 小模型（gemma:4b 等）做不到，故内测包默认走 chinzy 上的 gpt-5.5。
+# 小模型（gemma:4b 等）做不到，故内测包默认走 中转站上的 gpt-5.5。
 # api_key 留空：由用户登录后从中转站下发并写入 keyring（见 backend/llm/
 # keys.py）—— 按设计**绝不**把真实 key 明文写进本文件。
 [llm]
@@ -27,7 +27,7 @@ temperature = 0.7
 max_tokens = 8192
 daily_budget_cny = 10.0
 # 2026-05-17 deepseek-inline-cot-dsml-sanitize (Strangler-Fig, 默认开)：
-# chinzy 的 deepseek-v4-pro 有时把思维链 <｜begin▁of▁thinking｜>…
+# 中转站的 deepseek-v4-pro 有时把思维链 <｜begin▁of▁thinking｜>…
 # <｜end▁of▁thinking｜> 和原生 <｜｜DSML｜｜tool_calls> 工具协议内联进
 # content（而非结构化 reasoning_content / tool_calls 字段），未清洗会
 # 泄漏进 write_file 内容污染目标文件。开启 → provider 在唯一 chokepoint
@@ -225,7 +225,7 @@ capability_gate_enabled = true
 write_scope_enforced = true
 
 # 2026-05-16: generate_image 工具（文生图）。用户说"生成图片"时 agent
-# 调用，走 llm_runtime.json 的 base_url+api_key（同 chinzy 端点）的
+# 调用，走 llm_runtime.json 的 base_url+api_key（同 中转站端点）的
 # POST /v1/images/generations，存到 workspace 并用系统看图器打开。
 # model 缺省 gpt-image-2；要换别的图像模型改这里即可（端点不支持时
 # 工具返回 ok:false 不崩）。
@@ -235,7 +235,7 @@ model = "gpt-image-2"
 # 返回，ImageGenerationWorker 后台出图、画好自动推回桌宠（agent 回合
 # 不阻塞 60-240s）。false → 退回旧同步阻塞实现（Strangler-Fig 回退）。
 async_enabled = true
-# 后台 worker 最大并发出图数（防同时太多打爆 chinzy + 控成本 $0.15/张）。
+# 后台 worker 最大并发出图数（防同时太多打爆 the relay + 控成本 $0.15/张）。
 max_concurrent = 2
 
 [memory]
@@ -320,8 +320,8 @@ model_override = ""          # 留空 = 用主 LLM
 max_iterations = 20
 # code-session-model-params (Strangler-Fig): code-mode sessions with no
 # explicit per-session model use this; pet/companion/supervisor keep
-# their own model (deepseek-v4-pro via chinzy). "" = revert to legacy
-# shared model. chinzy is OpenAI-compatible so only the wire model id
+# their own model (deepseek-v4-pro via the relay). "" = revert to legacy
+# shared model. the relay is OpenAI-compatible so only the wire model id
 # changes. Per-session overrides + params (thinking/fast/context/effort)
 # are set live from the code panel picker.
 code_model = "gpt-5.5"

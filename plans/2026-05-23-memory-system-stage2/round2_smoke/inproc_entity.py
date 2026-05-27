@@ -21,9 +21,9 @@ DB = Path(r"G:\projects\deskpet\backend\userdata\data\state.db")
 
 async def make_llm():
     import httpx, keyring
-    api_key = keyring.get_password("deskpet", "provider.chinzy")
+    api_key = keyring.get_password("deskpet", "provider.the relay")
     client = httpx.AsyncClient(
-        base_url="https://chinzy.com/v1", timeout=60.0,
+        base_url="https://your-llm-relay.example.com/v1", timeout=60.0,
         headers={"Authorization": f"Bearer {api_key}"},
     )
 

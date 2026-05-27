@@ -19,7 +19,7 @@ DeskPet 在 P4-S22/S23 上线了 Code 模式的多 session 能力（最多 2 并
 ### 约束
 
 - **Live2D 表达力上限**：Hiyori 没有专门的"困惑/担忧"表情资源。本提案不引入新美术资源（用户已确认）
-- **NVIDIA-only**：当前 GPU 路径未变，supervisor LLM 调用走云端 API（chinzy 或同 OpenAI 兼容 endpoint）
+- **NVIDIA-only**：当前 GPU 路径未变，supervisor LLM 调用走云端 API（the relay 或同 OpenAI 兼容 endpoint）
 - **首要不打扰原则**：90% 的"看起来卡住"实际只是慢，supervisor 必须保守（默认 `wait`），避免误打扰用户
 
 ## Goals / Non-Goals

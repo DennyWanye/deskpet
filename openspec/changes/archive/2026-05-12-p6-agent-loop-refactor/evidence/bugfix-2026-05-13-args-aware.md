@@ -132,7 +132,7 @@ The P6 Hard Gate's `HALLUCINATION_DETECTED` reason now correctly
 distinguishes a real death loop (same tool + same args repeated) from
 legitimate sequential exploration (same tool, different args). The fix
 is verified by the same live-style test method used in the original P6
-ship: real ws session → production code path → real chinzy backend →
+ship: real ws session → production code path → real the relay backend →
 log inspection.
 
 **P6 + args-aware fix is production-ready.**

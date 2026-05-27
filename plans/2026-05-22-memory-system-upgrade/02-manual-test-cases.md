@@ -168,9 +168,9 @@ LLM 标「环境受限未测」，降级链路均已验证正确 —— 符合�
 
 ---
 
-## 5. LLM-enabled 复测（2026-05-23，第 3 轮 — 真 chinzy-relay deepseek-chat）
+## 5. LLM-enabled 复测（2026-05-23，第 3 轮 — 真 the relay-relay deepseek-chat）
 
-配上 chinzy 中转账号 + deepseek-chat 模型（此账号 gpt-5.5/gpt-4o-mini/
+配上 the relay 中转账号 + deepseek-chat 模型（此账号 gpt-5.5/gpt-4o-mini/
 claude-haiku-4-5 503 无配额）后，对前两轮标「环境受限未测」的 LLM 依赖项做
 专项补测。
 
@@ -236,7 +236,7 @@ claude-haiku-4-5 503 无配额）后，对前两轮标「环境受限未测」�
    一旦 2/2 失败就 fall back mock。**已改驱动**：MR-1/2/5 共享一个
    embedder 实例（与 production 一致）。
 
-3. **chinzy deepseek-chat 同 prompt 偶发返回空内容** —— 让 MR-5
+3. **the relay deepseek-chat 同 prompt 偶发返回空内容** —— 让 MR-5
    reflection 偶发 None。**已加 5 次重试 + 指数退避**到测试驱动，覆盖
    抖动窗口；production 代码侧的 LLM 调用本来就是 best-effort 失败隔离，
    不强制修复 production。

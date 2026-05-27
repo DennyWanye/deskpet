@@ -6,10 +6,10 @@
  */
 
 /** 中转站充值页 —— "去充值" 按钮跳转目标（外部浏览器打开）。 */
-export const RECHARGE_URL = "https://chinzy.com/console/billing";
+export const RECHARGE_URL = "https://your-llm-relay.example.com/console/billing";
 
 /** 中转站多设备管理控制台。 */
-export const DEVICE_CONSOLE_URL = "https://chinzy.com/console/devices";
+export const DEVICE_CONSOLE_URL = "https://your-llm-relay.example.com/console/devices";
 
 /**
  * 内测默认首选模型别名。`relayProviderBridge` 在 provider 的 models 列表里

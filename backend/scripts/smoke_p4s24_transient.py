@@ -1,5 +1,5 @@
 """P4-S24 transient-retry smoke: hammer the LLM with 6 sequential
-requests on independent sessions to hit chinzy's flaky 'Server
+requests on independent sessions to hit the relay's flaky 'Server
 disconnected' behavior. Verifies:
 
 1. No request bubbles up "Server disconnected" to the user when the

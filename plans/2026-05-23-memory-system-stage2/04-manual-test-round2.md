@@ -1,7 +1,7 @@
 # 人工测试 round 2 — 真 LLM + master 分支 — 2026-05-24
 
 **测试者**: Claude opus 4.7（主对话）
-**测试范围**: MR-S2-0 ~ MR-S2-14 — 真 LLM (chinzy + deepseek-v4-pro，账号 <see LOCAL-DEV-CREDENTIALS.md>) + master 分支
+**测试范围**: MR-S2-0 ~ MR-S2-14 — 真 LLM (the relay + deepseek-v4-pro，账号 <see LOCAL-DEV-CREDENTIALS.md>) + master 分支
 **对比 round 1**: round 1 全是 mock LLM 模拟；本轮**真 LLM 调用** + **真发现 2 个 PRD 设计 bug**
 **分支**: `master`（feat/memory-stage2 已 fast-forward merge 进来）
 **Backend**: 真启动 (dev-start) + `[memory.v2]` 全 flag = true
@@ -71,7 +71,7 @@ facts 表 `episodic_summary` 行数 = 0 ❌。逐层 probe 发现：
 | MR-S2-0-3 老库 ALTER | ✅ | userdata state.db 真 ALTER `superseded_by` + `forgotten_at` 成功；后续 SQL 正常 |
 | **MR-S2-1** 跨 key 矛盾治理 ★ | ✅ FIX 后 | 真 LLM "我对花生过敏" → "其实是过敏海鲜" → `id=7 peanut_allergy active=0 superseded_by=8`；fix 前 LLM 判不矛盾，fix 后正确判矛盾 |
 | MR-S2-1-7 非矛盾对照 | ✅ | TG-S1 测试覆盖 |
-| MR-S2-1-9 N=30 误判率 | 🔘 待延后 | 需 30 次真 LLM 调用统计；chinzy ReadError 抖动严重，建议留待延后批跑 |
+| MR-S2-1-9 N=30 误判率 | 🔘 待延后 | 需 30 次真 LLM 调用统计；the relay ReadError 抖动严重，建议留待延后批跑 |
 | **MR-S2-2** memory_forget 工具 | ✅ | TS2-1~13 14/14 + agent 真调到 `memory_forget` 工具（backend log `p5s2_tool_call_args_dump name=memory_forget`）+ `enable_natural_language=False` 拦截生效 |
 | MR-S2-2-4 / **MR-S2-12** UI 真点击 | 🔘 环境受限 | dev 模式桌宠窗口位置在 -21333,-21333 屏幕外；vitest 18/18 + ws 路由集成 6/6 已覆盖逻辑层；UI 视觉验证需用户在主屏拖回窗口 |
 | **MR-S2-3** entity 索引 | ✅ | 真 LLM extractor 抽 "旺财"/"老李"/"Mike" 正确；find_by_entities 命中正确 fact；"今天怎么了" 被停用词过滤；纯 Mike query 命中 0（fact 表无）正常 |
@@ -82,7 +82,7 @@ facts 表 `episodic_summary` 行数 = 0 ❌。逐层 probe 发现：
 | **MR-S2-7** flag 一键回退 | ✅ | userdata config 4 个 flag 全开后 boot：`p4_fact_extractor_ready cross_key_merge=True` + `p4_entity_path_enabled` + `p4_memory_forget_tool_bound` + 无 `MemoryV2Config ignoring unknown keys` warning |
 | **MR-S2-8** 老库兼容 | ✅ | userdata state.db 是 round 1 老库（无 superseded_by 列）→ ALTER 成功；availability `{'superseded_by': True, 'forgotten_at': True}` |
 | MR-S2-8-5 ALTER 失败禁 flag | ✅ | TS0-4 单测覆盖 |
-| **MR-S2-9** 性能 | 🔘 待延后 | chinzy ReadError 抖动严重，准确压测需稳定 provider |
+| **MR-S2-9** 性能 | 🔘 待延后 | the relay ReadError 抖动严重，准确压测需稳定 provider |
 | **MR-S2-10** cleanup 批量 | ✅ | TS0-7 + cleanup --dry-run --max-subjects 参数齐 |
 | **MR-S2-11** 文档归档 | ✅ | TDD §D 回填 + round 1 + 本 round 2 报告 |
 | **MR-S2-13** R-MISS-2 防覆盖 ★ | ✅ | 真 LLM forget peanut → 重提 "我对花生过敏" → `persisted: []`（被 is_forgotten_recently 跳过）→ 8 天后伪造 → 正常 insert 新 fact |
@@ -134,4 +134,4 @@ facts 表 `episodic_summary` 行数 = 0 ❌。逐层 probe 发现：
 - `inproc_r_miss_2.py` - R-MISS-2 防覆盖
 - `inproc_episodic.py` - episodic→semantic 端到端
 - `inproc_entity.py` - entity 索引
-- `smoke_cross_key.py` - 走 chat_v2 ws 路径（chinzy ReadError 抖动太严重未完整跑通）
+- `smoke_cross_key.py` - 走 chat_v2 ws 路径（the relay ReadError 抖动太严重未完整跑通）

@@ -72,7 +72,7 @@ public static void Click(int x, int y) {
 03:07:50.507  capability_gate.llm_timeout (2.0s)
 03:07:50.742  p5s2_provider_chain_resolve_failed → fallback to legacy
 03:07:50.742  openai_compat_outbound (retry)
-03:07:55.870  HTTP POST https://chinzy.com/v1/chat/completions → 200 OK
+03:07:55.870  HTTP POST https://your-llm-relay.example.com/v1/chat/completions → 200 OK
               p4s25_stream_summary sse_lines=41 content_chars=35
               stop_reason=end_turn
 03:07:55.901  billing_record provider=cloud model=gpt-5.5

@@ -4,8 +4,8 @@
 - Clean single stack restart, `.venv` backend (`backend_launch] Dev python=…\.venv\Scripts\python.exe`), Uvicorn 8100, Vite 5173.
 - Strangler-Fig flag confirmed live in backend log:
   `event='sanitize_inline_cot_dsml_flag' enabled=True`
-- Code-mode agent provider = **Global Chain → chinzy deepseek-v4-pro**
-  (`POST https://chinzy.com/v1/chat/completions "HTTP/1.1 200 OK"`).
+- Code-mode agent provider = **Global Chain → the relay deepseek-v4-pro**
+  (`POST https://your-llm-relay.example.com/v1/chat/completions "HTTP/1.1 200 OK"`).
 
 ## Procedure (computer-use, real UI)
 1. Opened Code Mode (🔧) → 小说网站 session.
@@ -38,7 +38,7 @@ def add(a, b):
   importing the same `providers._response_sanitizer` wired into
   `openai_compatible.py`).
 - This live run proves **integration + zero regression**: with the fix
-  active, a real chinzy-deepseek-v4-pro `write_file` round-trip (including
+  active, a real the relay-deepseek-v4-pro `write_file` round-trip (including
   the structured-reasoning path) produces a byte-clean, valid file — the
   llm_service.py-style corruption cannot occur.
 - Rollback path available: `[llm] sanitize_inline_cot_dsml = false`

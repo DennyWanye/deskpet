@@ -1,6 +1,6 @@
 /**
  * RelayAuthAdapter — paid-edition implementation of `AuthAdapter` that
- * talks to the relay station (chinzy.com).
+ * talks to the relay station (your-llm-relay.example.com).
  *
  * Lives in the OSS repo for now (Week 2 of the relay integration plan).
  * The boundary between OSS and closed-source paid is currently the
@@ -89,7 +89,7 @@ export interface RelayBindings {
 
 /** Per-edition tunables. Default to the production relay. */
 export interface RelayAdapterOptions {
-  /** Base URL without trailing slash, e.g. "https://chinzy.com". */
+  /** Base URL without trailing slash, e.g. "https://your-llm-relay.example.com". */
   baseUrl?: string;
   /** Override for `fetch` — vitest sets this to a mock. */
   fetchImpl?: typeof fetch;
@@ -97,7 +97,7 @@ export interface RelayAdapterOptions {
   bindings?: RelayBindings;
 }
 
-const DEFAULT_BASE_URL = "https://chinzy.com";
+const DEFAULT_BASE_URL = "https://your-llm-relay.example.com";
 
 /** Shape returned by the auth endpoints; subset of the full envelope. */
 interface AuthTokenResponse {

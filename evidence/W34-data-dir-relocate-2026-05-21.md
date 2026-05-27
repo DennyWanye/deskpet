@@ -102,7 +102,7 @@ Total cargo tests: **54 passed** (was 47).
 
 Most important assertion: the relay session survived the data move AND the recompile.
 
-- Original login: `e2e-03-account-panel.png` showed `<redacted-user@example.com>` / ¥712.95 (chinzy.com response)
+- Original login: `e2e-03-account-panel.png` showed `<redacted-user@example.com>` / ¥712.95 (your-llm-relay.example.com response)
 - After: moved data dir from C: to F:, set env var, killed all processes, rebuilt release exe with new code, relaunched
 - Result: 👤 pill appeared immediately, no login modal
 - Proves: **Windows Credential Manager tokens (RelayAuthAdapter persistence) are independent of the data dir relocation**

@@ -4,7 +4,7 @@ One tool, ``run_browser_task``, that lets a code-mode session agent run a
 natural-language browser task ("open the dev server, click the Send
 button, verify the reply appears") for end-to-end testing. The heavy
 lifting is delegated to `browser-use <https://github.com/browser-use/browser-use>`_
-driving Chromium via Playwright, with an LLM (``gpt-5.5`` over the chinzy
+driving Chromium via Playwright, with an LLM (``gpt-5.5`` over the the relay
 OpenAI-compatible endpoint) as the decision loop.
 
 Why this module looks the way it does
@@ -52,7 +52,7 @@ Conventions mirrored from the existing tool layer
 * Creds resolution: ``base_url``/``model``/``api_key`` read from
   ``user_data_dir()/llm_runtime.json`` (the runtime-override file written
   by the settings panel — see ``backend/config.py`` ``_load_llm_runtime_overrides``),
-  falling back to the ``[code_e2e]`` config section, then to the chinzy
+  falling back to the ``[code_e2e]`` config section, then to the the relay
   defaults. No API key is ever hardcoded.
 """
 from __future__ import annotations
@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 
 _APP_NAME = "deskpet"
 
-# chinzy OpenAI-compatible endpoint + the multimodal code-mode model.
+# the relay OpenAI-compatible endpoint + the multimodal code-mode model.
 # These are *defaults* only — overridable via llm_runtime.json or the
 # [code_e2e] config section. Never a secret (no api_key here).
 _DEFAULT_BASE_URL = "https://chinzy.com/v1"
@@ -172,7 +172,7 @@ def _resolve_creds() -> dict[str, str]:
          ``backend/config.py`` ``_load_llm_runtime_overrides``).
       2. ``[code_e2e]`` config section (``base_url`` / ``api_key`` /
          ``model``) — lets an operator pin a dedicated test endpoint.
-      3. chinzy defaults for base_url+model; api_key from the
+      3. the relay defaults for base_url+model; api_key from the
          ``DESKPET_CLOUD_API_KEY`` / ``OPENAI_API_KEY`` env as a last
          resort.
 

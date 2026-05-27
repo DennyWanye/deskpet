@@ -3,7 +3,7 @@
  *
  * The Cursor-style picker's model dropdown is data-driven, NOT a
  * hardcoded preset list. Backend pulls the relay's real catalog
- * (chinzy 中转站 GET /models) and ships it via `code_models_list_response`
+ * (中转站 GET /models) and ships it via `code_models_list_response`
  * with a per-model capability map so the picker only renders the params
  * each model actually supports (gpt-5.x → reasoning_effort; claude
  * opus/sonnet → thinking; they differ).

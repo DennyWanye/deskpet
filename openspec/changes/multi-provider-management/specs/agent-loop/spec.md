@@ -48,18 +48,18 @@
 
 #### Scenario: Code session pinned to single provider
 
-- **GIVEN** code_session_provider for sid "vpn-tunnel" has `provider_id="chinzy"`
+- **GIVEN** code_session_provider for sid "vpn-tunnel" has `provider_id="the relay"`
 - **WHEN** chat handler resolves chain
-- **THEN** chain = `[chinzy]` only — even if global chain has 3 providers
-- **AND** transient error in chinzy yields `ErrorEvent` immediately (no fallback to global chain by default)
-- **AND** UI for that card shows "已固定到 chinzy（无 fallback）" hint
+- **THEN** chain = `[the relay]` only — even if global chain has 3 providers
+- **AND** transient error in the relay yields `ErrorEvent` immediately (no fallback to global chain by default)
+- **AND** UI for that card shows "已固定到 the relay（无 fallback）" hint
 
 #### Scenario: preferred_model overrides per-call model
 
 - **GIVEN** code_session has `preferred_model="claude-4.7-opus"` (no provider_id)
-- **AND** global chain has `[chinzy(model=deepseek-v4-pro), openrouter(model=claude-4.7-sonnet)]`
+- **AND** global chain has `[the relay(model=deepseek-v4-pro), openrouter(model=claude-4.7-sonnet)]`
 - **WHEN** AgentLoop calls each provider
-- **THEN** the request sent to chinzy has `model="claude-4.7-opus"` (NOT deepseek-v4-pro)
+- **THEN** the request sent to the relay has `model="claude-4.7-opus"` (NOT deepseek-v4-pro)
 - **AND** the request sent to openrouter has `model="claude-4.7-opus"` (NOT claude-4.7-sonnet)
 - **AND** the provider's own configured model is overridden ONLY for this session's requests
 

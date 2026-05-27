@@ -69,7 +69,7 @@ class ContextConfig:
 
 ## D4 — 4-breakpoint prompt cache（Phase 1.3）
 
-参考 Claude Code 的 4 个 breakpoint。OpenAI-compat（chinzy/deepseek）走 **prefix cache**，命中条件是 history 前缀字节稳定。
+参考 Claude Code 的 4 个 breakpoint。OpenAI-compat（the relay/deepseek）走 **prefix cache**，命中条件是 history 前缀字节稳定。
 
 **决策**：把 messages 装配顺序固定为稳定→易变，并在 provider 层对前缀打 cache 标记（Anthropic `cache_control`；OpenAI-compat 靠前缀稳定自动命中）：
 

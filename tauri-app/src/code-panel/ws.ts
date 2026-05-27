@@ -109,11 +109,11 @@ async function open_socket() {
     // Pull current sessions list on (re)connect so the dashboard hydrates.
     ws?.send(JSON.stringify({ type: "code_sessions_list" }));
     // code-session-model-params: pull the live model catalog so the
-    // picker's dropdown is data-driven (chinzy /models), not hardcoded.
+    // picker's dropdown is data-driven (the relay /models), not hardcoded.
     ws?.send(JSON.stringify({ type: "code_models_list" }));
     // Pull the provider list so the per-session provider dropdown shows
     // the REAL provider names from Settings → LLM Providers (e.g.
-    // "chinzy"), not just the generic "Global Chain" placeholder.
+    // "the relay"), not just the generic "Global Chain" placeholder.
     ws?.send(JSON.stringify({ type: "settings_providers_list_request" }));
     // Also pull current todos for the active session in case they
     // changed since last connect.

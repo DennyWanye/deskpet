@@ -82,7 +82,7 @@ deskpet 现在 todo_write 工具有点 plan 影子（鼓励 LLM 先开 todo）�
 - tool_call 参数解析翻车（[openai_compatible.py:233](../backend/providers/openai_compatible.py)）
 
 **期望**
-OpenAI / chinzy 用 `response_format: {"type": "json_schema", ...}` 强制合法 JSON。
+OpenAI / the relay 用 `response_format: {"type": "json_schema", ...}` 强制合法 JSON。
 
 **实现要点**
 - [openai_compatible.py](../backend/providers/openai_compatible.py) 接受
@@ -106,7 +106,7 @@ deskpet 已经按 frozen / dynamic 分仓（[bundle.py](../backend/deskpet/agent
 最后一个 frozen 段加 `"cache_control": {"type": "ephemeral"}`。
 - Anthropic 直接生效 → 跨轮 cache_read 计费 0.1×，省 70%+ token 成本
 - OpenAI gpt-4o 自动 cache（不用标记，无副作用）
-- chinzy / Ollama 大概率忽略字段（无副作用）
+- the relay / Ollama 大概率忽略字段（无副作用）
 
 **工作量** ~10 行 + 一组 e2e 验证
 

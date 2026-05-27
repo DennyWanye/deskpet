@@ -26,16 +26,16 @@ WS control channel SHALL accept and respond to:
 
 #### Scenario: add validates required fields + uniqueness
 
-- **GIVEN** registry has provider `chinzy`
-- **WHEN** ws receives `settings_providers_add` with id=`"chinzy"` (duplicate) OR missing `base_url`
+- **GIVEN** registry has provider `the relay`
+- **WHEN** ws receives `settings_providers_add` with id=`"the relay"` (duplicate) OR missing `base_url`
 - **THEN** ws sends error response `{type: "settings_providers_error", reason: "duplicate_id" | "missing_field", detail: "..."}`
 - **AND** registry unchanged
 - **AND** NO `providers_changed` broadcast
 
 #### Scenario: update with partial patch
 
-- **GIVEN** provider `chinzy` exists with priority=1
-- **WHEN** ws receives `settings_providers_update {id: "chinzy", patch: {priority: 5}}`
+- **GIVEN** provider `the relay` exists with priority=1
+- **WHEN** ws receives `settings_providers_update {id: "the relay", patch: {priority: 5}}`
 - **THEN** only priority is updated; name/base_url/model/api_key/enabled unchanged
 - **AND** if patch contains `api_key` (non-empty string), keychain entry is updated; if empty/missing, keychain unchanged
 - **AND** `providers_changed` broadcast to all control connections
@@ -56,7 +56,7 @@ WS control channel SHALL accept and respond to:
 
 #### Scenario: code_session_set_provider with null clears binding
 
-- **GIVEN** code session "vpn-tunnel" has `provider_id="chinzy"` binding
+- **GIVEN** code session "vpn-tunnel" has `provider_id="the relay"` binding
 - **WHEN** ws receives `code_session_set_provider {session_id: "vpn-tunnel", provider_id: null}`
 - **THEN** SessionDB binding row updated/deleted appropriately
 - **AND** ws response `code_session_provider_set {session_id: "vpn-tunnel", provider_id: null, preferred_model: null}`

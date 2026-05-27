@@ -61,7 +61,7 @@ fresh `npm run tauri:dev`），UI 点击重新打开 code mode + 重发"继续�
 - 用户可能在 C5 看到了一个红色气泡，但 **agent 自动 continue 没卡** → 不影响稳定性
 
 ### 服务健康
-- `chinzy_errors: 0`（0 个 403 / ConnectTimeout / all_providers_failed）
+- `the relay_errors: 0`（0 个 403 / ConnectTimeout / all_providers_failed）
 - `supervisor_outage_skip: 0`（没 trigger provider outage protection）
 
 ### 0 真错误（excluding benign）

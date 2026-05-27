@@ -52,7 +52,7 @@ function resetStores() {
 }
 
 const sample_providers: ProviderEntry[] = [
-  { id: "chinzy", name: "Chinzy", enabled: true, priority: 1 },
+  { id: "the relay", name: "Chinzy", enabled: true, priority: 1 },
   { id: "openrouter-claude", name: "OpenRouter Claude", enabled: true, priority: 2 },
   { id: "ollama-disabled", name: "Local Ollama", enabled: false, priority: 9 },
 ];
@@ -68,7 +68,7 @@ describe("test_card_renders_provider_dropdown", () => {
     // provider name ("Chinzy（默认）") instead of "Global Chain".
     expect(opts[0].value).toBeNull();
     expect(opts[0].label).toBe("Chinzy（默认）");
-    expect(opts.map((o) => o.value)).toEqual([null, "chinzy", "openrouter-claude"]);
+    expect(opts.map((o) => o.value)).toEqual([null, "the relay", "openrouter-claude"]);
     // disabled provider is dropped
     expect(opts.find((o) => o.value === "ollama-disabled")).toBeUndefined();
   });
@@ -137,7 +137,7 @@ describe("test_pinned_session_shows_lock_icon", () => {
   beforeEach(resetStores);
 
   it("provider_id != null → display.locked = true + lock indicator in label", () => {
-    const display = resolveCardDropdownDisplay("chinzy", sample_providers);
+    const display = resolveCardDropdownDisplay("the relay", sample_providers);
     expect(display.locked).toBe(true);
     expect(display.label).toBe("Chinzy");
     expect(display.icon).toBe("🔒");
@@ -168,17 +168,17 @@ describe("test_provider_removed_falls_card_to_global_with_toast", () => {
   });
 
   it("providers_changed ws event removes binding for sessions pinned to deleted provider", () => {
-    // Seed: session pinned to chinzy
+    // Seed: session pinned to the relay
     useSessionsStore.getState().ensure("s-pinned", {
-      provider_id: "chinzy",
+      provider_id: "the relay",
       preferred_model: null,
     });
     useProvidersStore.getState().set_providers(sample_providers);
     expect(useSessionsStore.getState().sessions["s-pinned"]?.provider_id).toBe(
-      "chinzy",
+      "the relay",
     );
 
-    // Backend drops chinzy and broadcasts the new list (only openrouter remains)
+    // Backend drops the relay and broadcasts the new list (only openrouter remains)
     __test_dispatch({
       type: "providers_changed",
       payload: {
@@ -190,7 +190,7 @@ describe("test_provider_removed_falls_card_to_global_with_toast", () => {
     expect(useProvidersStore.getState().providers.map((p) => p.id)).toEqual([
       "openrouter-claude",
     ]);
-    // session that was pinned to chinzy falls back to global chain
+    // session that was pinned to the relay falls back to global chain
     expect(useSessionsStore.getState().sessions["s-pinned"]?.provider_id).toBeNull();
   });
 
@@ -255,11 +255,11 @@ describe("test_session_state_includes_provider_binding_fields", () => {
   it("upsert can write provider_id + preferred_model", () => {
     useSessionsStore.getState().ensure("sid-2");
     useSessionsStore.getState().upsert("sid-2", {
-      provider_id: "chinzy",
+      provider_id: "the relay",
       preferred_model: "claude-4.7",
     });
     const s = useSessionsStore.getState().sessions["sid-2"]!;
-    expect(s.provider_id).toBe("chinzy");
+    expect(s.provider_id).toBe("the relay");
     expect(s.preferred_model).toBe("claude-4.7");
   });
 });
@@ -279,7 +279,7 @@ describe("test_code_sessions_list_response_populates_binding_fields", () => {
             code_session_id: "code-vpn",
             project_root: "/tmp/vpn",
             project_name: "vpn-tunnel",
-            provider_id: "chinzy",
+            provider_id: "the relay",
             preferred_model: null,
           },
           {
@@ -295,7 +295,7 @@ describe("test_code_sessions_list_response_populates_binding_fields", () => {
     });
 
     const sessions = useSessionsStore.getState().sessions;
-    expect(sessions["vpn-tunnel"]?.provider_id).toBe("chinzy");
+    expect(sessions["vpn-tunnel"]?.provider_id).toBe("the relay");
     expect(sessions["vpn-tunnel"]?.preferred_model).toBeNull();
     expect(sessions["research"]?.provider_id).toBeNull();
     expect(sessions["research"]?.preferred_model).toBe("gpt-5.4");
@@ -557,7 +557,7 @@ describe("test_model_params_round_trip_via_ws", () => {
             code_session_id: "code-vpn",
             project_root: "/tmp/vpn",
             project_name: "vpn-tunnel",
-            provider_id: "chinzy",
+            provider_id: "the relay",
             preferred_model: null,
             // NOTE: backend list response does NOT include model_params
           },
@@ -565,7 +565,7 @@ describe("test_model_params_round_trip_via_ws", () => {
       },
     });
     const s = useSessionsStore.getState().sessions["vpn-tunnel"]!;
-    expect(s.provider_id).toBe("chinzy");
+    expect(s.provider_id).toBe("the relay");
     // optimistic picker write survives the list refresh
     expect(s.model_params).toEqual({ effort: "high", thinking: true });
   });

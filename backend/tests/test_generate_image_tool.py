@@ -1,4 +1,4 @@
-"""TDD: generate_image tool — gpt-image-2 via chinzy, save to workspace,
+"""TDD: generate_image tool — gpt-image-2 via the relay, save to workspace,
 open with OS viewer.
 
 httpx is mocked (no real API / no cost / no external dependency).
@@ -71,7 +71,7 @@ def img_mod(monkeypatch, tmp_path):
 
     monkeypatch.setattr(m.httpx, "Client", _FakeClient)
     monkeypatch.setattr(
-        m, "_resolve_endpoint", lambda: ("https://chinzy.com/v1", "tsk_test")
+        m, "_resolve_endpoint", lambda: ("https://your-llm-relay.example.com/v1", "tsk_test")
     )
     monkeypatch.setattr(m, "_workspace_dir", lambda: tmp_path)
     # never actually pop a viewer window in tests
@@ -93,7 +93,7 @@ def test_b64_response_saves_png_to_workspace(img_mod):
     m, ws = img_mod
     _FakeClient.post_resp = _Resp(200, {"data": [{"b64_json": _B64}]})
     out = json.loads(m._handle_generate_image({"prompt": "一只猫"}, ""))
-    # confirmed chinzy contract: OpenAI Images API, explicit b64_json
+    # confirmed the relay contract: OpenAI Images API, explicit b64_json
     assert _FakeClient.last_payload["model"] == "gpt-image-2"
     assert _FakeClient.last_payload["response_format"] == "b64_json"
     assert _FakeClient.last_payload["n"] == 1
@@ -132,7 +132,7 @@ def test_open_failure_still_ok(img_mod, monkeypatch):
 
 
 def test_transient_disconnect_retries_then_succeeds(img_mod, monkeypatch):
-    """chinzy 'Server disconnected' on attempt 1 → retry → 200 on
+    """the relay 'Server disconnected' on attempt 1 → retry → 200 on
     attempt 2. The real 2026-05-16 failure mode (RemoteProtocolError)."""
     import httpx
 

@@ -40,7 +40,7 @@
 ## 不做
 - 不动 Code Mode 窗(CodePanelRoot 已 revert,本 feature 仅桌宠窗)
 - 不重写 MessageStreamPanel 视觉(复用;精致感放在桌宠窗左面板"外框")
-- 不动 sanitizer / chinzy 端点 / 后端
+- 不动 sanitizer / 中转站端点 / 后端
 
 ## 验证
 - `npx tsc --noEmit` EXIT=0;`npm test`(vitest)全绿,含恢复的

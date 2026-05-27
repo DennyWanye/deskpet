@@ -1,10 +1,10 @@
 ## Why
 
-DeskPet 当前是**单 LLM provider 架构**：启动时从 keychain 读一个 chinzy 配置，所有对话（companion + code mode 所有 session）共享这一个 endpoint。问题：
+DeskPet 当前是**单 LLM provider 架构**：启动时从 keychain 读一个 the relay 配置，所有对话（companion + code mode 所有 session）共享这一个 endpoint。问题：
 
-1. **单点故障**——chinzy 抽风时所有任务全挂；之前实测 supervisor 自己也用同一个 chinzy → 同归于尽
+1. **单点故障**——the relay 抽风时所有任务全挂；之前实测 supervisor 自己也用同一个 the relay → 同归于尽
 2. **无法对比模型**——想试 deepseek-v4-pro vs claude-4.7 vs gpt-5 哪个写代码好，必须改配置文件 + 重启
-3. **场景分流困难**——companion 闲聊用便宜的 ollama，code 模式用强的 chinzy，无法表达
+3. **场景分流困难**——companion 闲聊用便宜的 ollama，code 模式用强的 the relay，无法表达
 4. **添加 provider 摩擦大**——今天想加 OpenRouter 试试，要改 config.toml + 重启 + 证明配置对
 5. **Code 模式无 per-session 控制**——多个 code 项目想用不同模型是合理需求（性能/成本/语种偏好）
 

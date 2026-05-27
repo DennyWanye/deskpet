@@ -9,7 +9,7 @@ deskpet/
 ├── backend/                    # Python FastAPI backend (Tauri sidecar)
 │   ├── main.py                 # FastAPI app + lifespan + WS handlers
 │   ├── agent/                  # AgentLoop, supervisor, watchdog, nudge_queue
-│   ├── providers/              # OpenAI-compat LLM provider (chinzy / Ollama)
+│   ├── providers/              # OpenAI-compat LLM provider (the relay / Ollama)
 │   ├── deskpet/
 │   │   ├── tools/os_tools/     # run_shell, write_file, edit_file, ...
 │   │   ├── memory/             # SessionDB, migrations
@@ -179,7 +179,7 @@ DO NOT modify existing migration files — append-only.
 
 Two real providers in play:
 
-- **Primary**: chinzy.com (`https://chinzy.com/v1`) model `deepseek-v4-pro` — thinking-mode, returns SSE wrapped in JSON-encoded string (we have a parser for this). Flaky: gets `RemoteProtocolError("Server disconnected")` for ~5 min stretches once or twice an hour.
+- **Primary**: your-llm-relay.example.com (`https://your-llm-relay.example.com/v1`) model `deepseek-v4-pro` — thinking-mode, returns SSE wrapped in JSON-encoded string (we have a parser for this). Flaky: gets `RemoteProtocolError("Server disconnected")` for ~5 min stretches once or twice an hour.
 - **Local fallback**: ~~Ollama gemma4:e4b~~ **REMOVED** at user request 2026-05-09. Errors now surface directly. Don't re-introduce auto-fallback without explicit user OK.
 
 API key lives in OS keychain via `_resolve_cloud_api_key()`. Don't write API keys anywhere in the repo.
@@ -215,7 +215,7 @@ Use `service_context.get(...)` (not direct module imports) so test mocks work.
 
 6. **Don't auto-merge worktree branches** if their diffs share a file — the lead agent must do 3-way merge or ask user.
 
-7. **chinzy responses come as `sse_lines=4000+` if double-encoded** — that's the JSON-string-wrapped SSE quirk. The post-loop parser at `providers/openai_compatible.py` handles it. Don't "simplify" that code without reading the comments.
+7. **the relay responses come as `sse_lines=4000+` if double-encoded** — that's the JSON-string-wrapped SSE quirk. The post-loop parser at `providers/openai_compatible.py` handles it. Don't "simplify" that code without reading the comments.
 
 ## Evidence file format
 

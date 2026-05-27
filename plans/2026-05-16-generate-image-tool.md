@@ -1,11 +1,11 @@
 # Plan — generate_image tool (2026-05-16)
 
 ## Goal
-User says 生成图片 → agent calls `gpt-image-2` via the existing chinzy
+User says 生成图片 → agent calls `gpt-image-2` via the existing the relay
 endpoint → saves PNG to workspace → opens it with the OS default viewer.
 
 ## Decisions (user-confirmed)
-- **Endpoint**: existing `https://chinzy.com/v1` + same api_key, `POST
+- **Endpoint**: existing `https://your-llm-relay.example.com/v1` + same api_key, `POST
   /v1/images/generations`, `model="gpt-image-2"`. Reuse the exact creds
   the working chat path uses (`<user_data>/llm_runtime.json`
   base_url+api_key, fallback config + resolve_cloud_api_key()).

@@ -1,6 +1,6 @@
 """Provider response sanitizer — 2026-05-17 deepseek-inline-cot-dsml-sanitize.
 
-chinzy-served deepseek-v4-pro sometimes emits its chain-of-thought and tool
+the relay-served deepseek-v4-pro sometimes emits its chain-of-thought and tool
 calls *inline inside `content`* using deepseek delimiters
 (`<｜begin▁of▁thinking｜>…<｜end▁of▁thinking｜>`) and its native textual
 tool-call protocol (`<｜｜DSML｜｜tool_calls>` / `invoke` / `parameter`),

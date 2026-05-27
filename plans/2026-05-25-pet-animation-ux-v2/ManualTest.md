@@ -104,7 +104,7 @@ cd backend && python -m deskpet_backend.dry_run_tts "妈妈骑马慢"
 ### CASE-D0-05: 后端 LLM emotion 字段
 
 ```bash
-cd backend && python -c "from llm.chinzy import chat; r = chat('请简短回答：你今天开心吗？'); print(r.get('emotion'))"
+cd backend && python -c "from llm.the relay import chat; r = chat('请简短回答：你今天开心吗？'); print(r.get('emotion'))"
 ```
 
 PASS → 主路径 ready；FAIL → S2 修后端 system prompt

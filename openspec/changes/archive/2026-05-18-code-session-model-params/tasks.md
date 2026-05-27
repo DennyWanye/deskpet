@@ -6,7 +6,7 @@
 
 ## 2. Param → request mapping (pure function)
 
-- [x] 2.1 Add `_code_params_to_request(model_params: dict|None) -> dict` (pure) mapping `thinking`/`effort`→reasoning params, `context`→context hint, `fast`→speed hint for the chinzy OpenAI-compatible shape; unknown/legacy values omit/clamp (never raise).
+- [x] 2.1 Add `_code_params_to_request(model_params: dict|None) -> dict` (pure) mapping `thinking`/`effort`→reasoning params, `context`→context hint, `fast`→speed hint for the the relay OpenAI-compatible shape; unknown/legacy values omit/clamp (never raise).
 - [x] 2.2 Unit-test the mapper exhaustively (all effort/context values + unknowns + None) — no network.
 
 ## 3. Code-session resolution wiring

@@ -41,7 +41,7 @@ INFO:__main__:event='config_loaded' level='info' timestamp='2026-05-22T11:54:14.
 [2m19:54:15[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[code-panel] get_shared_secret failed: No secret available (backend not started?)
 G:\projects\deskpet\backend\.venv\Lib\site-packages\transformers\utils\hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
   warnings.warn(
-INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-22T11:54:16.997874Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-22T11:54:16.997874Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
 INFO:__main__:event='llm_api_key_from_keychain' level='info' timestamp='2026-05-22T11:54:16.997874Z'
 INFO:__main__:event='sanitize_inline_cot_dsml_flag' level='info' timestamp='2026-05-22T11:54:16.997874Z' enabled=True
 INFO:__main__:event='provider_registry_initialized providers=%d' level='info' timestamp='2026-05-22T11:54:17.013786Z' positional_args=(0,)
@@ -94,7 +94,7 @@ INFO:deskpet.mcp.manager:event='mcp_server_connected' level='info' timestamp='20
 INFO:deskpet.mcp.bootstrap:event='mcp_bootstrap_started' level='info' timestamp='2026-05-22T11:54:22.914268Z' states={'filesystem': 'running', 'playwright': 'running'}
 INFO:__main__:event='p4_mcp_manager_ready' level='info' timestamp='2026-05-22T11:54:22.914268Z' states={'filesystem': 'running', 'playwright': 'running'}
 INFO:__main__:event='p5s2_circuit_breaker_wired threshold=%d cooldown=%.0fs' level='info' timestamp='2026-05-22T11:54:22.916268Z' positional_args=(3, 60.0)
-INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-22T11:54:22.916268Z' positional_args=('https://chinzy.com/v1',)
+INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-22T11:54:22.916268Z' positional_args=('https://your-llm-relay.example.com/v1',)
 INFO:deskpet.agent.watchdog:watchdog started (scan_interval=60s, stuck_threshold=900s, dedup=720s)
 INFO:__main__:event='p5_supervisor_watchdog_started' level='info' timestamp='2026-05-22T11:54:22.916268Z'
 INFO:__main__:event='p5s2_auto_resume_started enabled=%s max_attempts=%d' level='info' timestamp='2026-05-22T11:54:22.916268Z' positional_args=(True, 2)
@@ -188,14 +188,18 @@ INFO:     127.0.0.1:14937 - "WebSocket /ws/control?secret=" [accepted]
 INFO:     connection open
 INFO:     connection closed
 INFO:__main__:event='llm_runtime_overrides_saved path=%s' level='info' timestamp='2026-05-22T12:00:37.362227Z' positional_args=(WindowsPath('C:/Users/24378/AppData/Roaming/deskpet/llm_runtime.json'),)
-INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T12:00:37.362227Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
-WARNING:deskpet.memory.embedder:[embedder-worker stderr] pre tokenize:   0%|          | 0/5 [00:00<?, ?it/s]pre tokenize: 100%|██████████| 5/5 [00:00<00:00, 1666.39it/s]
+INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T12:00:37.362227Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
+WARNING:deskpet.memory.embedder:[embedder-worker stderr] 
+pre tokenize:   0%|          | 0/5 [00:00<?, ?it/s]
+pre tokenize: 100%|██████████| 5/5 [00:00<00:00, 1666.39it/s]
 WARNING:deskpet.memory.embedder:[embedder-worker stderr] You're using a XLMRobertaTokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
-WARNING:deskpet.memory.embedder:[embedder-worker stderr] Inference Embeddings:   0%|          | 0/5 [00:00<?, ?it/s]Inference Embeddings: 100%|██████████| 5/5 [00:00<00:00, 80.64it/s]
+WARNING:deskpet.memory.embedder:[embedder-worker stderr] 
+Inference Embeddings:   0%|          | 0/5 [00:00<?, ?it/s]
+Inference Embeddings: 100%|██████████| 5/5 [00:00<00:00, 80.64it/s]
 INFO:llm.model_info:model_context_resolved model=gpt-5.5 window=32000 source=builtin
 WARNING:__main__:event='p5s2_provider_chain_resolve_failed sid=%s err=%s — falling back to legacy single-provider path' level='warning' timestamp='2026-05-22T12:01:18.689617Z' positional_args=('default', 'no LLM provider configured')
 INFO:providers.openai_compatible:event='openai_compat_outbound fn=chat_stream_with_tools model=%s reasoning_effort=%s extra_body=%s' level='info' timestamp='2026-05-22T12:01:18.691614Z' positional_args=('gpt-5.5', None, None)
-INFO:httpx:HTTP Request: POST https://chinzy.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://your-llm-relay.example.com/v1/chat/completions "HTTP/1.1 200 OK"
 INFO:providers.openai_compatible:event='p4s25_stream_summary' level='info' timestamp='2026-05-22T12:01:26.939263Z' sse_lines=37 content_chars=24 reasoning_chars=0 tool_calls=0 delta_keys=['content', 'role'] stop_reason='end_turn'
 INFO:providers.openai_compatible:event='p4s25_prompt_cache_hit' level='info' timestamp='2026-05-22T12:01:26.939263Z' where='stream' cached_tokens=7680 prompt_tokens=8480 hit_rate=0.9057
 INFO:billing.ledger:event='billing_record' level='info' timestamp='2026-05-22T12:01:26.963273Z' provider='cloud' model='gpt-5.5' prompt_tokens=8480 completion_tokens=21 cost_cny=0.17002
@@ -204,12 +208,12 @@ WARNING:agent.capability_gate:event='capability_gate.llm_timeout' level='warning
 INFO:llm.model_info:model_context_resolved model=gpt-5.5 window=32000 source=builtin
 WARNING:__main__:event='p5s2_provider_chain_resolve_failed sid=%s err=%s — falling back to legacy single-provider path' level='warning' timestamp='2026-05-22T12:02:00.748616Z' positional_args=('default', 'no LLM provider configured')
 INFO:providers.openai_compatible:event='openai_compat_outbound fn=chat_stream_with_tools model=%s reasoning_effort=%s extra_body=%s' level='info' timestamp='2026-05-22T12:02:00.748616Z' positional_args=('gpt-5.5', None, None)
-INFO:httpx:HTTP Request: POST https://chinzy.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://your-llm-relay.example.com/v1/chat/completions "HTTP/1.1 200 OK"
 INFO:providers.openai_compatible:event='p5s2_tool_call_args_dump' level='info' timestamp='2026-05-22T12:02:12.196365Z' idx=0 name='excel_create' args_len=520 args_preview='{"spec":{"sheets":[{"name":"开支统计","rows":[["类别","金额（元）","占比"],["餐饮",0,"=IF($B$5=0,0,B2/$B$5)"],["交通"' parse_ok=True
 INFO:providers.openai_compatible:event='p4s25_stream_summary' level='info' timestamp='2026-05-22T12:02:12.196365Z' sse_lines=623 content_chars=494 reasoning_chars=0 tool_calls=1 delta_keys=['content', 'role', 'tool_calls'] stop_reason='tool_use'
 INFO:providers.openai_compatible:event='p4s25_prompt_cache_hit' level='info' timestamp='2026-05-22T12:02:12.196365Z' where='stream' cached_tokens=7680 prompt_tokens=8588 hit_rate=0.8943
 INFO:providers.openai_compatible:event='openai_compat_outbound fn=chat_stream_with_tools model=%s reasoning_effort=%s extra_body=%s' level='info' timestamp='2026-05-22T12:02:36.214017Z' positional_args=('gpt-5.5', None, None)
-INFO:httpx:HTTP Request: POST https://chinzy.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://your-llm-relay.example.com/v1/chat/completions "HTTP/1.1 200 OK"
 INFO:providers.openai_compatible:event='p4s25_stream_summary' level='info' timestamp='2026-05-22T12:02:49.955175Z' sse_lines=191 content_chars=169 reasoning_chars=0 tool_calls=0 delta_keys=['content', 'role'] stop_reason='end_turn'
 INFO:providers.openai_compatible:event='p4s25_prompt_cache_hit' level='info' timestamp='2026-05-22T12:02:49.955175Z' where='stream' cached_tokens=8192 prompt_tokens=8989 hit_rate=0.9113
 INFO:billing.ledger:event='billing_record' level='info' timestamp='2026-05-22T12:02:49.978176Z' provider='cloud' model='gpt-5.5' prompt_tokens=8989 completion_tokens=102 cost_cny=0.18182

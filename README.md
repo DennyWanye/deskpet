@@ -7,7 +7,7 @@
 > ## 🔑 开发期登录测试凭据
 >
 > 启动桌宠 → onboarding 登录流程 → relay 中转站会下发 LLM API key（写入 OS keychain）→
-> 后端通过 `DESKPET_CLOUD_API_KEY` env 拿到 key 调真实云端 LLM（默认 gpt-5.5 via chinzy）。
+> 后端通过 `DESKPET_CLOUD_API_KEY` env 拿到 key 调真实云端 LLM（默认 gpt-5.5 via the relay）。
 >
 > **本仓库不包含测试凭据**。要走 relay edition 端到端 E2E，请自己注册一个中转站账号，
 > 把账号密码写到 `LOCAL-DEV-CREDENTIALS.md`（已在 `.gitignore` 里）。模板见
@@ -29,7 +29,7 @@
 > | 左上角 👤 账户菜单 | ❌ 不渲染 | ✅ 渲染（点击打开 `AccountSettingsPanel`） |
 > | 强制登录窗 | ❌ 没有 | ✅ 没 token 就弹 `<RelayAuthModal>`，**无法关闭** |
 > | LLM key 来源 | 用户自己在「设置面板 → 模型」手填 | relay 自动下发 `tsk_xxx` device key → keychain |
-> | 适用场景 | OSS 自托管 / 自带 OpenAI key | 用自己注册的中转站账号走 chinzy（凭据见 `LOCAL-DEV-CREDENTIALS.md`） |
+> | 适用场景 | OSS 自托管 / 自带 OpenAI key | 用自己注册的中转站账号走 the relay（凭据见 `LOCAL-DEV-CREDENTIALS.md`） |
 >
 > **`tauri.conf.json` 的 `beforeDevCommand` / `beforeBuildCommand` 决定 `tauri dev` / `tauri build` 默认走哪套**。本仓库当前为 `dev:relay` / `build:relay`，因此 `cargo tauri dev` 起来就有左上角登录 pill + 强制登录窗。要回到 OSS manual 默认，把那两行改回 `npm run dev` / `npm run build`。
 
@@ -131,19 +131,19 @@ pnpm tauri dev
 ### chat 偶发红框 `LLM HTTP 400 Bad Request: — llm_error`
 
 **典型场景**：Code mode 跑工具调用链，agent 完成一轮 tool 后准备让 LLM 看结果继续下一步，
-此时 chinzy 中转站偶发返回 HTTP 400。
+此时 中转站偶发返回 HTTP 400。
 
-**真因**：上游 LLM 中转站（chinzy.com）问题。诊断证据（2026-05-10 实际抓到的）：
+**真因**：上游 LLM 中转站（your-llm-relay.example.com）问题。诊断证据（2026-05-10 实际抓到的）：
 
 | 证据 | 含义 |
 |------|------|
-| `body_len=0`，response body 完全空白 | chinzy 没说为什么 400，连错误描述都不给 |
+| `body_len=0`，response body 完全空白 | the relay 没说为什么 400，连错误描述都不给 |
 | 同一 messages 重发常常就 200 OK | 不是确定性 bug，是间歇性 |
 | 触发模式：`last_role=tool` 后继续 | OpenAI 标准的 tool calling 流程，messages 结构合法 |
 | 重试链 (stream → non-stream → 3 次 backoff) 大多能救回来 | <5% 才会终极失败到 chat_v2_error |
 
 **不是项目侧的 bug**：messages 是合法的 OpenAI 标准格式；同样的请求在 OpenAI 官方
-API / DashScope 上不会 400。chinzy 作为多模型路由代理，对 deepseek-v4-pro 思维模式
+API / DashScope 上不会 400。the relay 作为多模型路由代理，对 deepseek-v4-pro 思维模式
 + tool_calls 的某些组合**转发不稳**。
 
 **已实现的缓解**：

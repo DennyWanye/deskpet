@@ -42,7 +42,7 @@ INFO:__main__:event='config_loaded' level='info' timestamp='2026-05-22T12:03:58.
 [2m20:03:59[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[relayProviderBridge] updateCloudConfig failed: backend not running yet
 G:\projects\deskpet\backend\.venv\Lib\site-packages\transformers\utils\hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
   warnings.warn(
-INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-22T12:04:00.841161Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-22T12:04:00.841161Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
 INFO:__main__:event='llm_api_key_from_keychain' level='info' timestamp='2026-05-22T12:04:00.841161Z'
 INFO:__main__:event='sanitize_inline_cot_dsml_flag' level='info' timestamp='2026-05-22T12:04:00.841161Z' enabled=True
 INFO:__main__:event='provider_registry_initialized providers=%d' level='info' timestamp='2026-05-22T12:04:00.857161Z' positional_args=(0,)
@@ -93,7 +93,7 @@ INFO:deskpet.mcp.manager:event='mcp_server_connected' level='info' timestamp='20
 INFO:deskpet.mcp.bootstrap:event='mcp_bootstrap_started' level='info' timestamp='2026-05-22T12:04:06.499240Z' states={'filesystem': 'running', 'playwright': 'running'}
 INFO:__main__:event='p4_mcp_manager_ready' level='info' timestamp='2026-05-22T12:04:06.499240Z' states={'filesystem': 'running', 'playwright': 'running'}
 INFO:__main__:event='p5s2_circuit_breaker_wired threshold=%d cooldown=%.0fs' level='info' timestamp='2026-05-22T12:04:06.501241Z' positional_args=(3, 60.0)
-INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-22T12:04:06.501241Z' positional_args=('https://chinzy.com/v1',)
+INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-22T12:04:06.501241Z' positional_args=('https://your-llm-relay.example.com/v1',)
 INFO:deskpet.agent.watchdog:watchdog started (scan_interval=60s, stuck_threshold=900s, dedup=720s)
 INFO:__main__:event='p5_supervisor_watchdog_started' level='info' timestamp='2026-05-22T12:04:06.502241Z'
 INFO:__main__:event='p5s2_auto_resume_started enabled=%s max_attempts=%d' level='info' timestamp='2026-05-22T12:04:06.502241Z' positional_args=(True, 2)
@@ -121,14 +121,18 @@ INFO:__main__:event='p4_embedder_ready' level='info' timestamp='2026-05-22T12:04
 INFO:__main__:event='summarizer_starting age_days=30 min_messages=20 max_per_run=10' level='info' timestamp='2026-05-22T12:04:14.529544Z'
 INFO:__main__:event='summarizer_done scanned=%d summarized=%d archived=%d errors=%d' level='info' timestamp='2026-05-22T12:04:14.532545Z' positional_args=(0, 0, 0, 0)
 INFO:__main__:event='llm_runtime_overrides_saved path=%s' level='info' timestamp='2026-05-22T12:05:39.893840Z' positional_args=(WindowsPath('C:/Users/24378/AppData/Roaming/deskpet/llm_runtime.json'),)
-INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T12:05:39.893840Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
-WARNING:deskpet.memory.embedder:[embedder-worker stderr] pre tokenize:   0%|          | 0/5 [00:00<?, ?it/s]pre tokenize: 100%|██████████| 5/5 [00:00<00:00, 1666.79it/s]
+INFO:__main__:event='llm_config_updated base_url=%s model=%s' level='info' timestamp='2026-05-22T12:05:39.893840Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
+WARNING:deskpet.memory.embedder:[embedder-worker stderr] 
+pre tokenize:   0%|          | 0/5 [00:00<?, ?it/s]
+pre tokenize: 100%|██████████| 5/5 [00:00<00:00, 1666.79it/s]
 WARNING:deskpet.memory.embedder:[embedder-worker stderr] You're using a XLMRobertaTokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
-WARNING:deskpet.memory.embedder:[embedder-worker stderr] Inference Embeddings:   0%|          | 0/5 [00:00<?, ?it/s]Inference Embeddings: 100%|██████████| 5/5 [00:00<00:00, 80.64it/s]
+WARNING:deskpet.memory.embedder:[embedder-worker stderr] 
+Inference Embeddings:   0%|          | 0/5 [00:00<?, ?it/s]
+Inference Embeddings: 100%|██████████| 5/5 [00:00<00:00, 80.64it/s]
 INFO:llm.model_info:model_context_resolved model=gpt-5.5 window=32000 source=builtin
 WARNING:__main__:event='p5s2_provider_chain_resolve_failed sid=%s err=%s — falling back to legacy single-provider path' level='warning' timestamp='2026-05-22T12:06:32.770097Z' positional_args=('default', 'no LLM provider configured')
 INFO:providers.openai_compatible:event='openai_compat_outbound fn=chat_stream_with_tools model=%s reasoning_effort=%s extra_body=%s' level='info' timestamp='2026-05-22T12:06:32.772099Z' positional_args=('gpt-5.5', None, None)
-INFO:httpx:HTTP Request: POST https://chinzy.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://your-llm-relay.example.com/v1/chat/completions "HTTP/1.1 200 OK"
 INFO:providers.openai_compatible:event='p4s25_stream_summary' level='info' timestamp='2026-05-22T12:06:37.589237Z' sse_lines=95 content_chars=63 reasoning_chars=0 tool_calls=0 delta_keys=['content', 'role'] stop_reason='end_turn'
 INFO:providers.openai_compatible:event='p4s25_prompt_cache_hit' level='info' timestamp='2026-05-22T12:06:37.589237Z' where='stream' cached_tokens=7680 prompt_tokens=8474 hit_rate=0.9063
 INFO:billing.ledger:event='billing_record' level='info' timestamp='2026-05-22T12:06:37.611730Z' provider='cloud' model='gpt-5.5' prompt_tokens=8474 completion_tokens=52 cost_cny=0.17052

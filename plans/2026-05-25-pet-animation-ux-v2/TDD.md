@@ -59,10 +59,10 @@ for (const p of params) {
 ### Probe-D1-后端: LLM emotion 字段实证
 
 ```bash
-cd backend && python -c "from llm import chinzy; r = chinzy.chat([...]); print(r.get('emotion'))"
+cd backend && python -c "from llm import the relay; r = the relay.chat([...]); print(r.get('emotion'))"
 ```
 
-PASS → 后端协议 ready；FAIL → S2 内修 chinzy LLM system prompt + chat_v2_final 包装层。
+PASS → 后端协议 ready；FAIL → S2 内修 the relay LLM system prompt + chat_v2_final 包装层。
 
 ### Probe-D2: memory 表 milestone 字段
 

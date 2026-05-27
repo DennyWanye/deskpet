@@ -13,7 +13,7 @@ against any running backend.
 What it proves:
 - Turn 1 succeeds (200) → reasoning_content extracted from response.
 - Turn 2 succeeds (200) → prior assistant turn was rebuilt from
-  SessionDB WITH `reasoning_content`, so the chinzy.com endpoint
+  SessionDB WITH `reasoning_content`, so the your-llm-relay.example.com endpoint
   doesn't 400 with "reasoning_content must be passed back".
 
 If turn 2 fails with `chat_v2_error` carrying "HTTP 400", the round-trip

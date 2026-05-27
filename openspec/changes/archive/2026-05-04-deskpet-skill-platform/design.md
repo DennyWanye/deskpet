@@ -188,7 +188,7 @@ cc-haha 验证了这套标准在 TypeScript 完整可行；deskpet 用 Python �
 | **R6**: Skill hot-reload 时正在用旧 skill 的 chat 崩 | reload 用 copy-on-write：旧 skill 引用保持有效，新 chat 用新 skill |
 | **R7**: 装 skill 的 git clone 很慢/网络受限 | (a) 默认走 GitHub HTTPS； (b) 用户可在 settings 改 mirror（gitee/codeup）； (c) 失败显示具体网络错误 |
 | **R8**: 旧 deskpet skill 格式 + 新 SKILL.md 同名冲突 | SkillLoader 加载时检测重名 → 高优先级胜（按 D5 的优先级表）+ 日志 warn |
-| **R9**: tool_use API 行为在不同 provider 略有差异 | 抽象 `chat_with_tools()` 接口，每个 provider impl 自己做 normalization；测试覆盖 OpenAI / chinzy.com / DeepSeek / Anthropic 4 个真实 provider |
+| **R9**: tool_use API 行为在不同 provider 略有差异 | 抽象 `chat_with_tools()` 接口，每个 provider impl 自己做 normalization；测试覆盖 OpenAI / your-llm-relay.example.com / DeepSeek / Anthropic 4 个真实 provider |
 | **R10**: 测试时 chat_with_tools 烧 token | 集成测试用 fake LLM provider；真 LLM 测试限于一次端到端 smoke + bench |
 
 ## Migration Plan

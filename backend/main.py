@@ -1126,7 +1126,7 @@ try:
 
     # OpenSpec 2026-05-16-async-image-gen: ImageGenerationWorker —
     # generate_image submits a job and returns instantly; this worker
-    # does the slow chinzy POST + retry + save + open in the background
+    # does the slow the relay POST + retry + save + open in the background
     # and pushes the result back to the pet via _image_notifier (reuses
     # the control-ws chat_v2_final path → zero frontend change, petText
     # cleaning applies). async_enabled=false → not started (tool falls
@@ -1692,7 +1692,7 @@ async def lifespan(app: FastAPI):
             #
             # Previously hardcoded `local_llm` which on a multi-provider deploy
             # without Ollama running produced "supervisor_unavailable: ConnectError"
-            # — confusing because the main chat works fine via chinzy. Now
+            # — confusing because the main chat works fine via the relay. Now
             # supervisor follows the user's chain by default.
             _sup_provider = None
             try:
@@ -1809,7 +1809,7 @@ async def lifespan(app: FastAPI):
                 # P5-S2 G2 (2026-05-12): 30s→120s. supervisor was timing out
                 # on deepseek-v4-pro thinking-mode calls — the model takes
                 # 30-60s just thinking before emitting the 300-token JSON
-                # spec. 120s covers reasoning + transit + chinzy 15s SSE
+                # spec. 120s covers reasoning + transit + the relay 15s SSE
                 # keep-alive. config knob name unchanged for backward compat.
                 timeout_seconds=float(_sup_cfg.get("llm_timeout_seconds", 120.0)),
             )
@@ -3288,7 +3288,7 @@ async def control_channel(ws: WebSocket):
             elif msg_type == "code_models_list":
                 # code-session-model-params: the picker's model dropdown
                 # is data-driven, NOT a hardcoded preset list. Pull the
-                # relay's live catalog (chinzy 中转站 GET /models); fall
+                # relay's live catalog (中转站 GET /models); fall
                 # back to the registry endpoint's configured `models`
                 # array if the live fetch fails. Each model carries a
                 # per-family capability map so the picker only shows the

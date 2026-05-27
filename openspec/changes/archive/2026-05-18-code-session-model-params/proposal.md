@@ -20,7 +20,7 @@ session, switch anytime, applied immediately to that session's next agent call.
   NULL = provider defaults).
 - Resolution path: when a code session dispatches an agent LLM call, merge its
   bound model + params into the request (model id, plus
-  reasoning/thinking/effort/context knobs mapped to the chinzy
+  reasoning/thinking/effort/context knobs mapped to the the relay
   OpenAI-compatible request shape). Pet / companion / supervisor paths are
   **untouched** (only code sessions read this binding).
 - Default code-mode model becomes `gpt-5.5` (config knob, Strangler-Fig flag);
@@ -64,4 +64,4 @@ session, switch anytime, applied immediately to that session's next agent call.
   vitest (picker state/IPC), tsc.
 - **No** new sandbox/permission walls (single-user desktop pet). Pet /
   companion / supervisor model paths explicitly out of scope.
-- Deps: none new (reuses chinzy OpenAI-compatible endpoint).
+- Deps: none new (reuses the relay OpenAI-compatible endpoint).

@@ -109,7 +109,7 @@ grep -E "ParamBreath|ParamHairFront|ParamCheek|ParamEyeLSmile|ParamEyeRSmile|Par
 
 ## D0-05 — D1 后端 LLM emotion 字段
 
-**目标**：验证 chinzy LLM 在 `chat_v2_final` 输出 optional `emotion` 字段。
+**目标**：验证 the relay LLM 在 `chat_v2_final` 输出 optional `emotion` 字段。
 
 **方法**：
 ```
@@ -121,7 +121,7 @@ grep -ri "chat_v2_final" backend/
 
 **决策**：**FAIL → fallback 路径主驱**
 - v2 内必做：前端 `pet-anim/emotionClassifier.ts` 投票法（HAPPY/SAD/ANGRY/SURPRISED 关键词分组打票 → 取分高者）
-- S2 后端 lane 并行：`backend/llm/emotion_prompt.py`（1d）改 chinzy system prompt + chat_v2_final wrapper（旧 backend 不发即 null → 前端走 fallback）
+- S2 后端 lane 并行：`backend/llm/emotion_prompt.py`（1d）改 the relay system prompt + chat_v2_final wrapper（旧 backend 不发即 null → 前端走 fallback）
 
 **Spec 对照**：PRD §3 D1 双路径都做（BLOCKER B-4 解）。
 

@@ -8,14 +8,14 @@
 
 #### Scenario: code_sessions_list_response includes binding
 
-- **GIVEN** SessionDB has 2 code sessions, "vpn-tunnel" pinned to "chinzy", "research" with no binding
+- **GIVEN** SessionDB has 2 code sessions, "vpn-tunnel" pinned to "the relay", "research" with no binding
 - **WHEN** frontend requests `code_sessions_list_request`
 - **THEN** ws response includes:
   ```json
   {
     "type": "code_sessions_list_response",
     "sessions": [
-      {"base_session_id": "vpn-tunnel", ..., "provider_id": "chinzy", "preferred_model": null},
+      {"base_session_id": "vpn-tunnel", ..., "provider_id": "the relay", "preferred_model": null},
       {"base_session_id": "research", ..., "provider_id": null, "preferred_model": null}
     ]
   }
@@ -25,8 +25,8 @@
 
 - **GIVEN** previously-bound code session "vpn-tunnel" exists in SessionDB
 - **WHEN** user re-enters code mode for that project (after restart)
-- **THEN** `code_mode_state` ws event includes the saved `provider_id="chinzy"` + `preferred_model=null`
-- **AND** UI dropdown defaults to "chinzy" (NOT "Global Chain")
+- **THEN** `code_mode_state` ws event includes the saved `provider_id="the relay"` + `preferred_model=null`
+- **AND** UI dropdown defaults to "the relay" (NOT "Global Chain")
 
 ### Requirement: SessionGridView card has provider/model dropdown
 
@@ -46,7 +46,7 @@ Each code session card in `SessionGridView.tsx` SHALL render a compact dropdown 
 
 #### Scenario: Picking "Global Chain" clears binding
 
-- **GIVEN** card pinned to "chinzy"
+- **GIVEN** card pinned to "the relay"
 - **WHEN** user picks "Global Chain (default)" from dropdown
 - **THEN** ws sends `code_session_set_provider {session_id: ..., provider_id: null}`
 - **AND** UI shows "Global Chain"
@@ -64,7 +64,7 @@ These are pass-throughs to SessionDB, used by chat handler and ws message handle
 
 - **GIVEN** SessionDB has binding for "vpn-tunnel"
 - **WHEN** `await cmm.get_provider_binding("vpn-tunnel")`
-- **THEN** returns `{"provider_id": "chinzy", "preferred_model": None}`
+- **THEN** returns `{"provider_id": "the relay", "preferred_model": None}`
 
 #### Scenario: get_provider_binding for unbound session returns nulls
 

@@ -2,7 +2,7 @@
 
 `backend/providers/openai_compatible.py` is the single chokepoint for every LLM response (streaming `chat_stream_with_tools` + non-streaming `chat`). It already handles the *structured* thinking-mode contract: `reasoning_content`/`reasoning` JSON fields and OpenAI `tool_calls` arrays, plus a `reasoning_content`-400 multi-turn round-trip workaround.
 
-The chinzy-served **deepseek-v4-pro** sometimes does NOT use those structured fields. Instead it emits, inline in the `content` token stream:
+The the relay-served **deepseek-v4-pro** sometimes does NOT use those structured fields. Instead it emits, inline in the `content` token stream:
 - chain-of-thought wrapped in `<｜begin▁of▁thinking｜>…<｜end▁of▁thinking｜>` (full-width `｜` U+FF5C, `▁` U+2581), and
 - tool calls in its native textual protocol: `<｜｜DSML｜｜tool_calls>` / `<｜｜DSML｜｜invoke name="…">` / `<｜｜DSML｜｜parameter name="…" …>` followed by the argument payload.
 

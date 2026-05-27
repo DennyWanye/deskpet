@@ -72,7 +72,7 @@ class OpenAICompatibleProvider:
         # number:
         #   * connect = 10s — TCP + TLS handshake. Bumped 5→10s on 2026-05-11
         #                     after seeing real ConnectTimeout failures while
-        #                     chinzy itself reported no errors (their server
+        #                     the relay itself reported no errors (their server
         #                     never saw the request — handshake failed our
         #                     side). Windows DNS cache invalidation + TLS
         #                     slow-start on cold connections legitimately
@@ -83,19 +83,19 @@ class OpenAICompatibleProvider:
         #                     was too tight: 2026-05-09 logs showed frequent
         #                     `attempt=1 of=3 ReadTimeout` retries that ate
         #                     the whole budget on a string of slow turns.
-        #                     60s covers thinking-mode bursts + chinzy
+        #                     60s covers thinking-mode bursts + the relay
         #                     idle-spikes; the proxy's own 100-120s idle cut
         #                     remains the outer bound.
         #   * write   = 5s  — POST body is small; anything past this is dead.
         #   * pool    = 5s  — connection-pool acquisition.
         # Caller can still pass a scalar/Timeout; we honour that verbatim.
         # P5-S2 F1 (2026-05-12) — bumped read 60→120 and write 5→10 per
-        # chinzy's integration guide (docs/中转站建议.md). chinzy's PR #27
+        # the relay's integration guide (docs/中转站建议.md). the relay's PR #27
         # ships a 15s SSE keep-alive comment that resets read timers on
         # every hop, so a 120s read budget is generous + safe and covers
         # individual reasoning tokens that can be 5KB+ on slow chunks.
         # connect stays at 10s — Windows DNS slow-start legitimately
-        # takes 6-8s, chinzy's suggested 5s would false-fail occasionally.
+        # takes 6-8s, the relay's suggested 5s would false-fail occasionally.
         if timeout is None:
             self.timeout: float | httpx.Timeout = httpx.Timeout(
                 connect=10.0, read=120.0, write=10.0, pool=5.0,
@@ -118,7 +118,7 @@ class OpenAICompatibleProvider:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        # P5-S2 F1 (2026-05-12) — chinzy integration guide root cause for
+        # P5-S2 F1 (2026-05-12) — the relay integration guide root cause for
         # "succeeds then next request ConnectError" (docs/中转站建议.md
         # Failure Mode 2):
         #
@@ -127,10 +127,10 @@ class OpenAICompatibleProvider:
         # the server's own keepAliveTimeout=75s silently kill that idle
         # socket. When we send the NEXT request to the stale FD, the
         # first write gets ECONNRESET and httpx surfaces it as
-        # ConnectError — looking exactly like "can't connect to chinzy"
-        # even though chinzy is healthy.
+        # ConnectError — looking exactly like "can't connect to the relay"
+        # even though the relay is healthy.
         #
-        # Fix per chinzy guide: disable pool reuse entirely. New TCP +
+        # Fix per the relay guide: disable pool reuse entirely. New TCP +
         # TLS handshake every request costs ~50ms; for an LLM workload
         # where each call is 5-30s, the overhead is irrelevant and the
         # fix eliminates an entire class of intermittent failures.
@@ -247,7 +247,7 @@ class OpenAICompatibleProvider:
 
         Internal: delegates to :meth:`chat_stream_with_tools` so the HTTP
         request is ALWAYS ``stream: True``. We discard delta events and
-        return only the final aggregate. This fixes the recurring chinzy
+        return only the final aggregate. This fixes the recurring the relay
         ``RemoteProtocolError("Server disconnected without sending a
         response")`` — proxies kill idle ``stream: False`` requests while
         thinking-mode models (deepseek-v4-pro etc.) are still reasoning
@@ -340,7 +340,7 @@ class OpenAICompatibleProvider:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        # P4-S25: structured output. OpenAI / chinzy / DashScope use
+        # P4-S25: structured output. OpenAI / the relay / DashScope use
         # `response_format`; Ollama ignores that and reads `format`.
         # We pass the OpenAI-shape through and ALSO emit Ollama's
         # `format` so users can switch endpoints without code changes.
@@ -350,7 +350,7 @@ class OpenAICompatibleProvider:
             if rf_type in ("json_object", "json_schema"):
                 payload["format"] = "json"
         # P4-S25 A4: prompt caching — Anthropic-style cache_control
-        # marker only fires for Anthropic-native endpoints. chinzy and
+        # marker only fires for Anthropic-native endpoints. the relay and
         # some sealos proxies treat unknown message fields strictly
         # and respond with empty content; OpenAI gpt-4o auto-caches
         # without the marker. So gate on URL keyword.
@@ -366,9 +366,9 @@ class OpenAICompatibleProvider:
         # way up to the chat handler (which surfaces as "chat_v2 错误:
         # unknown" in the UI because httpx.ConnectError on Windows
         # often has empty `str(exc)` when the remote sends RST mid
-        # keep-alive). chinzy specifically does this between turns.
+        # keep-alive). the relay specifically does this between turns.
         # P4-S24: thinking-mode round-trip requirement. Some endpoints
-        # (DeepSeek V4 Pro / chinzy.com proxy / Qwen3 thinking) reject
+        # (DeepSeek V4 Pro / your-llm-relay.example.com proxy / Qwen3 thinking) reject
         # with HTTP 400 if a prior assistant message in `messages` is
         # missing its `reasoning_content`. This happens for rows
         # persisted before the round-trip fix landed (or any row where
@@ -376,7 +376,7 @@ class OpenAICompatibleProvider:
         # rows and retry once. If the retry succeeds we move on; if it
         # fails again we surface the original error so the user sees
         # something stable.
-        # P4-S24 transient-retry: chinzy.com / sealos / various OpenAI-
+        # P4-S24 transient-retry: your-llm-relay.example.com / sealos / various OpenAI-
         # compat proxies sometimes drop the connection mid-request
         # (httpx surfaces this as RemoteProtocolError "Server
         # disconnected without sending a response" — common right
@@ -400,7 +400,7 @@ class OpenAICompatibleProvider:
             )
             last_exc: Exception | None = None
             # P4-S25: 3 attempts with growing backoff. RemoteProtocolError
-            # / connection drops on chinzy come in clusters — first 0.5s
+            # / connection drops on the relay come in clusters — first 0.5s
             # backoff was too short. Failed attempts after the first
             # typically RST quickly so the worst-case wait stays bounded
             # (60s for the slow first attempt + a few seconds for the
@@ -499,7 +499,7 @@ class OpenAICompatibleProvider:
                     ),
                 ) from exc
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
-            # Network-layer failure — typical when chinzy keep-alive
+            # Network-layer failure — typical when the relay keep-alive
             # socket gets reset between turns. P5-S2 A2: classify by
             # phase so supervisor / UI can show actionable hints.
             _human_type = type(exc).__name__
@@ -708,7 +708,7 @@ class OpenAICompatibleProvider:
             httpx.WriteTimeout,
             httpx.PoolTimeout,
         )
-        # P4-S25 streaming retry: chinzy / sealos proxies sometimes drop
+        # P4-S25 streaming retry: the relay / sealos proxies sometimes drop
         # the connection mid-stream (RemoteProtocolError "Server
         # disconnected without sending a response"). Two attempts
         # weren't enough — log captured a real run with both retries
@@ -842,7 +842,7 @@ class OpenAICompatibleProvider:
                 # (see its docstring), so it would re-enter the same broken
                 # SSE path. _legacy_chat_with_tools_nonstream issues a single
                 # `stream: false` POST + JSON parse — which completes inside
-                # the chinzy proxy idle window and recovers cleanly.
+                # the the relay proxy idle window and recovers cleanly.
                 fallback_result = await self._legacy_chat_with_tools_nonstream(
                     messages,
                     tools=tools,
@@ -919,7 +919,7 @@ class OpenAICompatibleProvider:
                 json=payload,
             ) as response:
                 response.raise_for_status()
-                # P4-S25 fix: chinzy / sealos / DashScope sometimes ignore
+                # P4-S25 fix: the relay / sealos / DashScope sometimes ignore
                 # `stream: True` for thinking-mode models and return a
                 # plain JSON body (Content-Type: application/json) holding
                 # the complete response. aiter_lines() yields ONE line of
@@ -991,12 +991,12 @@ class OpenAICompatibleProvider:
                         sse_lines = -1  # marker for "non-stream body"
                 # P4-S25 fix-2: capture every raw line so we can fall
                 # back to "treat the whole body as JSON" if the SSE loop
-                # produces nothing useful. Some chinzy responses come
+                # produces nothing useful. Some the relay responses come
                 # back with Content-Type: text/event-stream but the body
                 # is a single JSON object (no `data:` prefix) — the
                 # content-type check above won't catch that.
                 # Capture EVERY line including empty ones so we can
-                # accurately diagnose what chinzy actually sent.
+                # accurately diagnose what the relay actually sent.
                 raw_lines: list[str] = []
                 async for line in response.aiter_lines():
                     if sse_lines == -1:
@@ -1032,7 +1032,7 @@ class OpenAICompatibleProvider:
                     # the full message in `choices[0].message` (only at
                     # the end) instead of streaming via `delta`. Capture
                     # that as a fallback so we don't end up with empty
-                    # final_content. chinzy seems to do this for some
+                    # final_content. the relay seems to do this for some
                     # thinking-mode models.
                     msg = choices[0].get("message") or {}
                     if msg.get("content") and not full_content:
@@ -1082,7 +1082,7 @@ class OpenAICompatibleProvider:
         # P4-S25 fix-2: post-loop manual SSE parser.
         #
         # Root cause discovered 2026-05-09: httpx.aiter_lines() against
-        # chinzy.com sometimes returns the ENTIRE SSE body as a single
+        # your-llm-relay.example.com sometimes returns the ENTIRE SSE body as a single
         # line — multiple `data: {chunk}\n\ndata: {chunk}\n\n...` events
         # smushed together without splitting on the inner newlines. So
         # the streaming-line loop above sees just one line, fails the
@@ -1106,7 +1106,7 @@ class OpenAICompatibleProvider:
                 raw_lines_count=len(raw_lines),
                 body_preview=joined[:400],
             )
-            # 2026-05-09 chinzy quirk: their thinking-mode endpoint
+            # 2026-05-09 the relay quirk: their thinking-mode endpoint
             # returns the ENTIRE SSE body as a single JSON-encoded
             # string — i.e. the bytes on the wire look like
             #     "data: {...}\n\ndata: {...}\n\n..."
@@ -1209,7 +1209,7 @@ class OpenAICompatibleProvider:
                 )
 
         # P5-S2 Phase 1 — diagnostic dump for every accumulated tool_call
-        # buffer. chinzy / sealos sometimes truncate the SSE mid-frame
+        # buffer. the relay / sealos sometimes truncate the SSE mid-frame
         # leaving us with half-baked args (e.g. `{"path": "fo`); without
         # this log we can't tell at debug-time whether the model emitted
         # broken JSON, the proxy chopped the stream, or our parser ate
@@ -1369,7 +1369,7 @@ class OpenAICompatibleProvider:
 
         # Phase 1.3.4: prompt-cache 命中率埋点。回包带
         # prompt_tokens_details.cached_tokens（OpenAI / deepseek）→
-        # 记命中率；chinzy 现状常不回该字段 → 记 unknown，绝不崩。
+        # 记命中率；the relay 现状常不回该字段 → 记 unknown，绝不崩。
         _log_cache_hit_rate(final_usage, where="stream")
 
         # 2026-05-17 deepseek-inline-cot-dsml-sanitize: sanitize the
@@ -1407,7 +1407,7 @@ class OpenAICompatibleProvider:
                     return True
 
                 # Fallback: many third-party OpenAI-compatible relays
-                # (chinzy.com, some sealos endpoints, certain proxies)
+                # (your-llm-relay.example.com, some sealos endpoints, certain proxies)
                 # only implement /chat/completions and return 404/501 on
                 # /models. Try a 1-token chat probe so users can still use
                 # those services. Costs ~prompt_tokens charge but proves
@@ -1432,7 +1432,7 @@ class OpenAICompatibleProvider:
 # Phase 1.3 — 4-breakpoint prompt cache + 前缀稳定纪律
 # (OpenSpec 2026-05-15-context-1m-rearch · design.md D4)
 #
-# OpenAI-compat（chinzy / deepseek-v4-pro）走 **prefix cache**：命中条件
+# OpenAI-compat（the relay / deepseek-v4-pro）走 **prefix cache**：命中条件
 # 是 messages 历史前缀的字节流跨轮稳定。命中条件不是我们打什么标记，而
 # 是"前缀别变"。所以这一段做两件事：
 #   1. `_stabilize_prefix`：抹平上游历史里会抖动的字段（tool-call-only
@@ -1553,7 +1553,7 @@ def _log_cache_hit_rate(usage: dict | None, *, where: str) -> None:
     """落一条 prompt-cache 命中率日志（1.3.4）。
 
     回包带 cached_tokens → 记 cached/prompt + 命中率百分比；
-    字段缺失（chinzy 现状常见）→ 记 ``cached_tokens=unknown``，绝不崩。
+    字段缺失（the relay 现状常见）→ 记 ``cached_tokens=unknown``，绝不崩。
     """
     try:
         cached = _extract_cached_tokens(usage)
@@ -1589,8 +1589,8 @@ def _is_anthropic_endpoint(base_url: str) -> bool:
     """Heuristic: should we emit Anthropic-style cache_control marks?
 
     True only for endpoints that we have evidence handle the field.
-    Most OpenAI-compat proxies (chinzy, sealos, vllm, ollama) reject
-    unknown message keys silently — observed empirically when chinzy
+    Most OpenAI-compat proxies (the relay, sealos, vllm, ollama) reject
+    unknown message keys silently — observed empirically when the relay
     started returning empty content after we started emitting
     cache_control. Better to no-op than break working flows.
     """
@@ -1606,7 +1606,7 @@ def _stamp_cache_control(messages: list[dict]) -> list[dict]:
     (persona + skill_prelude + memory_block) lives at the front of every
     request; marking the last system message tells Anthropic "everything
     up to here is cacheable". OpenAI ignores the field; gpt-4o auto-caches
-    based on prefix. Ollama / chinzy strip unknown fields. Safe to always
+    based on prefix. Ollama / the relay strip unknown fields. Safe to always
     emit.
     """
     last_sys_idx = -1

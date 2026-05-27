@@ -81,5 +81,5 @@ Excess messages SHALL queue with visible "等待中: N" status.
 
 #### Scenario: 5 simultaneous tile sends respect the cap
 - **GIVEN** 5 code sessions all send chat_v2 within 100ms
-- **THEN** at most 2 SHALL hit chinzy at once
+- **THEN** at most 2 SHALL hit the relay at once
 - **AND** the remaining 3 SHALL queue + display "等待中: 3"

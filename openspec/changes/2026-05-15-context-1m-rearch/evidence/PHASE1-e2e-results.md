@@ -2,7 +2,7 @@
 
 **When**: 2026-05-15 ~17:40 UTC+8
 **Who**: lead agent (opsx:oneshot)
-**Context**: backend restarted (PID 33712, .venv, Tauri-respawned). All merged Phase-1 code + chinzy fix + auto_resume log + token_budget fix + 800K config now LIVE. BGE-M3 still real (is_mock=False) post-restart.
+**Context**: backend restarted (PID 33712, .venv, Tauri-respawned). All merged Phase-1 code + the relay fix + auto_resume log + token_budget fix + 800K config now LIVE. BGE-M3 still real (is_mock=False) post-restart.
 
 ## Verified LIVE (script / log level) — 4 items ✅
 
@@ -22,7 +22,7 @@ project override window = 500000 source = project
 3-layer (builtin ← global ← project) resolution works; project layer wins in code mode.
 
 ### #5 prompt-cache instrumentation — ✅ PRESENT (hit-rate pending real traffic)
-`grep -c "p4s25_prompt_cache|cached_tokens" providers/openai_compatible.py` → 17 hooks in place (`_stabilize_prefix`, `_log_cache_hit_rate`, `_extract_cached_tokens`). Actual hit-rate number requires a real ≥5-turn conversation against chinzy — verify by grepping `p4s25_prompt_cache_hit` after normal use.
+`grep -c "p4s25_prompt_cache|cached_tokens" providers/openai_compatible.py` → 17 hooks in place (`_stabilize_prefix`, `_log_cache_hit_rate`, `_extract_cached_tokens`). Actual hit-rate number requires a real ≥5-turn conversation against the relay — verify by grepping `p4s25_prompt_cache_hit` after normal use.
 
 ### #7 v2_enabled rollback — ✅ PASS (corrected semantics)
 Live `ContextConfig(v2_enabled=False)` → `tool_result_threshold=16000`, `compact_message_threshold=80`. **This is correct**: Strangler-Fig rollback target = the pre-Phase-1 last-known-good baseline (db20b25 stop-gap 16000/300000/80), NOT the older P6 factory (4000/20). design.md D2 prose corrected to match (the "真·P6 出厂值" wording was imprecise; Agent A's `_LEGACY_*=16000` is the right rollback target). Full test suite (1304) green confirms.

@@ -8,7 +8,7 @@ fields:
     - ``args_preview`` — first 100 chars of the buffer (truncated)
     - ``parse_ok``    — whether ``json.loads(args_buf)`` succeeded
 
-Why: chinzy.com / sealos sometimes truncate SSE mid-frame leaving us with
+Why: your-llm-relay.example.com / sealos sometimes truncate SSE mid-frame leaving us with
 half-baked tool_call args. Without dump-time visibility we can't tell whether
 the model itself emitted broken JSON, the proxy chopped the stream, or our
 parser dropped fragments. This test pins down the diagnostic emit so we can

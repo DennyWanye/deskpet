@@ -1,4 +1,4 @@
-"""generate_image tool — text→image via the existing chinzy endpoint.
+"""generate_image tool — text→image via the existing the relay endpoint.
 
 User says 生成图片 → agent calls this tool → POST
 {base_url}/images/generations with model gpt-image-2 (reusing the exact
@@ -31,7 +31,7 @@ _DEFAULT_MODEL = "gpt-image-2"
 _DEFAULT_SIZE = "1024x1024"
 # 2026-05-16 timeout 协调：之前 per-request=registry=120s → 单次慢出图
 # 或一次重试就被 registry 的 asyncio.wait_for(120s) 砍掉，重试形同虚设。
-# 现在 per-HTTP-attempt=100s，最多 2 次（1 次重试足够接住 chinzy 瞬时
+# 现在 per-HTTP-attempt=100s，最多 2 次（1 次重试足够接住 the relay 瞬时
 # 断连——实测断连发生在 ~62s），registry 总超时另设 _TOOL_TIMEOUT_S
 # 覆盖 2×100 + 退避，保证重试能真正跑完。
 _TIMEOUT_S = 100.0          # 单次 HTTP 请求超时
@@ -74,7 +74,7 @@ def _resolve_endpoint() -> tuple[str, str | None]:
     """(base_url, api_key) — the SAME creds the working chat path uses.
 
     Priority: ``<user_data>/llm_runtime.json`` (base_url + api_key the
-    user actually configured for chinzy) → config.toml ``[llm]`` +
+    user actually configured for the relay) → config.toml ``[llm]`` +
     ``resolve_cloud_api_key()``. Lazy imports keep tool auto-discovery
     free of import-order coupling.
     """
@@ -151,7 +151,7 @@ def _open_file(path: Path) -> bool:
 def _generate_png(
     prompt: str, size: str, model: str
 ) -> tuple[bytes | None, str | None]:
-    """Blocking: chinzy POST + transient-retry → (png_bytes, None) on
+    """Blocking: the relay POST + transient-retry → (png_bytes, None) on
     success, or (None, error_hint) on failure. No file IO. Reused by
     BOTH the legacy sync handler and the async ImageGenerationWorker —
     single copy of the slow logic. Never raises.
@@ -176,7 +176,7 @@ def _generate_png(
         "response_format": "b64_json",
     }
 
-    # chinzy 上游对慢/复杂出图会瞬时断连（RemoteProtocolError
+    # 中转站上游对慢/复杂出图会瞬时断连（RemoteProtocolError
     # "Server disconnected"）。断连/超时/5xx 重试带退避；4xx 确定性
     # 错误立即返回不重试。
     last_transient = ""
@@ -231,7 +231,7 @@ def _generate_png(
             time.sleep(_RETRY_BACKOFF[_attempt - 1])
 
     return None, (
-        f"图像接口连试 {_MAX_ATTEMPTS} 次仍失败（chinzy 上游不稳定，常见"
+        f"图像接口连试 {_MAX_ATTEMPTS} 次仍失败（中转站上游不稳定，常见"
         f"瞬时断连）：{last_transient}。稍后再试，或把描述写简单点 —— "
         "复杂出图更慢、上游更容易把连接掐掉。"
     )

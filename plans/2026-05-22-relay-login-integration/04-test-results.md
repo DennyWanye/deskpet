@@ -60,7 +60,7 @@
 | 用例 | 结果 |
 |---|---|
 | R1 强制登录 | ✅ |
-| **R3 登录即用（一票否决）** | ✅ 零手填即可聊天 + 触发 `excel_create`，请求真实发往 `chinzy.com/v1`，model `gpt-5.5` |
+| **R3 登录即用（一票否决）** | ✅ 零手填即可聊天 + 触发 `excel_create`，请求真实发往 `your-llm-relay.example.com/v1`，model `gpt-5.5` |
 | R4 重启 restoreSession | ✅ Bug-1 实机验证：无 `X-Device-Id` 报错，provider 重推 |
 | R5 账户面板 + 去充值 | ✅ |
 | R7 登出 | ✅ |
@@ -78,7 +78,7 @@
 
 | 用例 | 结果 | 验证方式 |
 |---|---|---|
-| R2 注册→自动登录 | ✅ | 真打 `chinzy.com/v1/auth/register` → 201 + token，无需验证码，happy path |
+| R2 注册→自动登录 | ✅ | 真打 `your-llm-relay.example.com/v1/auth/register` → 201 + token，无需验证码，happy path |
 | R6 余额不足 | ✅ | mock 402 真机诱发 → `chat_v2_error.error_class="insufficient_balance"` → 友好文案，无裸 "402" |
 | R8-2 断网启动 | ✅ | offline fetch 驱动 → `restoreSession` 返 false 不崩 |
 | R8-3 断网登录 | ✅ | → `RelayApiError{NETWORK_ERROR}` → 窗内"网络连接失败"提示 |

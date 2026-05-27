@@ -1,0 +1,36 @@
+[
+  {
+    "case": "06-click-install",
+    "pass": true,
+    "detail": {
+      "ok": true,
+      "text": "安装"
+    }
+  },
+  {
+    "case": "07-pending-shown",
+    "pass": true,
+    "detail": {
+      "hasPending": true,
+      "hasConfirm": true,
+      "hasError": false,
+      "textSnippet": "确认安装"
+    }
+  },
+  {
+    "case": "08-click-confirm",
+    "pass": true,
+    "detail": {
+      "ok": true
+    }
+  },
+  {
+    "case": "09-installed-visible",
+    "pass": true,
+    "detail": {
+      "hasAlgorithmicArt": true,
+      "hasEmptyMsg": false,
+      "textSnippet": "消息\nSkillStore\n技能商店\n已安装\n市场\n通过 URL 安装\nalgorithmic-art\nCreating algorithmic art using p5.js with seeded randomness and interactive parameter exploration. Use this when users request creating art using code, generative art, algorithmic art, flow fields, or particle systems. Create original algorithmic art rather than copying existing artists' work to avoid copyright violations.\n卸载\n当然能帮你做～不过刚才保存位置选择窗口被取消了，所以我还没法直接把 Excel 放到桌面。\n\n你可以重新发一句：“继续生成花名册”，然后在弹出的窗口里选择桌面并保存为：\n\n开学花名册.xlsx\n\n我会生成一个开学常用花名册模板，包含这些字段"
+    }
+  }
+]

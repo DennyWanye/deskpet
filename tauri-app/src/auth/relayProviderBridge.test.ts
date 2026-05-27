@@ -21,7 +21,7 @@ function makeProvider(over: Partial<Provider> = {}): Provider {
   return {
     id: "p1",
     name: "Chinzy Relay",
-    base_url: "https://chinzy.com/v1",
+    base_url: "https://your-llm-relay.example.com/v1",
     api_key: "tsk_relay_abc",
     models: [{ id: "gpt-5.5" }, { id: "deepseek-v4-pro" }],
     openai_compatible: true,
@@ -55,7 +55,7 @@ describe("T2-1 · apply pushes provider with persist_key=false", () => {
     expect(updateCloudConfig).toHaveBeenCalledTimes(1);
     const [, update] = updateCloudConfig.mock.calls[0];
     expect(update).toMatchObject({
-      base_url: "https://chinzy.com/v1",
+      base_url: "https://your-llm-relay.example.com/v1",
       model: "gpt-5.5",
       api_key: "tsk_relay_abc",
       persist_key: false,

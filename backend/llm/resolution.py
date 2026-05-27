@@ -41,7 +41,7 @@ logger = logging.getLogger("deskpet.llm.resolution")
 
 
 def _attach_code_params(entries: list[Any], model_params: Any) -> None:
-    """Attach the mapped chinzy request fragment to every entry, in-place.
+    """Attach the mapped the relay request fragment to every entry, in-place.
 
     ``code-session-model-params``: callers read ``entry.code_params``
     and merge it into the OpenAI-compatible request. Empty/None params →

@@ -8,10 +8,10 @@ Backend SHALL expose a single `LLMProviderRegistry` instance via `service_contex
 
 #### Scenario: Add provider persists to toml + appears in chain
 
-- **GIVEN** registry currently has 1 enabled provider `chinzy-deepseek` (priority 1)
+- **GIVEN** registry currently has 1 enabled provider `the relay-deepseek` (priority 1)
 - **WHEN** `await registry.add_provider({"id": "openrouter-claude", "name": "Claude 4.7 via OpenRouter", "base_url": "https://openrouter.ai/api/v1", "model": "anthropic/claude-4.7-sonnet", "api_key": "sk-or-...", "priority": 2, "enabled": True})` is called
 - **THEN** `registry.list_providers()` returns 2 entries
-- **AND** `registry.get_chain()` returns `[chinzy-deepseek, openrouter-claude]` (priority order)
+- **AND** `registry.get_chain()` returns `[the relay-deepseek, openrouter-claude]` (priority order)
 - **AND** the api_key is written to OS keychain under `deskpet.provider.openrouter-claude`
 - **AND** `config.toml` `[[llm.providers]]` has 2 entries with `api_key_ref = "deskpet.provider.openrouter-claude"` (NOT plaintext)
 - **AND** a `providers_changed` ws event is broadcast to all control connections
@@ -27,17 +27,17 @@ Backend SHALL expose a single `LLMProviderRegistry` instance via `service_contex
 
 #### Scenario: Reorder by priority changes chain order
 
-- **GIVEN** providers have priorities `{chinzy: 1, ollama: 2, openrouter: 3}`
-- **WHEN** `await registry.reorder(["openrouter", "chinzy", "ollama"])`
-- **THEN** priorities updated to `{openrouter: 1, chinzy: 2, ollama: 3}`
-- **AND** `get_chain()` returns `[openrouter, chinzy, ollama]`
+- **GIVEN** providers have priorities `{the relay: 1, ollama: 2, openrouter: 3}`
+- **WHEN** `await registry.reorder(["openrouter", "the relay", "ollama"])`
+- **THEN** priorities updated to `{openrouter: 1, the relay: 2, ollama: 3}`
+- **AND** `get_chain()` returns `[openrouter, the relay, ollama]`
 - **AND** persisted to toml + ws broadcast
 
 #### Scenario: Toggle disable removes from chain but keeps config
 
-- **GIVEN** registry has `chinzy (enabled=True), ollama (enabled=True)`
+- **GIVEN** registry has `the relay (enabled=True), ollama (enabled=True)`
 - **WHEN** `await registry.set_enabled("ollama", False)`
-- **THEN** `get_chain()` returns `[chinzy]` only
+- **THEN** `get_chain()` returns `[the relay]` only
 - **AND** `list_providers()` still returns 2 entries (ollama with enabled=False)
 - **AND** persisted + ws broadcast
 

@@ -26,7 +26,7 @@ binding.
 
 When a code session dispatches an agent LLM call, the system SHALL merge
 the session's bound `preferred_model` and `model_params` into the
-chinzy OpenAI-compatible request: model id → wire `model`; `thinking`/
+the relay OpenAI-compatible request: model id → wire `model`; `thinking`/
 `effort` → reasoning parameters; `context` → context-window hint;
 `fast` → speed hint. Switching the binding SHALL take effect on the
 next call for that session without restart. Unknown/legacy param values

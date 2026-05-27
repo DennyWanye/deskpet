@@ -18,7 +18,7 @@ def _mock_handler(captured: list, response_body: dict):
     serves the OpenAI choice shape as a single SSE event followed by
     ``[DONE]``. The streaming consumer's ``choices[0].message`` fallback
     branch picks up content / tool_calls from this shape, exactly as
-    chinzy and other non-conforming proxies emit them.
+    the relay and other non-conforming proxies emit them.
     """
     def _h(request: httpx.Request) -> httpx.Response:
         captured.append(json.loads(request.content))
@@ -164,7 +164,7 @@ async def test_shim_returns_chatresponse() -> None:
     assert resp.usage.input_tokens == 10
 
 
-# Regression: chinzy.com / sealos thinking-mode endpoints sometimes
+# Regression: your-llm-relay.example.com / sealos thinking-mode endpoints sometimes
 # wrap the entire SSE response body as a single JSON-encoded string.
 # i.e. the bytes on the wire look like
 #     "data: {chunk1}\n\ndata: {chunk2}\n\n..."
@@ -174,7 +174,7 @@ async def test_shim_returns_chatresponse() -> None:
 # unwrap path detects this shape, json.loads-unwraps it, and then
 # manually re-parses the inner SSE.
 @pytest.mark.asyncio
-async def test_chinzy_double_encoded_sse_recovers() -> None:
+async def test_relay_double_encoded_sse_recovers() -> None:
     """A response body that's a JSON-string-wrapped SSE stream
     must still produce a usable content + reasoning_content."""
     inner_chunks = [
@@ -216,7 +216,7 @@ async def test_chinzy_double_encoded_sse_recovers() -> None:
         )
 
     p = OpenAICompatibleProvider(
-        base_url="https://chinzy.example", api_key="k", model="deepseek-v4-pro"
+        base_url="https://the relay.example", api_key="k", model="deepseek-v4-pro"
     )
     p._test_transport = httpx.MockTransport(_h)
     out = await p.chat_with_tools([{"role": "user", "content": "ping"}])

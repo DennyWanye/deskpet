@@ -1,4 +1,4 @@
-"""MR-S2-1 真人工测试：cross-key 矛盾治理（真 LLM via chinzy deepseek-v4-pro）。
+"""MR-S2-1 真人工测试：cross-key 矛盾治理（真 LLM via the relay deepseek-v4-pro）。
 
 跑前提：
   * backend 已起在 8100 + Stage 2 全 flag 已开

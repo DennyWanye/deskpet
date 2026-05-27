@@ -22,7 +22,7 @@ The running backend (PID ~15372) still has pre-Phase-1 code. Restarting now inte
 2. **per-model switch** — in a code-mode session, switch model deepseek↔claude-sonnet; confirm resolved window changes (1M↔200K) with NO config.toml edit.
 3. **project override** — drop `<a project>/.deskpet/context.toml` with `[models."deepseek-v4-pro"] context_window=1000000`; open that project in code mode; confirm log shows `source=project`.
 4. **file-read dedup** — re-run the read-loop task that 50-轮爆 today (sid pattern code-rkjdd9vo, "扫描+改 5 文件"); confirm same-file re-reads get superseded markers in history and the task converges in ≤30 iterations (vs 50 before). Screenshot the code panel.
-5. **prompt cache** — 5-turn conversation; grep log for `p4s25_prompt_cache_hit cached_tokens=…`; expect hit-rate ≥50% on turns 2-5 (chinzy/deepseek prefix cache).
+5. **prompt cache** — 5-turn conversation; grep log for `p4s25_prompt_cache_hit cached_tokens=…`; expect hit-rate ≥50% on turns 2-5 (the relay/deepseek prefix cache).
 6. **ModelContextCard UI** — open SettingsPanel, confirm the 模型上下文 card renders resolved window + source chain (screenshot = evidence per [feedback_real_test]).
 7. **rollback** — set `config.toml [context.manager].v2_enabled=false`, restart, confirm legacy absolute thresholds (4000/60000/20) restored.
 

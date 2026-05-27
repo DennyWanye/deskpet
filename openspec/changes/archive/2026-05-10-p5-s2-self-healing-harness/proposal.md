@@ -6,7 +6,7 @@ P5-S1 落地了"被动监督"（watchdog 60s 扫一次，发现 stuck 推 hint �
 
 ### 实战观察（2026-05-10 16:50–17:30 UTC+8）
 
-两个 Code 模式 session 撞 `max_iterations=50`，UI 显示 "Agent 已达到迭代上限"。日志根因：deepseek-v4-pro 连发 50 次 `tool_calls=1` 的工具调用，**每次 arguments 都被 chinzy 流式编码截掉、parse 后是 `{}`**，工具拒收 → LLM 自我反思 → 再发空 args → 死循环 50 圈。AI 自己在 content 里说："I'm completely stuck in a loop. Every call I make has empty invoke blocks with no parameters."
+两个 Code 模式 session 撞 `max_iterations=50`，UI 显示 "Agent 已达到迭代上限"。日志根因：deepseek-v4-pro 连发 50 次 `tool_calls=1` 的工具调用，**每次 arguments 都被 the relay 流式编码截掉、parse 后是 `{}`**，工具拒收 → LLM 自我反思 → 再发空 args → 死循环 50 圈。AI 自己在 content 里说："I'm completely stuck in a loop. Every call I make has empty invoke blocks with no parameters."
 
 ### 这暴露的 3 层架构问题
 
@@ -28,7 +28,7 @@ P5-S1 落地了"被动监督"（watchdog 60s 扫一次，发现 stuck 推 hint �
 - 无 guardrail 的 ReAct 任务成功率 20-40%；做完 loop engineering 70-80%+（业界共识）
 - ICLR 2026 论文 *Agent Error Taxonomy*：分类感知错误 + 定向修复 hint 提升 +24% 准确率
 
-桌宠用户每次撞这种循环要看 50 次 LLM 推理白烧 5 分钟，体感极差，且 chinzy 计费按 token 走真烧钱。
+桌宠用户每次撞这种循环要看 50 次 LLM 推理白烧 5 分钟，体感极差，且 the relay 计费按 token 走真烧钱。
 
 ## What Changes
 

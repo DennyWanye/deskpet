@@ -63,7 +63,7 @@ DeskPet 内测要做到"**注册/登录 → 自动配好模型 → 开箱即用*
 
 - ❌ 不做应用内支付（不集成微信/支付宝 SDK）——付费只给跳转链接。
 - ❌ 不做账户后端（中转站已有注册/鉴权/计费后端）。
-- ❌ 不做多 provider 选择 UI——内测固定 chinzy 中转站。
+- ❌ 不做多 provider 选择 UI——内测固定 中转站。
 - ❌ 不改 RelayAuthAdapter 的登录/注册/refresh 协议本身。
 
 ## 4. 用户故事
@@ -138,7 +138,7 @@ bridge 重推。运行中 401（旧 key 失效）的处理见 WI-R5（前端驱�
 ### WI-R4 · 充值跳转链接
 
 - `AccountSettingsPanel` 的"账户余额"区新增**"去充值"按钮** → Tauri
-  opener 打开中转站充值页（如 `https://chinzy.com/console/billing`）。
+  opener 打开中转站充值页（如 `https://your-llm-relay.example.com/console/billing`）。
 - 余额不足 / 扣费失败的错误提示里同样带"去充值"链接。
 - 复用 `billing/ledger.py` 的 80% 预算警告（WI-04）——警告文案里加充值
   链接。

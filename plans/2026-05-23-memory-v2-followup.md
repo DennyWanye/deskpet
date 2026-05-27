@@ -96,7 +96,7 @@ agent 联调**（用户进 code mode → agent 自动调 `file_write` → 工作
 
 **判断**：账号级配额/模型授权问题，**不是 DeskPet 代码缺陷**。
 
-**后续**：用 ConsolePage（https://chinzy.com/console/billing）查这个账号
+**后续**：用 ConsolePage（https://your-llm-relay.example.com/console/billing）查这个账号
 对那些模型的访问权限 / 充值。或换主账号跑测试。
 
 ### B3. PR #2 合入 master 的冲突解决

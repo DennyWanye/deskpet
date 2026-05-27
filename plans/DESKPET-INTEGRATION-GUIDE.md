@@ -1,11 +1,11 @@
 # Token Relay × DeskPet 集成对接文档
 
-> **版本**：v1.0 · **生效日期**：2026-05-20 · **生产环境**：`https://chinzy.com`
+> **版本**：v1.0 · **生效日期**：2026-05-20 · **生产环境**：`https://your-llm-relay.example.com`
 > **协议版本**：所有面向集成方的端点挂在 `/v1/*`
 > **对接对象**：DeskPet 本地 Python 后端
 >
 > 本文档是基于你方提交的 `RELAY-INTEGRATION-REQUEST.md` 的逐项确认 + 完整对接细节。
-> 任何端点不一致以**本文档**为准；本文档的来源是已部署到 `chinzy.com` 的生产代码。
+> 任何端点不一致以**本文档**为准；本文档的来源是已部署到 `your-llm-relay.example.com` 的生产代码。
 
 ---
 
@@ -27,7 +27,7 @@
 
 | 项 | 值 |
 |---|---|
-| 生产 base URL | `https://chinzy.com` |
+| 生产 base URL | `https://your-llm-relay.example.com` |
 | 协议 | HTTPS only（Let's Encrypt 自动续期） |
 | API 版本化 | 路径前缀 `/v1/` |
 | 内容类型 | `application/json`（除特别说明） |
@@ -69,7 +69,7 @@
 
 ## 3. 端点详尽规范
 
-所有端点在生产环境的 base URL 为 `https://chinzy.com`。
+所有端点在生产环境的 base URL 为 `https://your-llm-relay.example.com`。
 
 ### 3.1 `POST /v1/auth/register` — 注册
 
@@ -273,7 +273,7 @@ X-Device-Name: Alice's MacBook             # optional
     {
       "id": "relay-openai",
       "name": "OpenAI (relay)",
-      "base_url": "https://chinzy.com/v1",
+      "base_url": "https://your-llm-relay.example.com/v1",
       "api_key": "<redacted-tsk-key>",
       "openai_compatible": true,
       "supports_streaming": true,
@@ -300,7 +300,7 @@ X-Device-Name: Alice's MacBook             # optional
     {
       "id": "relay-anthropic",
       "name": "Anthropic (relay)",
-      "base_url": "https://chinzy.com/anthropic/v1",
+      "base_url": "https://your-llm-relay.example.com/anthropic/v1",
       "api_key": "<redacted-tsk-key>",
       "openai_compatible": false,
       "supports_streaming": true,
@@ -426,7 +426,7 @@ Authorization: Bearer tsk_xxx...
 → { status, content?: { video_url }, error?, usage? }
 ```
 
-详细字段见 [https://chinzy.com/docs/video](https://chinzy.com/docs/video)。
+详细字段见 [https://your-llm-relay.example.com/docs/video](https://your-llm-relay.example.com/docs/video)。
 
 ### 3.10 `GET /public/models` — 公开模型清单（无需鉴权）
 
@@ -616,7 +616,7 @@ deviceId=windows-001 → 自己的 tsk_zzz 系列
 
 ### 7.3 用户撤销
 
-用户登录 `https://chinzy.com/console/devices`，可以看到所有 device key 列表（设备名、deviceId、首次签发时间、最近活跃时间），可逐个撤销。撤销后该 deviceId 下次再调 `/v1/providers` 会拿到一把全新的 key。
+用户登录 `https://your-llm-relay.example.com/console/devices`，可以看到所有 device key 列表（设备名、deviceId、首次签发时间、最近活跃时间），可逐个撤销。撤销后该 deviceId 下次再调 `/v1/providers` 会拿到一把全新的 key。
 
 ### 7.4 客户端责任
 
@@ -636,7 +636,7 @@ import os
 import httpx
 from typing import Optional
 
-BASE = "https://chinzy.com"
+BASE = "https://your-llm-relay.example.com"
 
 class RelayClient:
     def __init__(self, device_id: str, device_name: str):
@@ -748,7 +748,7 @@ for chunk in stream:
 
 | 项 | 回复 |
 |---|---|
-| 统一 OpenAI 兼容 | ✅ **是**。单一 base_url `https://chinzy.com/v1`，POST `/chat/completions` 接所有模型（含 Claude/DeepSeek 等，通过跨协议路由）。Anthropic native 路径并存但不必用。 |
+| 统一 OpenAI 兼容 | ✅ **是**。单一 base_url `https://your-llm-relay.example.com/v1`，POST `/chat/completions` 接所有模型（含 Claude/DeepSeek 等，通过跨协议路由）。Anthropic native 路径并存但不必用。 |
 | api_key 形态 | **(b) 独立长期 device key**——你方选定的方案。每次 `/v1/providers` 自动轮换一把新 key；旧 key 立刻 disabled。 |
 | 模型能力位 | ✅ 已实现 `capabilities[]`，含 `reasoning_effort`、`thinking`、`tools`、`vision`、`streaming` 等（详见 §6） |
 | provider 列表变化频率 | 账户级别基本恒定（同账号 + 同设备 → 同模型集）；上游配置变化时管理员侧会刷新数据库，下次调用自然反映。**ETag 当前未实现**——可加入 followup（流量不大暂不优先） |
@@ -782,17 +782,17 @@ for chunk in stream:
 | Logo | ❌ 暂无（followups #8） |
 | 用户协议 / 隐私政策 URL | ❌ 暂无（followups #8） |
 | 客服 / 反馈邮箱 | ❌ 暂无 |
-| 官网首页 | `https://chinzy.com/` |
-| 充值页 | `https://chinzy.com/console/billing` |
-| 账户管理 | `https://chinzy.com/console` |
+| 官网首页 | `https://your-llm-relay.example.com/` |
+| 充值页 | `https://your-llm-relay.example.com/console/billing` |
+| 账户管理 | `https://your-llm-relay.example.com/console` |
 
 ### §6 可选增强
 
 | 项 | 状态 |
 |---|---|
 | OAuth 第三方登录 | ❌ followups #3 |
-| 设备绑定 / 列表 | ✅ **已实现**：`https://chinzy.com/console/devices`（用户可视 + 撤销） |
-| 使用记录 | ✅ `https://chinzy.com/console/usage`（per-key / per-model 明细 + CSV 导出） |
+| 设备绑定 / 列表 | ✅ **已实现**：`https://your-llm-relay.example.com/console/devices`（用户可视 + 撤销） |
+| 使用记录 | ✅ `https://your-llm-relay.example.com/console/usage`（per-key / per-model 明细 + CSV 导出） |
 | Webhook | ❌ followups #4 |
 
 ### §7 开发协作

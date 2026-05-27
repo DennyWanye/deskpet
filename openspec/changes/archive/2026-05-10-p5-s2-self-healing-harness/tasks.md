@@ -31,7 +31,7 @@
 
 ---
 
-## Phase 1 — 诊断日志（10 行，定位 chinzy 截断 vs 模型自身 bug）
+## Phase 1 — 诊断日志（10 行，定位 the relay 截断 vs 模型自身 bug）
 
 ### 1.1 SSE tool_call args dump
 
@@ -41,7 +41,7 @@
 
 ### 1.2 验收
 
-- [ ] 1.4 把抓到的 log 摘要 + 结论（chinzy 截断 / 模型自身 / 我们解析 bug）记录到 `evidence/1.3-args-dump.md`
+- [ ] 1.4 把抓到的 log 摘要 + 结论（the relay 截断 / 模型自身 / 我们解析 bug）记录到 `evidence/1.3-args-dump.md`
 
 ---
 

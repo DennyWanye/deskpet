@@ -85,7 +85,7 @@
 ### 不动的（out of scope）
 
 - ToolRegistry / SessionDB / Supervisor / WatchdogLoop — 这些已经够干净
-- multi-provider-management / chinzy 集成 — 工作正常
+- multi-provider-management / the relay 集成 — 工作正常
 - F1 (httpx keep-alive=0) / D1 (stream→non-stream) — 在 ProviderAdapter 层，本提案不动
 - 前端 / UI — 全在后端
 
@@ -127,7 +127,7 @@
 ## 依赖
 
 - 现有 P5-S2 14 个 commit 都在 master，**不需要先 archive 任何 change**
-- 不依赖任何 chinzy 服务端改动
+- 不依赖任何 the relay 服务端改动
 - 不依赖前端改动
 
 ---

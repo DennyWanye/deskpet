@@ -64,7 +64,7 @@ async def test_job_processed_success_notifies(notifier_spy, monkeypatch):
 @pytest.mark.asyncio
 async def test_failure_notifies_graceful_no_crash(notifier_spy, monkeypatch):
     calls, n = notifier_spy
-    _patch_gen(monkeypatch, png=None, err="chinzy 连试 2 次仍失败（断连）")
+    _patch_gen(monkeypatch, png=None, err="the relay 连试 2 次仍失败（断连）")
     w = ImageGenerationWorker(n, max_concurrent=1)
     await w.start()
     try:

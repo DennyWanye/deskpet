@@ -2,7 +2,7 @@
 
 DeskPet 当前 LLM provider 是单实例：`backend/main.py` lifespan 阶段从 `config.toml [llm.local]` + keychain 构造一个 `OpenAICompatibleProvider`，注入 `service_context["llm_provider"]`。所有 chat、companion、code、supervisor 都用它。
 
-P5-S1 引入 supervisor 时已经发现这个单点的脆弱性：supervisor LLM 也走同一 endpoint，chinzy 抽风时跟主 agent 同归于尽（2026-05-10 实测确认）。当时 workaround 是手写 fallback_llm 二号实例（已被用户要求删掉，因为模型语气混搭）。
+P5-S1 引入 supervisor 时已经发现这个单点的脆弱性：supervisor LLM 也走同一 endpoint，the relay 抽风时跟主 agent 同归于尽（2026-05-10 实测确认）。当时 workaround 是手写 fallback_llm 二号实例（已被用户要求删掉，因为模型语气混搭）。
 
 P5-S2 sensor + circuit breaker + AutoResume 都做完了，现在该解决根因：**只有一个 provider 就没有 chain 可言**。本 change 把 provider 从"单实例"升级为"registry + chain"，并把控制权下放给用户（settings UI + per-session UI）。
 
@@ -12,7 +12,7 @@ P5-S2 sensor + circuit breaker + AutoResume 都做完了，现在该解决根因
 
 - 一个清晰的 registry，所有 provider 操作（list/add/remove/reorder/toggle）都走它
 - chat 失败时自动按 priority 走 fallback chain，不需要用户介入（保留 P5-S2 的 AutoResume 兜底）
-- Code 模式 per-session 可以覆盖全局优先级（一个项目用 chinzy、另一个用 ollama 都可以）
+- Code 模式 per-session 可以覆盖全局优先级（一个项目用 the relay、另一个用 ollama 都可以）
 - 拖拽 UI keyboard-accessible（aria + 键盘 reorder）
 - 旧 `[llm.local]` 单 provider 配置自动迁移到新 schema，**用户无感升级**
 - API key 永远不在 ws response 中以明文出现
@@ -51,7 +51,7 @@ P5-S2 sensor + circuit breaker + AutoResume 都做完了，现在该解决根因
 - C. AES 加密的 toml（密钥派生自机器 ID）
 
 **选 A**。理由：
-- 现有 chinzy api_key 已经走 keychain（`_resolve_cloud_api_key`）
+- 现有 the relay api_key 已经走 keychain（`_resolve_cloud_api_key`）
 - Windows 用户对 credential manager 有信任基础
 - toml 里只存 `api_key_ref = "deskpet.provider.<provider_id>"`，明文 toml 可以放 git/share
 - 加密方案 (C) 复杂度高且不解决"备份/迁移机器"难题
@@ -104,7 +104,7 @@ session 啥也没配 → 完全走全局 chain。
 
 ### D7: provider_id 命名
 
-**选 user-supplied kebab-case**（用户自己起，比如 `chinzy-deepseek`、`ollama-qwen`、`openrouter-claude`）。
+**选 user-supplied kebab-case**（用户自己起，比如 `the relay-deepseek`、`ollama-qwen`、`openrouter-claude`）。
 
 理由：UUID 用户认不出；hash 不稳定（改 base_url 就变）；自动化命名（`base_url + model`）有特殊字符问题。要求用户起一个简短易记的 id 是合理的负担。后端校验：kebab-case + 1-32 字符 + 在 registry 里唯一。
 

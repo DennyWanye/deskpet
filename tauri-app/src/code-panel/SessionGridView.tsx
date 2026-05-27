@@ -386,7 +386,7 @@ function Tile({
     typeof text === "string" &&
     /^<<[a-z_]+>>$/i.test(text.trim());
   // P6 bugfix 2026-05-13: thinking-mode models (deepseek-v4-pro, GLM-4.5,
-  // chinzy proxy etc.) emit `<think>...</think>` chain-of-thought inline
+  // the relay proxy etc.) emit `<think>...</think>` chain-of-thought inline
   // in the assistant `content` field. Backend supervisor/plan already
   // strip these for JSON parsing, but the chat stream doesn't — so users
   // see "AI: <think>Let me check the ChapterRead page…</think>" raw.

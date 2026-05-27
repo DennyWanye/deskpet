@@ -121,7 +121,7 @@ while True:
 - [ ] last-mile 分支已合 master（M0 前置）
 - [ ] 有连续 ~6-8 小时的 session 时间窗（保证 M0+M1 推到一个稳定 checkpoint）
 - [ ] backend/.venv 已激活；frontend npm install 已跑
-- [ ] LLM 可用（chinzy/deepseek-chat 推荐）— 派 opus 4.7 子代理需要
+- [ ] LLM 可用（the relay/deepseek-chat 推荐）— 派 opus 4.7 子代理需要
 
 ---
 

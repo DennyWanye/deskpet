@@ -3,7 +3,7 @@
 **测试者**: Claude opus 4.7（主对话） + windows-mcp / computer-use 真操作 Tauri 桌宠
 **测试范围**: round 2 标"环境受限"的 3 项 — MR-S2-2-4/12 (facts tab UI) / MR-S2-6 (MR-4 GUI) / MR-S2-1-9 (N=30 误判率)
 **分支**: `master`（包含 round 2 commit 515edc3）
-**Backend**: dev-start + `[memory.v2]` 全 flag = true + chinzy/deepseek-v4-pro
+**Backend**: dev-start + `[memory.v2]` 全 flag = true + the relay/deepseek-v4-pro
 
 ---
 
@@ -103,7 +103,7 @@ chat 走 read_file 后 sqlite3 dump 显示 1 row in workspace_state（path/last_
 | 项 | 状态 | 原因 |
 |---|---|---|
 | MR-S2-6 录屏 | 🔘 部分 | workspace_state 表 + screenshots 已存 evidence/2026-05-23-mr4-e2e/，无真正录屏（屏幕录制非 windows-mcp 能力）|
-| MR-S2-9 性能压测 | 🔘 待延后 | chinzy ReadError 抖动不适合稳定压测 |
+| MR-S2-9 性能压测 | 🔘 待延后 | the relay ReadError 抖动不适合稳定压测 |
 | assembler workspace fanout timeout (1500ms) | 🔘 待延后 | Stage 1 性能问题，非 Stage 2 引入 |
 
 ---

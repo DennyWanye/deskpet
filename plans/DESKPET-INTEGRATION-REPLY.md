@@ -28,7 +28,7 @@
 
 ### 2.2 **不做沙盒环境**
 
-接受用生产 `https://chinzy.com` 直接联调，配合**充值小额的测试账号**（自己充 ¥10-20 走完所有路径）。
+接受用生产 `https://your-llm-relay.example.com` 直接联调，配合**充值小额的测试账号**（自己充 ¥10-20 走完所有路径）。
 
 **约束**：
 
@@ -46,7 +46,7 @@
 
 **前提**：DeskPet 内测阶段（≤100 用户）可以不勾选协议；正式上架 App Store / Microsoft Store / 微信小程序之前**必须**全部补齐（合规硬要求），那时再处理。
 
-DeskPet 侧实现：登录 UI 留出协议勾选框 + URL 占位，临时指向 `https://chinzy.com/`，资产到位后只改 URL 不改 UI。
+DeskPet 侧实现：登录 UI 留出协议勾选框 + URL 占位，临时指向 `https://your-llm-relay.example.com/`，资产到位后只改 URL 不改 UI。
 
 ### 2.4 联系人 = 同一人
 
@@ -151,7 +151,7 @@ Authorization: Bearer <access_token>
   "currency": "CNY",
   "return_to": "deskpet://billing-done?session=xxx"
 }
-→ { "checkout_url": "https://chinzy.com/pay/...?session=xxx" }
+→ { "checkout_url": "https://your-llm-relay.example.com/pay/...?session=xxx" }
 ```
 
 DeskPet 用 Tauri `opener` plugin 拉系统浏览器打开 `checkout_url`，支付完成后中转站 redirect 到 `return_to`，DeskPet 拦截 `deskpet://` deeplink 刷新 `/v1/usage/summary`。
@@ -189,8 +189,8 @@ DeskPet 用 Tauri `opener` plugin 拉系统浏览器打开 `checkout_url`，支�
 ### Week 3：UI
 
 - [ ] 登录 / 注册 / 激活页面（仿现有 ChangeModelModal 样式）
-- [ ] 协议勾选 UI（URL 暂指向 chinzy.com，资产到位后只改 URL）
-- [ ] 找回密码入口（暂时跳转 chinzy.com console，告知用户"请联系管理员"）
+- [ ] 协议勾选 UI（URL 暂指向 your-llm-relay.example.com，资产到位后只改 URL）
+- [ ] 找回密码入口（暂时跳转 your-llm-relay.example.com console，告知用户"请联系管理员"）
 - [ ] Settings panel 显示余额 + 用量 + 当前 device 名称
 - [ ] "重新登录" / "登出" 按钮
 
@@ -218,8 +218,8 @@ DeskPet 用 Tauri `opener` plugin 拉系统浏览器打开 `checkout_url`，支�
 |---|---|
 | 单测 | mock HTTP client，fixture 用 guide §8 的样例响应 |
 | 集成测试 | 起一个 FastAPI mock server 实现 guide 契约的子集，跑 RelayAuthAdapter 全流程 |
-| 手动 E2E | 充 ¥20 的真实测试账号 `dev-test@chinzy.com`，每次 release 前手跑 5 步流程 |
-| 生产监控 | 接 `request_id` 到日志，出错能直接对 chinzy.com 服务端 trace |
+| 手动 E2E | 充 ¥20 的真实测试账号 `dev-test@your-llm-relay.example.com`，每次 release 前手跑 5 步流程 |
+| 生产监控 | 接 `request_id` 到日志，出错能直接对 your-llm-relay.example.com 服务端 trace |
 
 ---
 

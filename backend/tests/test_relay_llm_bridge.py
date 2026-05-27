@@ -57,7 +57,7 @@ _RELAY_KEY = "tsk_relaykey_SECRET_zzz"
 async def test_t3_1_persist_key_false_applies_key_live():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await _post(client, {
-            "base_url": "https://chinzy.com/v1",
+            "base_url": "https://your-llm-relay.example.com/v1",
             "model": "gpt-5.5",
             "api_key": _RELAY_KEY,
             "persist_key": False,
@@ -71,13 +71,13 @@ async def test_t3_1_persist_key_false_applies_key_live():
 async def test_t3_2_persist_key_false_not_written_to_disk():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await _post(client, {
-            "base_url": "https://chinzy.com/v1",
+            "base_url": "https://your-llm-relay.example.com/v1",
             "model": "gpt-5.5",
             "api_key": _RELAY_KEY,
             "persist_key": False,
         })
     runtime = _read_runtime()
-    assert runtime.get("base_url") == "https://chinzy.com/v1"
+    assert runtime.get("base_url") == "https://your-llm-relay.example.com/v1"
     assert runtime.get("model") == "gpt-5.5"
     assert "api_key" not in runtime
     # Hard guarantee: the relay key prefix appears nowhere in the file.
@@ -114,7 +114,7 @@ async def test_t3_4_persist_key_defaults_true():
 async def test_t3_5_persist_key_false_idempotent():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         body = {
-            "base_url": "https://chinzy.com/v1",
+            "base_url": "https://your-llm-relay.example.com/v1",
             "model": "gpt-5.5",
             "api_key": _RELAY_KEY,
             "persist_key": False,

@@ -12,7 +12,7 @@ A long-running tool (first adopter: `generate_image`) SHALL submit its slow work
 - **AND** the agent calls `generate_image` with a valid prompt
 - **WHEN** the tool handler runs
 - **THEN** it SHALL return within ~1s with `{ok:true, status:"generating", job_id:<id>, message:<"在画了，稍等"-style>}`
-- **AND** it SHALL NOT perform the chinzy HTTP request inside the tool handler
+- **AND** it SHALL NOT perform the the relay HTTP request inside the tool handler
 - **AND** the agent loop turn SHALL complete without waiting for image generation
 
 #### Scenario: completion is pushed to the pet without a user turn
@@ -26,9 +26,9 @@ A long-running tool (first adopter: `generate_image`) SHALL submit its slow work
 #### Scenario: failure is delivered gracefully (no fabrication)
 
 - **GIVEN** a submitted image job
-- **AND** chinzy returns a disconnect/4xx after the worker's retries are exhausted
+- **AND** the relay returns a disconnect/4xx after the worker's retries are exhausted
 - **WHEN** the worker finishes with an error
-- **THEN** it SHALL emit a `chat_v2_final` event with an honest graceful error (chinzy 抽风/参数/额度) — never a fabricated success
+- **THEN** it SHALL emit a `chat_v2_final` event with an honest graceful error (the relay 抽风/参数/额度) — never a fabricated success
 - **AND** it SHALL NOT crash the worker loop (next jobs still process)
 
 #### Scenario: same in-flight prompt is deduplicated

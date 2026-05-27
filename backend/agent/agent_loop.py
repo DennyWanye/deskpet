@@ -681,7 +681,7 @@ class AgentLoop:
                                 # → permanent_tool_error → circuit
                                 # breaker → user stuck. 8192 leaves
                                 # comfortable headroom (~24KB output)
-                                # without 显著 cost spike on chinzy.
+                                # without 显著 cost spike on the relay.
                                 max_tokens=int(llm_kwargs.get("max_tokens", 8192)),
                                 temperature=llm_kwargs.get("temperature"),
                                 response_format=llm_kwargs.get("response_format"),
@@ -780,10 +780,10 @@ class AgentLoop:
                     except LLMProviderError as stream_exc:
                         # P4-S25 fix: streaming raised after exhausting its
                         # own retry budget (typically RemoteProtocolError
-                        # 3-in-a-row from chinzy). Fall back to the non-
+                        # 3-in-a-row from the relay). Fall back to the non-
                         # streaming path instead of bubbling the error
                         # to the user — non-stream is more reliable on
-                        # chinzy in our observed traffic, AND it has its
+                        # the relay in our observed traffic, AND it has its
                         # own independent retry budget so we effectively
                         # double the resilience without hard-coding 6
                         # retries.
@@ -804,7 +804,7 @@ class AgentLoop:
                     )
                     if needs_nonstream_fallback:
                         if stream_failed_with is None:
-                            # Empty-stream case (chinzy didn't actually stream).
+                            # Empty-stream case (the relay didn't actually stream).
                             logger.warning(
                                 "agent_loop_stream_fallback_to_nonstream "
                                 "delta_count=%d", delta_count,

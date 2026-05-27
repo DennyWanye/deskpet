@@ -1,7 +1,7 @@
 """code-session-model-params — pure model-params → request mapper.
 
 Maps a code session's Cursor-style ``model_params`` (thinking / fast /
-context / effort) onto chinzy OpenAI-compatible request fields.
+context / effort) onto the relay OpenAI-compatible request fields.
 
 Contract (Spec "Param→request mapping is total"):
   * total & pure — never raises, no I/O
@@ -29,7 +29,7 @@ _CONTEXT_TOKENS: dict[str, int] = {
 
 
 def code_params_to_request(model_params: Any) -> dict[str, Any]:
-    """Return request-body fragment to merge into the chinzy call.
+    """Return request-body fragment to merge into the the relay call.
 
     Well-known OpenAI key (``reasoning_effort``) is emitted top-level;
     less-standardised hints (``context_window``, ``fast``) go under

@@ -41,7 +41,7 @@ INFO:__main__:event='config_loaded' level='info' timestamp='2026-05-22T12:08:07.
 [2m20:08:08[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [2m[console.warn] [22m[code-panel] get_shared_secret failed: No secret available (backend not started?)
 G:\projects\deskpet\backend\.venv\Lib\site-packages\transformers\utils\hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
   warnings.warn(
-INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-22T12:08:10.210487Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-22T12:08:10.210487Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
 INFO:__main__:event='llm_api_key_from_keychain' level='info' timestamp='2026-05-22T12:08:10.210487Z'
 INFO:__main__:event='sanitize_inline_cot_dsml_flag' level='info' timestamp='2026-05-22T12:08:10.210487Z' enabled=True
 INFO:__main__:event='provider_registry_initialized providers=%d' level='info' timestamp='2026-05-22T12:08:10.225820Z' positional_args=(0,)
@@ -92,7 +92,7 @@ INFO:deskpet.mcp.manager:event='mcp_server_connected' level='info' timestamp='20
 INFO:deskpet.mcp.bootstrap:event='mcp_bootstrap_started' level='info' timestamp='2026-05-22T12:08:16.442081Z' states={'filesystem': 'running', 'playwright': 'running'}
 INFO:__main__:event='p4_mcp_manager_ready' level='info' timestamp='2026-05-22T12:08:16.442081Z' states={'filesystem': 'running', 'playwright': 'running'}
 INFO:__main__:event='p5s2_circuit_breaker_wired threshold=%d cooldown=%.0fs' level='info' timestamp='2026-05-22T12:08:16.444082Z' positional_args=(3, 60.0)
-INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-22T12:08:16.444082Z' positional_args=('https://chinzy.com/v1',)
+INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-22T12:08:16.444082Z' positional_args=('https://your-llm-relay.example.com/v1',)
 INFO:deskpet.agent.watchdog:watchdog started (scan_interval=60s, stuck_threshold=900s, dedup=720s)
 INFO:__main__:event='p5_supervisor_watchdog_started' level='info' timestamp='2026-05-22T12:08:16.444082Z'
 INFO:__main__:event='p5s2_auto_resume_started enabled=%s max_attempts=%d' level='info' timestamp='2026-05-22T12:08:16.445082Z' positional_args=(True, 2)

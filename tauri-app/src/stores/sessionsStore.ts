@@ -519,7 +519,7 @@ export function pet_focus_sid(
 }
 
 // ----------------------------------------------------------------------
-// Concurrency limiter — wrap outbound chat sends so chinzy doesn't
+// Concurrency limiter — wrap outbound chat sends so the relay doesn't
 // see N parallel chat_v2 messages from N tiles all at once. Default
 // max is 2 simultaneous in-flight LLM round-trips; the rest queue.
 // ----------------------------------------------------------------------

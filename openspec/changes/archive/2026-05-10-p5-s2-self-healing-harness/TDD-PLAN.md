@@ -17,7 +17,7 @@
 ## 命名约定
 
 - `tests/test_p5s2_<topic>.py` — backend unit + integration
-- `tests/e2e_p5s2_<scenario>.py` — backend live LLM E2E (skipped without `chinzy_e2e` marker)
+- `tests/e2e_p5s2_<scenario>.py` — backend live LLM E2E (skipped without `the relay_e2e` marker)
 - `src/.../<module>.test.ts` / `.test.tsx` — frontend vitest
 - evidence: `openspec/changes/p5-s2-self-healing-harness/evidence/<task-id>-<slug>.md`
 
@@ -133,7 +133,7 @@ async def test_tool_call_args_logged_per_call(caplog):
 
 ### Live E2E
 
-`evidence/1.3-args-dump.md` — reproduce 50-iteration vpn-tunnel case + paste log + classify root cause (chinzy truncation / model bug / parser bug).
+`evidence/1.3-args-dump.md` — reproduce 50-iteration vpn-tunnel case + paste log + classify root cause (the relay truncation / model bug / parser bug).
 
 ---
 

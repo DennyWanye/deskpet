@@ -1,7 +1,7 @@
 """OS-level computer-use toolset (toolset=``computer_use``).
 
 Lets a code-mode session agent (model ``gpt-5.5``, vision-capable, via
-the chinzy OpenAI-compatible base_url) do *simulated-human testing of
+the the relay OpenAI-compatible base_url) do *simulated-human testing of
 desktop apps* — the screenshot → reason → click/type loop that only
 became viable once the driving model gained vision.
 

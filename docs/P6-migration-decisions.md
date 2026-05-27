@@ -30,7 +30,7 @@ error_max_structured_output_retries}` — explicit enumerated states,
 not "the LLM eventually decided to stop."
 <https://docs.anthropic.com/en/docs/claude-code/sdk/sdk-headless>
 
-Hermes Agent (chinzy/Hermes-405) reinforces this with `IterationBudget` —
+Hermes Agent (the relay/Hermes-405) reinforces this with `IterationBudget` —
 thread-safe, **non-negotiable**, shared by parent + subagent runs.
 <https://github.com/NousResearch/Hermes-Function-Calling> (see
 `IterationBudget` in the agent loop module).
@@ -75,7 +75,7 @@ iteration so we surface `context_budget_block` as our own
 
 **What we rejected.** Reactive compaction (run only when the provider
 rejects the request). Simpler, but it costs a wasted round-trip every
-time, and on chinzy specifically the rejection comes with a 30-60 s
+time, and on the relay specifically the rejection comes with a 30-60 s
 delay before the error surfaces. Preflight saves both.
 
 **Source.** Hermes Agent's "Preflight compression at 50% threshold"
@@ -132,7 +132,7 @@ B2 block in `main.py chat handler`).
 
 **What we rejected.** A big-bang merge that replaced the old paths in
 one commit. Faster, but it would have meant rolling back the entire
-refactor on any single bug — and we had real users on chinzy hitting
+refactor on any single bug — and we had real users on the relay hitting
 the old paths daily.
 
 **Source.** Martin Fowler's Strangler Fig pattern — gradually replace

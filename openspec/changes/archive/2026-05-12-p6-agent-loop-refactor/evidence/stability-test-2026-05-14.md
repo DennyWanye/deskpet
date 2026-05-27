@@ -31,9 +31,9 @@
 - `supervisor_alert_silenced_auto_mode: 0` — 也没有静默化的告警（说明真没误判）
 - 对比 R6-R10 历史：之前每个周期 supervisor 介入 1-4 次。本次 0 次。
 
-### chinzy 服务健康
+### the relay 服务健康
 - `403 Forbidden: 0` / `ConnectTimeout: 0` / `all_providers_failed: 0`
-- 之前测试期间出现的 chinzy outage 不再复现
+- 之前测试期间出现的 the relay outage 不再复现
 
 ### 0 真错误（关键稳定性指标）
 排除模式: `args_malformed`(已被 args_repaired 兜底) / `IPC custom protocol`(Tauri 启动)

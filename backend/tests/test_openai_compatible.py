@@ -364,7 +364,7 @@ async def test_chat_with_tools_classifies_relay_402_insufficient_balance():
         return httpx.Response(402, json={"error": {"message": "insufficient balance"}})
 
     provider = OpenAICompatibleProvider(
-        base_url="https://chinzy.com/v1", api_key="tsk_x", model="gpt-5.5",
+        base_url="https://your-llm-relay.example.com/v1", api_key="tsk_x", model="gpt-5.5",
     )
     provider._test_transport = httpx.MockTransport(handler)
 
@@ -381,7 +381,7 @@ async def test_chat_with_tools_classifies_relay_401_key_invalid():
         return httpx.Response(401, json={"error": {"message": "unauthorized"}})
 
     provider = OpenAICompatibleProvider(
-        base_url="https://chinzy.com/v1", api_key="tsk_stale", model="gpt-5.5",
+        base_url="https://your-llm-relay.example.com/v1", api_key="tsk_stale", model="gpt-5.5",
     )
     provider._test_transport = httpx.MockTransport(handler)
 

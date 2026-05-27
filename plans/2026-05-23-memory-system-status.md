@@ -57,7 +57,7 @@ Stage 3 (远期 roadmap) ──────────────────�
 | Commit | 内容 |
 |---|---|
 | `03f3b15` | facts value 强制与源消息同语言（deepseek 默认翻译成英文的 bug） |
-| `ebd2928` | 第 3 轮 LLM-enabled 人工测试结果（chinzy deepseek-chat 真测）|
+| `ebd2928` | 第 3 轮 LLM-enabled 人工测试结果（the relay deepseek-chat 真测）|
 | `a1ff958` | embedder PYTHONPATH 修复 + BGE-M3 baseline 重钉（hit@5 由 0.11 → 0.43）|
 | `68b1fe9` | **PR #2 merged**：worktree-memory-upgrade → master |
 

@@ -38,7 +38,7 @@ Tasks ledger: `openspec/changes/code-session-model-params/tasks.md`
    seed/template. Any config that must take effect at runtime goes in
    **both** (repo for the template, APPDATA for the running backend).
 4. **LLM endpoint** is `%APPDATA%/deskpet/llm_runtime.json`
-   (currently chinzy `https://chinzy.com/v1`, model `deepseek-v4-pro`,
+   (currently the relay `https://your-llm-relay.example.com/v1`, model `deepseek-v4-pro`,
    OpenAI-compatible). Pet/companion/supervisor use this. Code mode
    layers `[agent] code_model` on top (see §3).
 5. **New test files MUST use `asyncio.run(...)`**, never
@@ -189,7 +189,7 @@ Then check 5.1/5.2/5.3 in tasks.md, commit to this branch.
 3. **computer-use real E2E** (mandatory, screenshot = evidence):
    open Code Mode → a project session → open the new picker → set
    model = GPT-5.5, Effort = High, Thinking on → send a code task →
-   grep backend log: that session's chinzy call used the chosen model
+   grep backend log: that session's the relay call used the chosen model
    + `reasoning_effort` while the pet `default` session still uses
    `deepseek-v4-pro`. Save screenshot → `openspec/changes/
    code-session-model-params/evidence/`.

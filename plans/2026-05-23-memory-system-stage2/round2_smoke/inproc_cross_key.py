@@ -1,7 +1,7 @@
 """MR-S2-1 in-process 真 LLM cross-key 矛盾治理验证。
 
-绕开 chat_v2 链路（chinzy 抖动严重）—— 直接构造 FactExtractor +
-真 LLM (chinzy deepseek-v4-pro) 跑 process_message。
+绕开 chat_v2 链路（the relay 抖动严重）—— 直接构造 FactExtractor +
+真 LLM (the relay deepseek-v4-pro) 跑 process_message。
 """
 from __future__ import annotations
 
@@ -32,21 +32,21 @@ DB = Path(r"G:\projects\deskpet\backend\userdata\data\state.db")
 
 
 async def make_llm():
-    """直接 httpx 拼 chat completions (chinzy)。"""
+    """直接 httpx 拼 chat completions (the relay)。"""
     import httpx
     import keyring
 
     api_key = (
-        keyring.get_password("deskpet", "provider.chinzy")
-        or keyring.get_password("deskpet", "provider.chinzy-deepseek")
+        keyring.get_password("deskpet", "provider.the relay")
+        or keyring.get_password("deskpet", "provider.the relay-deepseek")
     )
     if not api_key:
-        print("ERROR: no chinzy api key in keyring", file=sys.stderr)
+        print("ERROR: no the relay api key in keyring", file=sys.stderr)
         sys.exit(2)
     print(f"  api_key 命中, 长度={len(api_key)}", file=sys.stderr)
 
     client = httpx.AsyncClient(
-        base_url="https://chinzy.com/v1",
+        base_url="https://your-llm-relay.example.com/v1",
         timeout=120.0,
         headers={"Authorization": f"Bearer {api_key}"},
     )

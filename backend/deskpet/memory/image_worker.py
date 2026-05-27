@@ -6,7 +6,7 @@ ToolRegistry timeout for 60–240s (every image bug this week traced to
 that). This worker decouples it:
 
   tool submit(job)  → returns a job_id immediately (agent turn unblocks)
-  worker _process   → slow chinzy POST + retry + save + open (background)
+  worker _process   → slow the relay POST + retry + save + open (background)
   notifier(sid,txt) → pushes the result back to the pet out-of-band
                       (reuses main.py's control-ws chat_v2_final broadcast)
 

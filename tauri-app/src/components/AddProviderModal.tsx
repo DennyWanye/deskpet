@@ -307,7 +307,7 @@ export function AddProviderModal({
             disabled={isEditing}
             value={draft.id}
             onChange={(e) => setDraft({ ...draft, id: e.target.value })}
-            placeholder="chinzy-deepseek"
+            placeholder="the relay-deepseek"
             style={inputStyle}
           />
           {submitted && validation.errors.id && (
@@ -335,7 +335,7 @@ export function AddProviderModal({
             data-testid="provider-base-url-input"
             value={draft.base_url}
             onChange={(e) => setDraft({ ...draft, base_url: e.target.value })}
-            placeholder="https://chinzy.com/v1"
+            placeholder="https://your-llm-relay.example.com/v1"
             style={inputStyle}
           />
           {submitted && validation.errors.base_url && (

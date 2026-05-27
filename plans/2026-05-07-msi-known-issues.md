@@ -46,7 +46,7 @@ notepad $env:APPDATA\deskpet\llm_runtime.json
 
 ```json
 {
-  "base_url": "https://chinzy.com/v1",
+  "base_url": "https://your-llm-relay.example.com/v1",
   "model": "gpt-5.5",
   "temperature": 0.7,
   "api_key": "sk-..."

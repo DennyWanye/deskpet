@@ -3,7 +3,7 @@
 The Cursor-style picker must not hardcode a model list. This module:
 
   1. ``fetch_models`` — pulls the relay's real catalog from the
-     OpenAI-standard ``GET {base_url}/models`` (chinzy 中转站). Total &
+     OpenAI-standard ``GET {base_url}/models`` (中转站). Total &
      defensive: any failure → ``[]`` so callers fall back to the
      registry's configured ``models`` list.
   2. ``model_param_caps`` — which picker controls a given model

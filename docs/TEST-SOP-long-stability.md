@@ -174,7 +174,7 @@ echo "end_turns:  $(grep -ac \"stop_reason='end_turn'\" /g/projects/deskpet/taur
 echo "auto_continued: $(grep -ac supervisor_ask_user_auto_continued /g/projects/deskpet/tauri-dev.log)"
 echo "alerts silenced: $(grep -ac supervisor_alert_silenced_auto_mode /g/projects/deskpet/tauri-dev.log)"
 echo "auto_resume_engaged: $(grep -ac auto_resume_engaged /g/projects/deskpet/tauri-dev.log)"
-echo "chinzy 403: $(grep -ac '403 Forbidden' /g/projects/deskpet/tauri-dev.log)"
+echo "the relay 403: $(grep -ac '403 Forbidden' /g/projects/deskpet/tauri-dev.log)"
 
 # screenshot UI for visual evidence
 # (mcp__computer-use__screenshot, save_to_disk=True)

@@ -20,7 +20,7 @@
 
 1. 在隔离 worktree 启动 dev 实例 —— `powershell -File scripts/dev-worktree.ps1 -Port 8201 -ViteForceNoUse`（**新端口 8201/5274** 避免与 Stage 1 worktree 8200 冲突）
 2. 后端"已连接"（toolbar 绿色徽章）；需要**支持 function-calling 的 LLM**（cross-key merge / entity 抽取 / memory_forget 自然语言模式都依赖）
-   - 推荐 chinzy/deepseek-chat（已知通；其它 chinzy 模型 503 见 followup B2）
+   - 推荐 the relay/deepseek-chat（已知通；其它 the relay 模型 503 见 followup B2）
 3. DPI 150%：坐标换算 逻辑=物理/1.5；中文输入用剪贴板 `Set-Clipboard` + Ctrl+V
 4. 查后端表：`sqlite3 .dev-userdata-stage2/data/state.db` 或后端日志
 5. 每组用例标注所需 feature flag，测前在 `.dev-userdata-stage2` 的 `config.toml` 把对应 `[memory.v2]` flag 设好并重启后端

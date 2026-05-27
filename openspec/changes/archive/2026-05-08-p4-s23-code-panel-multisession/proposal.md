@@ -31,7 +31,7 @@ rebuild anyway, so we ship them together rather than baking another
 PyInstaller round-trip:
 
 - **chat_v2 ConnectError "unknown" toast** (P4-S22 leftover) — provider
-  layer doesn't wrap httpx errors, so a chinzy keep-alive RST surfaces
+  layer doesn't wrap httpx errors, so a the relay keep-alive RST surfaces
   as "chat_v2 错误: unknown" in the UI. Already coded; awaiting build.
 - **todo_write live broadcast** (P4-S22 leftover) — broadcaster wired
   in main.py, but frozen exe ships the no-op version. Already coded.
@@ -64,7 +64,7 @@ The new window renders a Claude-Code–shaped React tree:
 │  ✓ README          │                                             │
 │                    ├─────────────────────────────────────────────┤
 │ Token usage        │ Input: ___________________________ [Send]   │
-│ chinzy 12k/100k    │ ☑ tools  model: gpt-5.5  /code mode         │
+│ the relay 12k/100k    │ ☑ tools  model: gpt-5.5  /code mode         │
 └────────────────────┴─────────────────────────────────────────────┘
 ```
 
@@ -116,7 +116,7 @@ Frontend gets:
   a new code session via the existing `code_mode_enter` IPC with a
   freshly-derived base_sid.
 - Concurrency limiter on outbound LLM calls (default `max_in_flight=2`)
-  to keep chinzy happy when 5 sessions all want a turn.
+  to keep the relay happy when 5 sessions all want a turn.
 
 ### Phase C — Polish
 
@@ -157,7 +157,7 @@ Frontend gets:
 ### Risks
 - Tauri second webview costs ~80 MB RAM. Mitigation: destroy on close
   (no warm hidden window).
-- chinzy concurrent calls may rate-limit. Mitigation: front-end
+- the relay concurrent calls may rate-limit. Mitigation: front-end
   concurrency limiter with backoff + status pill.
 - Long scrollback + syntax highlighting can jank. Mitigation:
   react-virtuoso (only render visible window) + pretext (precise

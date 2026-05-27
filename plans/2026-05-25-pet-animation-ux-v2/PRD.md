@@ -85,7 +85,7 @@ v1 完成"底层活感 + 视线 + 鼠标事件 + 标签消费"3 项核心：Perl
 - ❌ 更换 Live2D 模型（继续用 Hiyori；**不补** expression3.json 资产 — 用参数组合替代 emotion）
 - ❌ 移动端 / Web 端适配（仍仅 Tauri Windows）
 - ❌ 多语言 viseme（仅中文 phoneme→viseme；英文 TTS 走 fallback）
-- ❌ 新 LLM provider 集成（沿用 chinzy）
+- ❌ 新 LLM provider 集成（沿用 the relay）
 - ❌ Sticker / 自定义表情包
 - ❌ 后端持久化 anniversary（v2 用 localStorage；后端持久化是**配套优化**非 FR）
 - ❌ i18n（bubble 文案 hardcode 中文）
@@ -156,7 +156,7 @@ App.tsx 改：chat-input 加 onFocus/onBlur/onChange/onCompositionStart/onCompos
 |---|---|
 | **触发** | App.tsx 调 `sendChatV2()` 时 → 进入 thinking；收到**第一个** chat_v2 stream chunk（任一：tool_use_event / chat_v2_final.partial / text token）→ 退出 thinking |
 | **行为** | (a) ParamEyeBallY = +0.6 (看上)；(b) ParamAngleX = +5° (头略仰)；(c) blink_hz = 0.15；(d) **saccade 仍跑**（不 block 眼眶 micro-movements 避免"僵眼"）；(e) ParamBrowLY/RY = +0.3 微挤眉（与 emotion 冲突时见 §6.2 优先级）|
-| **关键参数** | `eyeball_up_norm=0.6`；`head_up_deg=5`；`blink_hz_thinking=0.15`；`max_thinking_duration_ms=90000`（v2 调大：v1 评审 30s 太短，chinzy 偶尔卡 60s+）|
+| **关键参数** | `eyeball_up_norm=0.6`；`head_up_deg=5`；`blink_hz_thinking=0.15`；`max_thinking_duration_ms=90000`（v2 调大：v1 评审 30s 太短，the relay 偶尔卡 60s+）|
 | **写入语义** | ADD ParamEyeBallY += eyeball_up_norm（叠加 saccade）；ADD ParamAngleX += head_up_deg；setBlinkHz override；SET ParamBrowLY/RY |
 | **验收** | (a) 用户发消息 → 桌宠 300ms 内"思考"；(b) 收到 first chunk → 1s 内回 idle；(c) 90s 超时强制回 idle；(d) saccade 仍可见（不僵）|
 | **降级** | flag off → 沿用 v1 working 态行为；无 chat_v2 信号 → 不进入 |
@@ -349,7 +349,7 @@ App.tsx 改：chat-input 加 onFocus/onBlur/onChange/onCompositionStart/onCompos
 | **写入语义** | applyTo step 7（介于 saccade 和 blink 之间）SET 表情参数；step 8 ParamMouthForm 见 §6.2 优先级（viseme > emotion） |
 | **验收** | (a) "好的没问题" → happy；(b) "抱歉做不到" → sad；(c) TTS 期间 emotion 不变；(d) 用户中断 → emotion 立即释放为 neutral；(e) backend 不发 emotion → 前端投票分类 PASS；(f) 投票分类 5 类各一句视觉可辨；(g) AC-10-01 一票否决：sad 内容不能误归 happy |
 | **降级** | flag off → emotion=neutral；分类器异常 → neutral；TTS 不可用 → 锁定 3s 后自释 |
-| **跨层** | **后端协议（S2 必做）**：chat_v2_final / transcript 加 optional emotion 字段；LLM system prompt 教学（chinzy 加 "请在每次回复结束附 emotion JSON：{emotion: ...}"）；旧 backend 不发即 null → 前端走 fallback |
+| **跨层** | **后端协议（S2 必做）**：chat_v2_final / transcript 加 optional emotion 字段；LLM system prompt 教学（the relay 加 "请在每次回复结束附 emotion JSON：{emotion: ...}"）；旧 backend 不发即 null → 前端走 fallback |
 
 新模块 `pet-anim/emotionMapper.ts` + `pet-anim/emotionClassifier.ts`（接口见 TDD §2.8/2.9）
 
@@ -638,7 +638,7 @@ setPhonemeEstimatorReady(stream: VisemeFrame[], now_t: number): void;      // B3
 | 后端 sub-task | FR | 工作量 |
 |---|---|---|
 | `backend/tts/viseme_provider.py` — TTS provider 输出 viseme 流 | B3 | 3d |
-| `backend/llm/emotion_prompt.py` — chinzy system prompt 教学 + chat_v2_final emotion 字段 | D1 | 1d |
+| `backend/llm/emotion_prompt.py` — the relay system prompt 教学 + chat_v2_final emotion 字段 | D1 | 1d |
 | `backend/memory/milestone.py` — milestone 规则 + 检测器 + ws push | D2 | 2d |
 | Tauri Rust commands × 3 (enumerate_top_windows / is_foreground_fullscreen / is_any_audio_capture_active) | E2/F1 | 2d |
 | client_hello / server_hello 握手 | 协议 | 0.5d |

@@ -10,7 +10,7 @@ deskpet 的智能上下文系统（ContextAssembler P4-S7 + ContextManager P6）
 2. **拿到 1M 的车按 200K 限速跑**——浪费 80% 容量；切到 claude-sonnet（200K）又会爆，因为是全局单值
 3. **反复 in-place summarize 把历史搞成"半原文半摘要的 Frankenstein"**——破 prefix cache，丢细节
 4. **同文件读 5 次占 5 份 context**——每次 read 生成新随机 ref_id，无内容寻址
-5. **每轮重发全历史无 cache 标记**——prefix-cache miss，chinzy/deepseek 输入 token 成本全价
+5. **每轮重发全历史无 cache 标记**——prefix-cache miss，the relay/deepseek 输入 token 成本全价
 6. **pytest+tsc 都过但前后端字段不一致**（[feedback_cross_layer_contract]）——code mode 看不到对面层接口全景
 
 调研了 6 个最先进系统（Claude Code / OpenAI Codex / Aider / Cline / Hermes / DeepSeek-TUI）。**关键反直觉发现**：DeepSeek-TUI 引论文 Figure 9——deepseek-v4 在 256K 召回率 0.76，1M 仅 0.59。**context 越大利用率越差**，所以 DeepSeek-TUI 在 768K（75%）就 Checkpoint-Restart 而非用满 1M。目标不是"用满 1M"，而是"把有效上下文控制在召回甜点区，靠 retrieval + checkpoint 维持长跑"。

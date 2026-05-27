@@ -14,7 +14,7 @@
 | **工具调用 last-mile (MR-0/8/13/19)** | ✅ **SHIP** | `scripts/acceptance/last_mile_smoke.py` 全 5 项 PASS（4 个一票否决 + Stage-2 admission） |
 | **工具层 v3 (MR-T-*)** | ⚠️ **修后 PASS** | MR-T-9/10/11/12 PASS；MR-T-11 启动期发现 **2 个 P0 bug 已修复**；MR-T-1（VerifyGate 真接电）和 MR-T-8（memory_v2 命名空间）需进一步专项 |
 | **内置 skills (B1-B10)** | ✅ **加载层 PASS** | 12 个 builtin skills 全部加载；B1-B10 期望全部存在；B6/B10 因缺 LibreOffice/OCR 引擎处于"环境受限"（文档允许） |
-| **中转站登录 (R3/R9)** | ✅ **PASS** | Credential Manager 完整 + boot 自动从 keychain 加载 LLM key + base_url 指向 chinzy；R3 真实 chat 链路由 MR-0 pytest 间接覆盖 |
+| **中转站登录 (R3/R9)** | ✅ **PASS** | Credential Manager 完整 + boot 自动从 keychain 加载 LLM key + base_url 指向 the relay；R3 真实 chat 链路由 MR-0 pytest 间接覆盖 |
 
 **净 PASS / FAIL / 受限统计**：
 - PASS：10 项核心
@@ -143,7 +143,7 @@ INFO startup complete
 
 **Credential Manager 实际内容**（`cmdkey /list | findstr deskpet`）：
 ```
-Target: provider.chinzy@deskpet         ← 中转站 provider key
+Target: provider.the relay@deskpet         ← 中转站 provider key
 Target: deskpet                          ← generic 容器
 Target: device_key.deskpet-relay         ← relay 设备密钥（R2 期望）
 Target: default.deskpet-cloud-llm        ← 云 LLM api key（R3 关键）
@@ -173,7 +173,7 @@ text=你好你好～我在这里陪你 😊
 **这证明了什么（真证据）**：
 - ✅ Backend WebSocket `/ws/control` chat 接口工作
 - ✅ AgentLoop 真运行（iterations=1，无 tool call 也无 verify gate 失败）
-- ✅ Backend 真打了中转站 `chinzy.com/v1` （base_url + key 全程未手填）
+- ✅ Backend 真打了中转站 `your-llm-relay.example.com/v1` （base_url + key 全程未手填）
 - ✅ 中转站 gpt-5.5 真返流式 token（27 chunks）
 - ✅ 中文 + emoji（U+1F60A 😊）端到端无乱码
 - ✅ R3-1 "对桌宠说你好 → 有正常 LLM 回应" — **PASS**

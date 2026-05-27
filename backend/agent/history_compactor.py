@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 # Defaults match the production failure profile: ~15 iterations + ~64 KB
-# context was where we started seeing chinzy proxy resets in the wild.
+# context was where we started seeing the relay proxy resets in the wild.
 DEFAULT_MESSAGE_THRESHOLD = 20
 DEFAULT_CHAR_THRESHOLD = 60_000
 DEFAULT_KEEP_RECENT = 6

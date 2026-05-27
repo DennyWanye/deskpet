@@ -7,7 +7,7 @@ preferred_model, updated_at)` + SessionDB
 calls resolve provider/model via `backend/llm/resolution.py` /
 `provider_registry.py`; pet/companion/supervisor resolve separately.
 Code-mode default model is currently `deepseek-v4-pro` (shared, via the
-chinzy OpenAI-compatible proxy `https://chinzy.com/v1`). Constraints:
+the relay OpenAI-compatible proxy `https://your-llm-relay.example.com/v1`). Constraints:
 single-user desktop (no sandbox walls), backend interpreter
 `backend/.venv/Scripts/python.exe`, TDD, current branch
 `feat/2026-05-18-session-and-e2e`, **no parallel worktrees** (harness
@@ -24,7 +24,7 @@ isolation cuts a 96-commit-stale master).
 
 **Non-Goals:**
 - No change to pet/companion/supervisor model resolution.
-- No new provider adapters/deps (reuse chinzy OpenAI-compatible).
+- No new provider adapters/deps (reuse the relay OpenAI-compatible).
 - No sandbox/permission walls.
 - No multi-account/billing rework.
 
@@ -38,7 +38,7 @@ isolation cuts a 96-commit-stale master).
   column per knob) rejected — migration churn + rigid.
 - **Resolution merge point is the code-session LLM-call assembly**, not
   the global provider chain. The binding (model + params) is read for
-  code sessions only and merged into the chinzy OpenAI request:
+  code sessions only and merged into the the relay OpenAI request:
   `model` → wire model; `thinking`/`effort` → reasoning params;
   `context` → max context hint; `fast` → speed/streaming hint. Pet path
   never reads the binding (provably untouched — covered by a regression
@@ -63,11 +63,11 @@ isolation cuts a 96-commit-stale master).
 
 ## Risks / Trade-offs
 
-- [chinzy param name drift: thinking/effort/context request keys may
+- [the relay param name drift: thinking/effort/context request keys may
   differ per upstream model] → map via a small per-known-model table +
   a safe generic fallback (omit unknown keys rather than send bad ones);
   document; covered by mapping unit tests.
-- [gpt-5.5 not served by chinzy] → only code sessions error; pet path
+- [gpt-5.5 not served by the relay] → only code sessions error; pet path
   isolated; `code_model=""` instantly reverts.
 - [Stale binding for a deleted code session] → app-layer cleanup already
   the contract (migration 007 note); unchanged; out of scope.
@@ -86,6 +86,6 @@ isolation cuts a 96-commit-stale master).
 
 ## Open Questions
 
-- Exact chinzy request keys for `thinking`/`effort` per model — resolve
+- Exact the relay request keys for `thinking`/`effort` per model — resolve
   empirically during apply; default to OpenAI-style
   `reasoning_effort` + omit-if-unknown.

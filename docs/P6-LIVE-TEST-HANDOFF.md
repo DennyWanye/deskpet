@@ -12,7 +12,7 @@
 
 ## What's next (live E2E)
 
-Goal: prove the hard gate works in production against real chinzy LLM calls.
+Goal: prove the hard gate works in production against real the relay LLM calls.
 
 ### Test plan
 
@@ -54,7 +54,7 @@ until grep -qE "Application startup complete" /g/projects/deskpet/tauri-dev.log;
 
 ### Verify P6 active
 ```bash
-# Should see: supervisor_provider_resolved id=chinzy ... model=deepseek-v4-pro
+# Should see: supervisor_provider_resolved id=the relay ... model=deepseek-v4-pro
 grep -E "supervisor_provider_resolved|provider_registry_init" /g/projects/deskpet/tauri-dev.log | tail -3
 ```
 
@@ -70,9 +70,9 @@ grep -E "supervisor_provider_resolved|provider_registry_init" /g/projects/deskpe
 
 ## Configuration
 
-Current chinzy provider in user config:
+Current the relay provider in user config:
 - `~/AppData/Roaming/deskpet/config.toml` has `[[llm.endpoints]]`
-- id=chinzy, base_url=https://chinzy.com/v1, default_model=deepseek-v4-pro
+- id=the relay, base_url=https://your-llm-relay.example.com/v1, default_model=deepseek-v4-pro
 - 88 models (probed)
 
 Supervisor wired to same provider after A1 fix.

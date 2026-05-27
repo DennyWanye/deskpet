@@ -4,7 +4,7 @@
  * - Multi-line textarea with Enter-to-send (Shift+Enter newline).
  * - Sends `chat_v2` with the active session_id stamped in payload.
  * - Concurrency-limited via `chatLimiter` so 5 tiles all sending at
- *   once won't smash chinzy with parallel requests.
+ *   once won't smash the relay with parallel requests.
  */
 import { useState, useCallback, useRef, useEffect } from "react";
 
@@ -175,7 +175,7 @@ export function InputBar({
         <StatusPill status={status} />
         {queued > 0 && (
           <span style={{ color: "#fde68a" }}>
-            等待中: {queued}（chinzy 并发上限 {inflight_max}）
+            等待中: {queued}（the relay 并发上限 {inflight_max}）
           </span>
         )}
         <span style={{ marginLeft: "auto", opacity: 0.6 }}>

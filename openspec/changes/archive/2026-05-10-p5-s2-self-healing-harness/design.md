@@ -64,7 +64,7 @@ P5-S1 给桌宠装了"被动监督"（watchdog 60s 扫一次，supervisor LLM �
                 CLOSED
 ```
 
-cooldown=60s 是经验值（足够 chinzy proxy 临时抽风恢复，又不会让用户等太久）。可配置。
+cooldown=60s 是经验值（足够 the relay proxy 临时抽风恢复，又不会让用户等太久）。可配置。
 
 ### 2.4 为什么 Same-Signature 检测放在 agent_loop 里，不在 circuit breaker 里？
 
@@ -243,7 +243,7 @@ idle_with_todos_threshold_seconds = 60   # 已有 (Hook B)
 - **Sensor hint 文案需要每个工具开发者写**：增加工具贡献门槛。但 LLM 错误信息消费者就是 LLM 自己，让人写一次省 LLM 万次摸索，划算
 - **Error 分类是关键字匹配，不是模型推断**：可能漏分类。Mitigate: 默认 Transient（保守），加新关键字成本低
 - **Auto-resume 攻击面**：恶意 user prompt 让 LLM 故意触发 max_iterations 烧 token？Mitigate: max_auto_resume_attempts=2 + per-session daily budget (已有)
-- **chinzy 流式截断 root cause 不修复**：Phase 1 只 dump 诊断不修。修需要 chinzy 那边或换 provider
+- **the relay 流式截断 root cause 不修复**：Phase 1 只 dump 诊断不修。修需要 the relay 那边或换 provider
 
 ## 7. 跟最新业界对比一下
 

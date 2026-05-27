@@ -39,7 +39,7 @@ class Plan:
     rationale: str
 
 
-# OpenAI / chinzy structured-output spec. Ollama gets `format: "json"`
+# OpenAI / the relay structured-output spec. Ollama gets `format: "json"`
 # emitted alongside via the provider shim.
 PLAN_SCHEMA: dict = {
     "type": "json_schema",
@@ -136,7 +136,7 @@ async def maybe_extract_plan(
             response_format=PLAN_SCHEMA,
         )
     except Exception as exc:  # noqa: BLE001
-        # chinzy / sealos proxies often reject response_format with
+        # the relay / sealos proxies often reject response_format with
         # thinking-mode models (HTTP 400). The fallback is graceful —
         # no plan = plain ReAct loop — so this is an expected
         # degradation, not an actual failure. INFO so it doesn't

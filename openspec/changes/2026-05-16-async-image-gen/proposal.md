@@ -9,13 +9,13 @@
 - registry timeout vs httpx timeout conflict (killed retries) — 2026-05-16
 - pet appears frozen / idle for minutes during generation
 - retries balloon total wall time past the registry budget
-- connection held open longer → more chinzy `Server disconnected` exposure
+- connection held open longer → more the relay `Server disconnected` exposure
 
 **Long-running ops must not block the agent turn.** Industry best practice for slow tool calls in agent systems = async job + completion delivery (the agent turn returns immediately; the slow work runs out-of-band; the result is pushed back when ready). For a single-user desktop pet the right fit is a lightweight in-process async worker + an unsolicited completion message (NOT a full persistent job queue — that's over-engineered here).
 
 ## What Changes
 
-- **NEW** `backend/deskpet/memory/image_worker.py` — `ImageGenerationWorker`: async, queue-based, `start()`/`stop()` lifecycle (mirrors `vector_worker.py`). Pulls jobs, runs the chinzy POST + transient-retry + save-to-workspace + `os.startfile` in a background `asyncio` loop. Bounded concurrency; same-(session,prompt,size) in-flight dedup.
+- **NEW** `backend/deskpet/memory/image_worker.py` — `ImageGenerationWorker`: async, queue-based, `start()`/`stop()` lifecycle (mirrors `vector_worker.py`). Pulls jobs, runs the the relay POST + transient-retry + save-to-workspace + `os.startfile` in a background `asyncio` loop. Bounded concurrency; same-(session,prompt,size) in-flight dedup.
 - **MODIFIED** `backend/deskpet/tools/image_tools.py` — `_handle_generate_image` no longer blocks: validate args, submit job to the worker (thread-safe sync→async bridge), return **immediately** `{ok:true, status:"generating", job_id, message:"🎨 在画了，稍等~"}`. The slow HTTP/save/open logic moves into the worker (reused, not rewritten).
 - **MODIFIED** `backend/main.py` — construct + `service_context.register("image_worker", ...)`, `await worker.start()` in lifespan startup / `stop()` in shutdown; wire the worker's completion notifier to the existing control-ws broadcast (the `_auto_resume_emit` closure pattern) so the worker can push a `chat_v2_final`-shaped event to the job's `session_id`. Inject `_session_id` into the image tool's session context (same mechanism as `_write_scope_root`) so the tool knows where to route completion.
 - **REUSED, zero frontend change**: completion/error is delivered as a `chat_v2_final` ws event — the pet bubble's existing handler renders it; `petText` already strips any `<think>`/junk. Pet shows "画好了！已打开 X" or the graceful error, with NO user turn.
@@ -43,7 +43,7 @@
 ### 运行时影响
 - agent 回合：generate_image 从阻塞 60–240s → 秒返回；registry 超时压力消失
 - worker：常驻一个 asyncio 任务循环（同 vector_worker，开销可忽略，空闲时 await 队列）
-- 并发上限（默认 2）防同时太多出图打爆 chinzy；同 prompt 去重防误重复计费（$0.15/张）
+- 并发上限（默认 2）防同时太多出图打爆 the relay；同 prompt 去重防误重复计费（$0.15/张）
 - 完成推送：复用 `_auto_resume_emit` 广播，单条 ws 消息，非热路径
 
 ### 兼容性

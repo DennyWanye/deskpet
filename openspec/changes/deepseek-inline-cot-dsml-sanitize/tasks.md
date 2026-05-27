@@ -41,6 +41,6 @@
 ## 7. Live verification + handoff
 
 - [x] 7.1 Clean stack restart (.venv backend, zombies killed); `sanitize_inline_cot_dsml_flag enabled=True` confirmed in live log
-- [x] 7.2 computer-use E2E: 小说网站 code-mode `write_file` on chinzy deepseek-v4-pro ⇒ probe.py byte-clean (0 `<｜`), `py_compile` OK, agent UI confirmed; screenshot + `evidence/7-live-e2e.md`
+- [x] 7.2 computer-use E2E: 小说网站 code-mode `write_file` on the relay deepseek-v4-pro ⇒ probe.py byte-clean (0 `<｜`), `py_compile` OK, agent UI confirmed; screenshot + `evidence/7-live-e2e.md`
 - [x] 7.3 Rollback verified via `test_flag_disabled_identity` (deterministic); live flag-flip intentionally NOT run to avoid demo disruption — documented in evidence
 - [x] 7.4 NOT archived (active until demo sign-off)

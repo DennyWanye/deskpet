@@ -118,7 +118,7 @@ describe("RelayAuthAdapter.login", () => {
     );
 
     const adapter = new RelayAuthAdapter({
-      baseUrl: "https://chinzy.test",
+      baseUrl: "https://the relay.test",
       fetchImpl,
       bindings,
     });
@@ -136,7 +136,7 @@ describe("RelayAuthAdapter.login", () => {
 
     // Verify the fetch payload — endpoint, method, and deviceId injection.
     const call = fetchImpl.mock.calls[0];
-    expect(call[0]).toBe("https://chinzy.test/v1/auth/login");
+    expect(call[0]).toBe("https://the relay.test/v1/auth/login");
     const init = call[1] as RequestInit;
     expect(init.method).toBe("POST");
     const sent = JSON.parse(init.body as string);
@@ -207,7 +207,7 @@ describe("RelayAuthAdapter.register", () => {
       ]),
     );
     const adapter = new RelayAuthAdapter({
-      baseUrl: "https://chinzy.test",
+      baseUrl: "https://the relay.test",
       fetchImpl,
       bindings: makeBindings(),
     });
@@ -218,7 +218,7 @@ describe("RelayAuthAdapter.register", () => {
     expect(u).toEqual(SAMPLE_USER);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0][0]).toBe(
-      "https://chinzy.test/v1/auth/register",
+      "https://the relay.test/v1/auth/register",
     );
   });
 
@@ -239,7 +239,7 @@ describe("RelayAuthAdapter.register", () => {
     );
 
     const adapter = new RelayAuthAdapter({
-      baseUrl: "https://chinzy.test",
+      baseUrl: "https://the relay.test",
       fetchImpl,
       bindings: makeBindings(),
     });
@@ -250,10 +250,10 @@ describe("RelayAuthAdapter.register", () => {
     expect(u).toEqual(SAMPLE_USER);
 
     expect(fetchImpl.mock.calls[0][0]).toBe(
-      "https://chinzy.test/v1/auth/register",
+      "https://the relay.test/v1/auth/register",
     );
     expect(fetchImpl.mock.calls[1][0]).toBe(
-      "https://chinzy.test/v1/auth/activate",
+      "https://the relay.test/v1/auth/activate",
     );
     const activateBody = JSON.parse(
       (fetchImpl.mock.calls[1][1] as RequestInit).body as string,
@@ -282,7 +282,7 @@ describe("RelayAuthAdapter.register", () => {
     );
 
     const adapter = new RelayAuthAdapter({
-      baseUrl: "https://chinzy.test",
+      baseUrl: "https://the relay.test",
       fetchImpl,
       bindings: makeBindings(),
     });
@@ -292,7 +292,7 @@ describe("RelayAuthAdapter.register", () => {
     });
     expect(u).toEqual(SAMPLE_USER);
     expect(fetchImpl.mock.calls[2][0]).toBe(
-      "https://chinzy.test/api-direct/auth/activate",
+      "https://the relay.test/api-direct/auth/activate",
     );
   });
 
@@ -392,7 +392,7 @@ describe("RelayAuthAdapter refresh-on-401", () => {
               {
                 id: "relay-openai",
                 name: "OpenAI",
-                base_url: "https://chinzy.test/v1",
+                base_url: "https://the relay.test/v1",
                 api_key: "tsk_xxx",
                 models: [],
                 openai_compatible: true,
@@ -456,7 +456,7 @@ describe("RelayAuthAdapter.listProviders", () => {
       {
         id: "relay-openai",
         name: "OpenAI (relay)",
-        base_url: "https://chinzy.test/v1",
+        base_url: "https://the relay.test/v1",
         api_key: "tsk_AAA",
         models: [{ id: "gpt-5.2", context_window: 400000, capabilities: ["chat"] }],
         openai_compatible: true,
@@ -799,7 +799,7 @@ describe("RelayAuthAdapter.listProvidersUsingCache", () => {
       {
         id: "relay-openai",
         name: "OpenAI (relay)",
-        base_url: "https://chinzy.test/v1",
+        base_url: "https://the relay.test/v1",
         api_key: null,
         models: [],
         openai_compatible: true,
@@ -817,7 +817,7 @@ describe("RelayAuthAdapter.listProvidersUsingCache", () => {
       ]),
     );
     const adapter = new RelayAuthAdapter({
-      baseUrl: "https://chinzy.test",
+      baseUrl: "https://the relay.test",
       fetchImpl,
       bindings,
     });
@@ -825,7 +825,7 @@ describe("RelayAuthAdapter.listProvidersUsingCache", () => {
 
     await adapter.listProvidersUsingCache();
     expect(fetchImpl.mock.calls[1][0]).toBe(
-      "https://chinzy.test/v1/providers?rotate=false",
+      "https://the relay.test/v1/providers?rotate=false",
     );
     // Crucial: setRelayDeviceKey must NOT be called for rotate=false
     // mode — that's the whole point of the new endpoint.
@@ -854,7 +854,7 @@ describe("RelayAuthAdapter.listProvidersUsingCache", () => {
               {
                 id: "relay-openai",
                 name: "OpenAI",
-                base_url: "https://chinzy.test/v1",
+                base_url: "https://the relay.test/v1",
                 api_key: "tsk_fresh",
                 models: [],
                 openai_compatible: true,
@@ -866,7 +866,7 @@ describe("RelayAuthAdapter.listProvidersUsingCache", () => {
       ]),
     );
     const adapter = new RelayAuthAdapter({
-      baseUrl: "https://chinzy.test",
+      baseUrl: "https://the relay.test",
       fetchImpl,
       bindings,
     });
@@ -876,7 +876,7 @@ describe("RelayAuthAdapter.listProvidersUsingCache", () => {
     expect(providers[0].api_key).toBe("tsk_fresh");
     expect(bindings.setRelayDeviceKey).toHaveBeenCalledWith("tsk_fresh");
     expect(fetchImpl.mock.calls[2][0]).toBe(
-      "https://chinzy.test/v1/providers",
+      "https://the relay.test/v1/providers",
     );
   });
 

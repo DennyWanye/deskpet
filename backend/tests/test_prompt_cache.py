@@ -1,7 +1,7 @@
 """Phase 1.3 — 4-breakpoint prompt cache + 前缀稳定纪律 (OpenSpec
 2026-05-15-context-1m-rearch, design.md D4).
 
-OpenAI-compat (chinzy / deepseek-v4-pro) 走 prefix cache：命中条件是
+OpenAI-compat (the relay / deepseek-v4-pro) 走 prefix cache：命中条件是
 history 前缀的字节流跨轮稳定。本测试覆盖三件事，全部在 provider 层
 （`backend/providers/openai_compatible.py`）做：
 
@@ -22,7 +22,7 @@ history 前缀的字节流跨轮稳定。本测试覆盖三件事，全部在 pr
 已经实现（`_split_system_messages` / `_convert_tools` 给最后一个
 system block + 最后一个 tool 打 `cache_control={"type":"ephemeral"}`，
 并已读 cache_read/creation tokens）—— 无新增工作，详见 evidence。
-本文件只覆盖 OpenAI-compat 这条线（chinzy 是本项目唯一在跑的真 provider）。
+本文件只覆盖 OpenAI-compat 这条线（the relay 是本项目唯一在跑的真 provider）。
 """
 from __future__ import annotations
 
@@ -316,7 +316,7 @@ async def test_stream_logs_cache_hit_rate_when_cached_tokens_present(
 async def test_stream_logs_cache_unknown_when_field_absent(
     caplog, structlog_to_stdlib
 ):
-    """provider 不回 cached_tokens（chinzy 现状常见）→ 日志记 unknown，不崩。"""
+    """provider 不回 cached_tokens（the relay 现状常见）→ 日志记 unknown，不崩。"""
     def handler(request: httpx.Request) -> httpx.Response:
         frames = [
             _delta("hi"),

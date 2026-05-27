@@ -16,7 +16,7 @@ ImageGenerationWorker:
   submit(job: ImageJob) -> str(job_id)   # 线程安全，见 D3
   async _run_loop():  从 asyncio.Queue 取 job；asyncio.Semaphore(max_concurrent)
                       限并发；每 job → asyncio.create_task(self._process(job))
-  async _process(job): chinzy POST + retry + save + open（逻辑从 image_tools
+  async _process(job): the relay POST + retry + save + open（逻辑从 image_tools
                        平移，不重写）→ 成功/失败都调 notifier
 ```
 
@@ -39,7 +39,7 @@ worker = ImageGenerationWorker(notifier=_image_notifier, max_concurrent=2)
 ```
 
 成功文案：`✨ 画好了！已保存并打开：<filename>（model gpt-image-2，1024×1024）`
-失败文案：复用现同步版 `_err` 的 graceful hint（chinzy 抽风/4xx 等），保持诚实不编造。
+失败文案：复用现同步版 `_err` 的 graceful hint（the relay 抽风/4xx 等），保持诚实不编造。
 
 **也持久化到 SessionDB**：完成消息除 ws 推送外，append 到 messages（role=assistant），这样 ChatHistoryPanel/L2 召回有记录（和正常 assistant 回复一致）。
 
@@ -58,7 +58,7 @@ worker = ImageGenerationWorker(notifier=_image_notifier, max_concurrent=2)
 
 ## D5 — 并发 + 去重
 
-- `asyncio.Semaphore(max_concurrent=2)`：最多 2 个出图同时打 chinzy（防打爆 + 控成本）
+- `asyncio.Semaphore(max_concurrent=2)`：最多 2 个出图同时打 the relay（防打爆 + 控成本）
 - 去重：worker 维护 `_inflight: set[str]`，key = `sha1(f"{session_id}|{prompt}|{size}")`。submit 时若 key 在 _inflight → 不入队，job_id 返回特殊标记，tool 回 `{ok:true, status:"already_generating", message:"🎨 同样的图正在画了，稍等~"}`。_process 结束（成功/失败）从 _inflight 移除。
 - 不做持久化/取消（proposal 明确 non-goal；取消是 follow-up）
 

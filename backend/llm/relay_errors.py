@@ -1,6 +1,6 @@
 """Relay (中转站) error classification — WI-R5.
 
-When a chat LLM call goes through the chinzy relay, two failure modes
+When a chat LLM call goes through the the relay relay, two failure modes
 need *structured* surfacing instead of a raw HTTP error:
 
   * **余额不足** — the account is out of credit. The UI should show a

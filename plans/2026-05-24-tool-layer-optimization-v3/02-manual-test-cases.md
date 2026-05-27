@@ -19,7 +19,7 @@
 ## 0. 测试环境
 
 1. 在主 checkout 启动 dev 实例 —— `powershell -File scripts/dev.ps1`（backend 8100 / vite 5173）
-2. 后端"已连接"（toolbar 绿色徽章）；需要**支持 function-calling 的 LLM**（推荐 chinzy/deepseek-chat）
+2. 后端"已连接"（toolbar 绿色徽章）；需要**支持 function-calling 的 LLM**（推荐 the relay/deepseek-chat）
 3. DPI 150%：坐标换算 逻辑=物理/1.5；中文输入用剪贴板 `Set-Clipboard` + Ctrl+V
 4. 查后端表：`sqlite3 <user_data>/data/state.db`
 5. 查 metrics：`tail -f <user_data>/observability/metrics.jsonl | jq .`

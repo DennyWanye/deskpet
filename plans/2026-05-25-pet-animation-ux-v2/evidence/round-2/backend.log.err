@@ -3,7 +3,7 @@ INFO:config:llm_unified_schema_loaded fields=['api_key', 'base_url', 'max_tokens
 INFO:__main__:event='config_loaded' level='info' timestamp='2026-05-25T17:14:42.995616Z' path='C:\\Users\\24378\\AppData\\Roaming\\deskpet\\config.toml' exists=True user_data_dir='C:\\Users\\24378\\AppData\\Roaming\\deskpet' user_models_dir='C:\\Users\\24378\\AppData\\Local\\deskpet\\models' model_root='C:\\Users\\24378\\AppData\\Local\\deskpet\\models'
 G:\projects\deskpet\backend\.venv\Lib\site-packages\transformers\utils\hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
   warnings.warn(
-INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-25T17:14:45.017177Z' positional_args=('https://chinzy.com/v1', 'gpt-5.5')
+INFO:__main__:event='llm_runtime_overrides_applied base_url=%s model=%s' level='info' timestamp='2026-05-25T17:14:45.017177Z' positional_args=('https://your-llm-relay.example.com/v1', 'gpt-5.5')
 INFO:__main__:event='sanitize_inline_cot_dsml_flag' level='info' timestamp='2026-05-25T17:14:45.017177Z' enabled=True
 INFO:__main__:event='provider_registry_initialized providers=%d' level='info' timestamp='2026-05-25T17:14:45.031177Z' positional_args=(0,)
 WARNING:__main__:event='p4_s20_v2_init_failed' level='warning' timestamp='2026-05-25T17:14:45.243905Z' error="Tool 'web_fetch' already registered (toolset=web, source=builtin). Set replace_allowed=True on either registration to allow override (e.g. stubs.py guard-mode), or rename one of the tools."
@@ -48,7 +48,7 @@ INFO:deskpet.mcp.manager:event='mcp_server_disabled' level='info' timestamp='202
 INFO:deskpet.mcp.manager:event='mcp_server_connected' level='info' timestamp='2026-05-25T17:14:50.740653Z' server='playwright' transport='stdio' tool_count=23
 INFO:deskpet.mcp.bootstrap:event='mcp_bootstrap_started' level='info' timestamp='2026-05-25T17:14:50.740653Z' states={'filesystem': 'running', 'playwright': 'running'}
 INFO:__main__:event='p4_mcp_manager_ready' level='info' timestamp='2026-05-25T17:14:50.740653Z' states={'filesystem': 'running', 'playwright': 'running'}
-INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-25T17:14:50.742653Z' positional_args=('https://chinzy.com/v1',)
+INFO:__main__:event='supervisor_provider_resolved id=legacy base_url=%s — registry empty/unavailable; consider adding a provider via Settings' level='info' timestamp='2026-05-25T17:14:50.742653Z' positional_args=('https://your-llm-relay.example.com/v1',)
 INFO:deskpet.agent.watchdog:watchdog started (scan_interval=60s, stuck_threshold=900s, dedup=720s)
 INFO:__main__:event='p5_supervisor_watchdog_started' level='info' timestamp='2026-05-25T17:14:50.743653Z'
 INFO:__main__:event='p5s2_auto_resume_started enabled=%s max_attempts=%d' level='info' timestamp='2026-05-25T17:14:50.743653Z' positional_args=(True, 2)

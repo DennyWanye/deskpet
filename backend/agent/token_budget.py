@@ -2,7 +2,7 @@
 
 Why
 ---
-We hit chinzy mid-stream-drops at 30+ iterations because context grew
+We hit the relay mid-stream-drops at 30+ iterations because context grew
 silently past the model's window. Without a guard, the LLM either
 truncates the prompt (silent quality drop) or errors with
 ``context_length_exceeded`` (visible but unhelpful).
@@ -63,7 +63,7 @@ DEFAULT_CONTEXT_WINDOW = 8192
 # deepseek-v4* = 64_000 values (a 6.4% under-count vs the real 1M
 # window) were the headline bug — synced to reality below.
 _KNOWN_WINDOWS: dict[str, int] = {
-    # DeepSeek family — chinzy exposes these. v4 is 1M context (matches
+    # DeepSeek family — the relay exposes these. v4 is 1M context (matches
     # llm.model_info.BUILTIN["deepseek-v4-pro"]).
     "deepseek-v4-pro": 1_000_000,
     "deepseek-v4-flash": 1_000_000,

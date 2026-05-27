@@ -9,7 +9,7 @@
  *   - This-month usage + reset date
  *   - Rate-limit ceiling
  *   - "修改密码"  — inline form, calls adapter.changePassword()
- *   - "设备管理" — external link to chinzy.com/console/devices
+ *   - "设备管理" — external link to your-llm-relay.example.com/console/devices
  *   - "退出登录" — calls adapter.logout(), parent should close panel
  *
  * Design constraints:
@@ -35,7 +35,7 @@ import type { UsageSummary } from "./types";
 interface AccountSettingsPanelProps {
   adapter: RelayAuthAdapter;
   /** Optional override for the device-management external URL. Defaults
-   *  to the chinzy.com console page. Mostly here so the closed-source
+   *  to the your-llm-relay.example.com console page. Mostly here so the closed-source
    *  paid build can rebrand without forking this file. */
   deviceConsoleUrl?: string;
   /** Called when the user successfully logs out — parent typically
@@ -43,7 +43,7 @@ interface AccountSettingsPanelProps {
   onLoggedOut?(): void;
 }
 
-const DEFAULT_CONSOLE_URL = "https://chinzy.com/console/devices";
+const DEFAULT_CONSOLE_URL = "https://your-llm-relay.example.com/console/devices";
 
 // ── Pure helpers (exported for vitest) ──────────────────────────
 

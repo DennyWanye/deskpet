@@ -1,7 +1,7 @@
 -- 004_p4s24_reasoning_content.sql — Thinking-mode reasoning round-trip (P4-S24)
 --
 -- Some OpenAI-compatible providers (DeepSeek V4 Pro, Qwen3 thinking,
--- GLM-4.5, OpenAI o-series proxies through chinzy.com etc.) return a
+-- GLM-4.5, OpenAI o-series proxies through your-llm-relay.example.com etc.) return a
 -- separate `reasoning_content` field on assistant messages — the
 -- chain-of-thought trace the model produces before its visible answer.
 --
@@ -14,7 +14,7 @@
 --                    be passed back to the API.",
 --        "code": "invalid_request_error"}}
 --
--- DeskPet observed this against chinzy.com/deepseek-v4-pro on 2026-05-08:
+-- DeskPet observed this against your-llm-relay.example.com/deepseek-v4-pro on 2026-05-08:
 -- multi-turn chats failed on the second user message because the history
 -- rebuilt from SessionDB lost reasoning_content. We add a column so
 -- assistant rows can store it; non-thinking providers (Ollama gemma,

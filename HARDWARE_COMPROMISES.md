@@ -116,7 +116,7 @@ DeskPet 当前为了赶发行节奏，在硬件支持上做了一系列**显式�
 | 阶段 | 目标 | 解锁用户群 |
 |------|------|----------|
 | **Tier 1 — CPU fallback** | NVIDIA 不存在时降级到 CPU 路径 | Intel/AMD/老本 用户 |
-| **Tier 2 — Cloud-only 模式** | 允许把 ASR/LLM/TTS 全走云端 API（chinzy/OpenAI/Azure），本地零模型 | 显卡白嫖党 + 移动办公 |
+| **Tier 2 — Cloud-only 模式** | 允许把 ASR/LLM/TTS 全走云端 API（the relay/OpenAI/Azure），本地零模型 | 显卡白嫖党 + 移动办公 |
 | **Tier 3 — AMD/Intel 原生加速** | ROCm/XPU 走 PyTorch 官方 wheel | 高端 AMD/Intel 显卡用户 |
 | **Tier 4 — Apple Silicon** | macOS + MPS 后端 | mac 用户 |
 | **Tier 5 — 高级语音体验** | PersonaPlex 类 S2S 模型作为可选模式 | 英文高端发烧友 |

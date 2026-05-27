@@ -49,8 +49,8 @@ interface RelayAuthModalProps {
   privacyUrl?: string;
 }
 
-const DEFAULT_TERMS = "https://chinzy.com/legal/terms";
-const DEFAULT_PRIVACY = "https://chinzy.com/legal/privacy";
+const DEFAULT_TERMS = "https://your-llm-relay.example.com/legal/terms";
+const DEFAULT_PRIVACY = "https://your-llm-relay.example.com/legal/privacy";
 
 // ── Validation ────────────────────────────────────────────────────
 
