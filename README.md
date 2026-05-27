@@ -4,20 +4,46 @@
 
 ---
 
-> ## 🔑 开发期登录测试账号（**仅 DEV 环境，不要 push 到 public**）
+> ## 🔑 开发期登录测试凭据
 >
 > 启动桌宠 → onboarding 登录流程 → relay 中转站会下发 LLM API key（写入 OS keychain）→
 > 后端通过 `DESKPET_CLOUD_API_KEY` env 拿到 key 调真实云端 LLM（默认 gpt-5.5 via chinzy）。
 >
-> **测试账号**：
-> - 邮箱：`<dev-test@example.com>`
-> - 密码：`<redacted-see-LOCAL-DEV-CREDENTIALS.md>`
+> **本仓库不包含测试凭据**。要走 relay edition 端到端 E2E，请自己注册一个中转站账号，
+> 把账号密码写到 `LOCAL-DEV-CREDENTIALS.md`（已在 `.gitignore` 里）。模板见
+> [`LOCAL-DEV-CREDENTIALS.md.example`](./LOCAL-DEV-CREDENTIALS.md.example)。
 >
-> ⚠️ **安全说明**：
-> - 这是开发期共享测试账号，**不**包含真实用户数据。
-> - 即便如此，**不要把本仓库 push 到 public GitHub**（git 历史会永远存这段）。
-> - 若需要把仓库开源，先 `git filter-repo` 清除这段，并改用 `LOCAL-DEV-CREDENTIALS.md`（加入 .gitignore）。
-> - 子代理 / windows-mcp E2E 测试要走完整 LLM 链路时用这个账号登录。
+> OSS 用户跑 manual edition 不需要任何中转站凭据 —— 在 Settings → LLM Providers
+> 里手填自己的 OpenAI / Anthropic / 本地 Ollama 即可。
+
+---
+
+> ## ⚙️ 两套 Build Edition：`manual` vs `relay`
+>
+> DeskPet 前端构建有**两套 edition**，由 Vite 的 `VITE_AUTH_EDITION` 切换；选哪套决定了"是否有登录 UI / LLM key 哪里来"。
+>
+> | 维度 | `manual`（OSS 默认） | `relay`（付费版，本仓库默认 dev 用） |
+> |---|---|---|
+> | 触发命令 | `npm run dev` / `npm run build` | `npm run dev:relay` / `npm run build:relay`（加载 `tauri-app/.env.relay`） |
+> | Adapter | `ManualAuthAdapter` | `RelayAuthAdapter` |
+> | 左上角 👤 账户菜单 | ❌ 不渲染 | ✅ 渲染（点击打开 `AccountSettingsPanel`） |
+> | 强制登录窗 | ❌ 没有 | ✅ 没 token 就弹 `<RelayAuthModal>`，**无法关闭** |
+> | LLM key 来源 | 用户自己在「设置面板 → 模型」手填 | relay 自动下发 `tsk_xxx` device key → keychain |
+> | 适用场景 | OSS 自托管 / 自带 OpenAI key | 用上面那个测试账号走 chinzy 中转站 |
+>
+> **`tauri.conf.json` 的 `beforeDevCommand` / `beforeBuildCommand` 决定 `tauri dev` / `tauri build` 默认走哪套**。本仓库当前为 `dev:relay` / `build:relay`，因此 `cargo tauri dev` 起来就有左上角登录 pill + 强制登录窗。要回到 OSS manual 默认，把那两行改回 `npm run dev` / `npm run build`。
+
+> **Relay 模式下的账户按钮位置**：登录后右上角工具栏**最左边**那个用户图标即"账户设置"（点击 → 看登录邮箱 / device key 状态 / 登出）。2026-05-26 起从独立 fixed pill 改成 Toolbar 第一个 IconButton，视觉跟其它面板入口统一。
+
+---
+
+> ## 🪟 桌宠窗尺寸（2026-05-26）
+>
+> 主窗默认 360×600，**可自由拖动右下角调整**（min 240×360 / max 1200×1600）。Rust 侧防抖 800ms 把 logical (w,h) 写到 `<user_data>/window_geometry.json`，下次启动自动恢复。前端 Toolbar / DialogBar / Live2DCanvas 都用 absolute + flex + ResizeObserver 响应窗口尺寸，无需额外配置。
+>
+> - 重置默认尺寸：删 `%AppData%\deskpet\window_geometry.json` 即可
+> - 程序化设置：`invoke("set_window_geometry", { width: 480, height: 720 })`
+> - 查询当前：`invoke("get_saved_window_geometry")` → `{width, height} | null`
 
 ---
 

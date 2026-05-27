@@ -41,6 +41,9 @@ interface SettingsPanelProps {
   lastMessage: IncomingMessage | null;
   secret: string;
   onConfigChanged?: () => void;
+  /** 2026-05-26: relay adapter（如果是 relay edition）— 让
+   * SettingsProviders 把中转站 provider 作为只读虚拟项显示。 */
+  relayAdapter?: import("../auth/RelayAuthAdapter").RelayAuthAdapter | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,51 +103,10 @@ export function SettingsPanel({
   onClose,
   getChannel,
   lastMessage,
+  relayAdapter,
 }: SettingsPanelProps) {
-  // ----- Daily budget section ------------------------------------------------
-  const [budget, setBudget] = useState<DailyBudgetStatus | null>(null);
-  const [budgetError, setBudgetError] = useState<string | null>(null);
-
-  // Refresh daily budget every time the panel opens.
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const ch = getChannel();
-        if (!ch) throw new Error("控制通道未连接");
-        const b = await fetchDailyBudget(ch);
-        if (!cancelled) {
-          setBudget(b);
-          setBudgetError(null);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setBudget(null);
-          setBudgetError(String(e));
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [open, getChannel]);
-
-  const handleRefreshBudget = useCallback(async () => {
-    try {
-      const ch = getChannel();
-      if (!ch) throw new Error("控制通道未连接");
-      const b = await fetchDailyBudget(ch);
-      setBudget(b);
-      setBudgetError(null);
-    } catch (e) {
-      setBudget(null);
-      setBudgetError(String(e));
-    }
-  }, [getChannel]);
-
+  // 2026-05-26: 删除"今日使用"section — 用户要求，billing 状态不再在
+  // Settings 里展示（如需查看请用后端 /budget_status 命令或 metrics）。
   if (!open) return null;
 
   return (
@@ -193,60 +155,13 @@ export function SettingsPanel({
             under the "LLM Providers" section below (drag-drop reorder,
             multiple endpoints, per-card pinning). */}
 
-        {/* ================ 今日使用 ================ */}
-        <section style={sectionStyle}>
-          <h3 style={h3Style}>今日使用</h3>
-          {budgetError && (
-            <div role="status" style={{ ...statusStyle, color: "#b91c1c" }}>
-              {budgetError}
-            </div>
-          )}
-          {budget && (
-            <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
-              <div>
-                已消耗 ¥{budget.spent_today_cny.toFixed(2)} /
-                ¥{budget.daily_budget_cny.toFixed(2)}
-              </div>
-              <div>剩余 ¥{budget.remaining_cny.toFixed(2)}</div>
-              <div>
-                使用率 {budget.percent_used.toFixed(1)}%
-              </div>
-              <div
-                style={{
-                  height: 6,
-                  background: "#e5e7eb",
-                  borderRadius: 3,
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    width: `${Math.min(100, Math.max(0, budget.percent_used))}%`,
-                    height: "100%",
-                    background:
-                      budget.percent_used >= 90 ? "#dc2626" : "#10b981",
-                    transition: "width 0.2s",
-                  }}
-                />
-              </div>
-            </div>
-          )}
-          <div style={btnRowStyle}>
-            <button type="button" onClick={handleRefreshBudget} style={btnStyle}>
-              刷新
-            </button>
-          </div>
-          <p style={hintStyle}>
-            数据来自 BillingLedger（S8），按 Asia/Shanghai 时区按日累计。
-          </p>
-        </section>
-
         {/* ================ LLM Providers (P5-S2 Phase 4) ================ */}
         <section style={sectionStyle}>
           <h3 style={h3Style}>LLM Providers</h3>
           <SettingsProviders
             getChannel={getChannel}
             lastMessage={lastMessage}
+            relayAdapter={relayAdapter}
           />
         </section>
 

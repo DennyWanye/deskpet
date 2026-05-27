@@ -7,7 +7,7 @@
 **前置**: 用 `npm run build:relay`（或 dev 加 `--mode relay`）启动的实例；
 中转站测试账号。
 
-**测试账号**（用户提供）：`<dev-test@example.com>` / `<redacted-see-LOCAL-DEV-CREDENTIALS.md>`
+**测试账号**（用户提供）：`<see LOCAL-DEV-CREDENTIALS.md>` / `<see LOCAL-DEV-CREDENTIALS.md>`
 —— 用此账号跑 R3~R7。零余额场景（R6）若该账号有余额，改用后端 mock
 402 验证链路。
 

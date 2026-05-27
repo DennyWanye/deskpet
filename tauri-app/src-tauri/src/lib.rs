@@ -17,6 +17,7 @@ mod process_manager;
 mod secrets;
 mod user_data;
 mod webview_permissions;
+mod window_geometry;
 
 use process_manager::BackendProcess;
 
@@ -43,6 +44,7 @@ pub fn run() {
             Some(vec![]),
         ))
         .manage(BackendProcess::new())
+        .manage(window_geometry::ResizeDebouncer::new())
         .invoke_handler(tauri::generate_handler![
             click_through::set_click_through,
             process_manager::start_backend,
@@ -108,6 +110,9 @@ pub fn run() {
             onboarding::onboarding_complete,
             // WI-02 (beta-100): diagnostic feedback bundle.
             diagnostics::build_diagnostic_bundle,
+            // 2026-05-26: 桌宠主窗 resize 持久化。
+            window_geometry::get_saved_window_geometry,
+            window_geometry::set_window_geometry,
         ])
         .setup(|app| {
             // P3-S2: NVIDIA precheck. Phase-3 contract is CUDA-only, so
@@ -137,6 +142,9 @@ pub fn run() {
                 if let Err(e) = webview_permissions::grant_media_permissions(&win) {
                     eprintln!("[setup] grant_media_permissions failed: {e:?}");
                 }
+                // 2026-05-26: 应用上次拉的尺寸。读不到（首启 / 损坏）就走
+                // tauri.conf.json 默认的 360x600，无副作用。
+                window_geometry::apply_saved_size(&win);
             }
 
             // P4-S22+ portable mode: pre-create `<install>/userdata/`
@@ -204,6 +212,17 @@ pub fn run() {
                     api.prevent_close();
                     let _ = window.hide();
                     return;
+                }
+            }
+            // 2026-05-26: 桌宠主窗 resize → 防抖落盘。
+            if let tauri::WindowEvent::Resized(size) = event {
+                eprintln!("[window_geometry] Resized event label={} size={}x{}", window.label(), size.width, size.height);
+                if window.label() == "main" {
+                    if let Some(deb) = window.try_state::<window_geometry::ResizeDebouncer>() {
+                        deb.on_resize(window, *size);
+                    } else {
+                        eprintln!("[window_geometry] ResizeDebouncer state NOT FOUND");
+                    }
                 }
             }
             if let tauri::WindowEvent::Destroyed = event {

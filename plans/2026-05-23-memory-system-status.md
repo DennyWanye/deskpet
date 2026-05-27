@@ -191,7 +191,7 @@ eval_gate:       PASS                             ✅
 
 #### B2. 中转账号 503
 
-**现状**：本轮 LLM 测试用的中转账号（<dev-test@example.com>）跑 `gpt-5.5` / `claude-haiku-4-5` / `gpt-4o-mini` 三个模型全 503 Service Unavailable，只有 `deepseek-chat` 通。
+**现状**：本轮 LLM 测试用的中转账号（<see LOCAL-DEV-CREDENTIALS.md>）跑 `gpt-5.5` / `claude-haiku-4-5` / `gpt-4o-mini` 三个模型全 503 Service Unavailable，只有 `deepseek-chat` 通。
 
 **判断**：账号级配额/模型授权问题，**不是 DeskPet 代码缺陷**。
 

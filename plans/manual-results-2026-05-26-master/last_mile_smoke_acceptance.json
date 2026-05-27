@@ -1,0 +1,54 @@
+{
+  "timestamp": "2026-05-25T18:12:48Z",
+  "git_branch": "master",
+  "git_commit": "8ce87b0",
+  "checks": [
+    {
+      "name": "MR-0 backend zero-regression (pytest)",
+      "veto": true,
+      "status": "pass",
+      "duration_ms": 165750,
+      "detail": "",
+      "log_tail": ""
+    },
+    {
+      "name": "MR-8 fake-completion capture (TG-9)",
+      "veto": true,
+      "status": "pass",
+      "duration_ms": 938,
+      "detail": "代理项: TG-9 全 15 用例绿；完整 50-条 抓获率统计 follow-up",
+      "log_tail": ""
+    },
+    {
+      "name": "MR-13 file_exists outcome verifier (TG-10)",
+      "veto": true,
+      "status": "pass",
+      "duration_ms": 906,
+      "detail": "",
+      "log_tail": ""
+    },
+    {
+      "name": "MR-19 HMAC privacy (TG-7+TG-8 + N1)",
+      "veto": true,
+      "status": "pass",
+      "duration_ms": 1468,
+      "detail": "",
+      "log_tail": ""
+    },
+    {
+      "name": "Stage-2 admission (T9-12b + T9-14b)",
+      "veto": false,
+      "status": "pass",
+      "duration_ms": 906,
+      "detail": "",
+      "log_tail": ""
+    }
+  ],
+  "summary": {
+    "total": 5,
+    "pass": 5,
+    "fail": 0,
+    "skip": 0,
+    "veto_failure": false
+  }
+}

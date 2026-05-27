@@ -1,7 +1,7 @@
 # 人工测试 round 2 — 真 LLM + master 分支 — 2026-05-24
 
 **测试者**: Claude opus 4.7（主对话）
-**测试范围**: MR-S2-0 ~ MR-S2-14 — 真 LLM (chinzy + deepseek-v4-pro，账号 <dev-test@example.com>) + master 分支
+**测试范围**: MR-S2-0 ~ MR-S2-14 — 真 LLM (chinzy + deepseek-v4-pro，账号 <see LOCAL-DEV-CREDENTIALS.md>) + master 分支
 **对比 round 1**: round 1 全是 mock LLM 模拟；本轮**真 LLM 调用** + **真发现 2 个 PRD 设计 bug**
 **分支**: `master`（feat/memory-stage2 已 fast-forward merge 进来）
 **Backend**: 真启动 (dev-start) + `[memory.v2]` 全 flag = true

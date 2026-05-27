@@ -101,7 +101,7 @@
 7. 不允许直接改 src 代码
 
 【启动步骤】
-1. 读 G:\projects\deskpet\CLAUDE.md 获取登录测试账号（<dev-test@example.com> / <redacted-see-LOCAL-DEV-CREDENTIALS.md>）
+1. 读 G:\projects\deskpet\CLAUDE.md 获取登录测试账号（<see LOCAL-DEV-CREDENTIALS.md> / <see LOCAL-DEV-CREDENTIALS.md>）
 2. 按 ManualTest §0 启 backend + tauri dev + CDP 9222
 3. 跑 §2 CASE-D0-01..06 6 探针；任 FAIL 在 evidence/round-N/probes-runtime.md 标 + 按 PRD §8 graceful degrade（**不砍 FR**）
 4. 按 §3-§19 顺序跑所有 P0 case

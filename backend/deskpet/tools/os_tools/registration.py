@@ -150,6 +150,10 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
     if existing is not None and existing.permission_category != "network":
         # Re-register through the public API so the warning appears
         # once per startup (matches the existing convention).
+        # WI-T4.1 v3 (MR-T-11-6): 这是一次「显式覆盖」（patch 既有 spec
+        # 的 permission_category），双方必须有一方 opt-in replace_allowed
+        # 否则 register 会抛 ToolNameConflictError → 整个 v2 init 失败
+        # → plugin/permission gate 一并降级（main.py:508-516 except 分支）。
         registry.register(
             name="web_fetch",
             toolset=existing.toolset,
@@ -160,6 +164,7 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
             permission_category="network",
             source=existing.source,
             dangerous=existing.dangerous,
+            replace_allowed=True,
         )
 
     registry.register(

@@ -33,6 +33,42 @@ import { CSS } from "@dnd-kit/utilities";
 import { AddProviderModal, type ProviderDraft } from "./AddProviderModal";
 import type { ControlChannel } from "../ws/ControlChannel";
 import type { IncomingMessage } from "../types/messages";
+import type { RelayAuthAdapter } from "../auth/RelayAuthAdapter";
+import type { Provider as RelayProvider } from "../auth/types";
+
+// ---- Relay-edition virtual providers --------------------------------------
+//
+// 2026-05-26: 用户登录中转站后，把 relay 下发的 provider 作为只读虚拟项
+// 显示在列表里（跟手动加的 provider 视觉一致）。relay 的 tsk_xxx key 不
+// 落 LLMProviderRegistry（避免明文存到 settings.json），所以我们不通过
+// `settings_providers_add` 真注册，而是在前端 merge 一条虚拟 Provider，
+// 渲染时禁用编辑/拖拽/删除并加"中转站"徽章。
+
+/** id 前缀 — 用来在 ordered list 里识别 relay 虚拟项。 */
+export const RELAY_PROVIDER_ID_PREFIX = "__relay__:";
+
+/** 把 auth 层的 Provider 转成 SettingsProviders 显示用的 Provider。 */
+export function relayProviderToDisplay(rp: RelayProvider): Provider {
+  const models = (rp.models ?? []).map((m) => m.id);
+  return {
+    id: `${RELAY_PROVIDER_ID_PREFIX}${rp.id}`,
+    name: rp.name + " · 中转站",
+    base_url: rp.base_url,
+    models,
+    default_model: models[0] ?? null,
+    model: models[0] ?? "",
+    // relay 虚拟项 key 永远显示为 ******** (sentinel)
+    api_key: REDACTED_API_KEY,
+    // priority 最低数 = 排最前；用 -1 保证 relay 项总在第一位
+    priority: typeof rp.priority === "number" ? rp.priority - 1000 : -1,
+    enabled: true,
+  };
+}
+
+/** 判断某个 Provider 是不是 relay 虚拟项。 */
+export function isRelayProvider(p: Pick<Provider, "id">): boolean {
+  return p.id.startsWith(RELAY_PROVIDER_ID_PREFIX);
+}
 
 // ---- Domain types ---------------------------------------------------------
 
@@ -231,6 +267,9 @@ export const __test_dispatch_provider_event = dispatchProviderEvent;
 interface SettingsProvidersProps {
   getChannel: () => ControlChannel | null;
   lastMessage: IncomingMessage | null;
+  /** 2026-05-26: 可选的 relay adapter — 有时把中转站 providers 作为
+   * 只读虚拟项 merge 进列表。OSS / manual 编辑 = null → 行为零回归。 */
+  relayAdapter?: RelayAuthAdapter | null;
 }
 
 interface SortableRowProps {
@@ -241,8 +280,9 @@ interface SortableRowProps {
 }
 
 function SortableRow({ provider, onToggle, onDelete, onEdit }: SortableRowProps) {
+  const readonly = isRelayProvider(provider);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: provider.id });
+    useSortable({ id: provider.id, disabled: readonly });
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -280,15 +320,40 @@ function SortableRow({ provider, onToggle, onDelete, onEdit }: SortableRowProps)
     >
       <div style={headerRow}>
         <span
-          {...attributes}
-          {...listeners}
-          aria-label={`拖拽 ${provider.name}`}
-          style={{ cursor: "grab", color: "#9ca3af", userSelect: "none", flexShrink: 0, lineHeight: "16px" }}
+          {...(readonly ? {} : attributes)}
+          {...(readonly ? {} : listeners)}
+          aria-label={readonly ? "中转站 provider 不可拖拽" : `拖拽 ${provider.name}`}
+          style={{
+            cursor: readonly ? "default" : "grab",
+            color: readonly ? "#d1d5db" : "#9ca3af",
+            userSelect: "none",
+            flexShrink: 0,
+            lineHeight: "16px",
+          }}
         >
           ⠿
         </span>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{provider.name}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{provider.name}</span>
+            {readonly && (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "1px 6px",
+                  borderRadius: 4,
+                  background: "linear-gradient(180deg,#dbeafe,#bfdbfe)",
+                  color: "#1d4ed8",
+                  border: "1px solid #93c5fd",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+                title="此 provider 来自中转站登录账户，由账户系统自动管理"
+              >
+                relay
+              </span>
+            )}
+          </div>
           <div style={{ color: "#6b7280", fontSize: 11, overflowWrap: "anywhere" }}>
             {provider.default_model || provider.model || (provider.models && provider.models[0]) || "(no model)"}
             {provider.models && provider.models.length > 1 ? ` (+${provider.models.length - 1})` : ""}
@@ -302,39 +367,54 @@ function SortableRow({ provider, onToggle, onDelete, onEdit }: SortableRowProps)
         </div>
       </div>
       <div style={actionsRow}>
-        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
-          <input
-            type="checkbox"
-            checked={provider.enabled}
-            onChange={(e) => onToggle(provider.id, e.target.checked)}
-            aria-label={`启用 ${provider.name}`}
-          />
-          启用
-        </label>
-        <button
-          type="button"
-          onClick={() => onEdit(provider)}
-          style={{ ...rowBtn }}
-        >
-          编辑
-        </button>
-        <button
-          type="button"
-          onClick={() => onDelete(provider.id)}
-          style={{ ...rowBtn, color: "#b91c1c" }}
-        >
-          删除
-        </button>
+        {readonly ? (
+          <span style={{ fontSize: 11, color: "#6b7280" }}>
+            登录账户面板管理
+          </span>
+        ) : (
+          <>
+            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+              <input
+                type="checkbox"
+                checked={provider.enabled}
+                onChange={(e) => onToggle(provider.id, e.target.checked)}
+                aria-label={`启用 ${provider.name}`}
+              />
+              启用
+            </label>
+            <button
+              type="button"
+              onClick={() => onEdit(provider)}
+              style={{ ...rowBtn }}
+            >
+              编辑
+            </button>
+            <button
+              type="button"
+              onClick={() => onDelete(provider.id)}
+              style={{ ...rowBtn, color: "#b91c1c" }}
+            >
+              删除
+            </button>
+          </>
+        )}
       </div>
     </li>
   );
 }
 
-export function SettingsProviders({ getChannel, lastMessage }: SettingsProvidersProps) {
+export function SettingsProviders({
+  getChannel,
+  lastMessage,
+  relayAdapter,
+}: SettingsProvidersProps) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Provider | null>(null);
+  // 2026-05-26: relay 虚拟 providers — 来自 RelayAuthAdapter 的 in-memory
+  // cache，不进 backend LLMProviderRegistry（避免 tsk_xxx key 明文落盘）。
+  const [relayProviders, setRelayProviders] = useState<Provider[]>([]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -348,6 +428,32 @@ export function SettingsProviders({ getChannel, lastMessage }: SettingsProviders
       ch.send(buildListRequestMessage());
     }
   }, [getChannel]);
+
+  // 2026-05-26: 订阅 relay adapter 的 providers-updated 事件，把中转站
+  // 下发的 provider 当作只读虚拟项 merge 进列表。无 adapter（OSS 默认）
+  // → relayProviders 保持空 → 行为零回归。
+  useEffect(() => {
+    if (!relayAdapter) {
+      setRelayProviders([]);
+      return;
+    }
+    const apply = (list: RelayProvider[]) => {
+      setRelayProviders(list.map(relayProviderToDisplay));
+    };
+    // 退订器先订阅事件流，再用 cached 拉一次（避免 listProviders 异步期间
+    // 错过事件）
+    const unsub = relayAdapter.onEvent((e) => {
+      if (e.type === "providers-updated") apply(e.providers);
+      if (e.type === "logout") setRelayProviders([]);
+    });
+    void relayAdapter
+      .listProviders()
+      .then(apply)
+      .catch(() => {
+        /* 静默 — bridge 已经处理错误并显示红 banner */
+      });
+    return unsub;
+  }, [relayAdapter]);
 
   // Listen for inbound provider events on the shared lastMessage prop.
   useEffect(() => {
@@ -373,7 +479,12 @@ export function SettingsProviders({ getChannel, lastMessage }: SettingsProviders
     }
   }, [lastMessage]);
 
-  const ordered = useMemo(() => sortProvidersForDisplay(providers), [providers]);
+  // 2026-05-26: 合并 backend registry + relay 虚拟项 — relay 在前
+  // (因为它的 priority 是 -1000 起，sort 排首位)，再走 sort 排序。
+  const ordered = useMemo(
+    () => sortProvidersForDisplay([...relayProviders, ...providers]),
+    [providers, relayProviders],
+  );
   const ordered_ids = useMemo(() => ordered.map((p) => p.id), [ordered]);
 
   const send = useCallback(

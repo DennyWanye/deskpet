@@ -37,7 +37,8 @@ export type IconName =
   | "expand"
   | "pin"
   | "edit"
-  | "grid";
+  | "grid"
+  | "user";
 
 type Props = {
   name: IconName;
@@ -168,6 +169,12 @@ const PATHS: Record<IconName, ReactElement> = {
       <rect x="13" y="4" width="7" height="7" rx="1.6" />
       <rect x="4" y="13" width="7" height="7" rx="1.6" />
       <rect x="13" y="13" width="7" height="7" rx="1.6" />
+    </>
+  ),
+  user: (
+    <>
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
     </>
   ),
 };

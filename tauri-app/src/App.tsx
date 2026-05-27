@@ -503,6 +503,37 @@ function App() {
     return () => window.clearInterval(id);
   }, []);
 
+  // 2026-05-26: 前端兜底持久化 — 用 window.addEventListener("resize")
+  // + 防抖调 set_window_geometry。Rust 侧的 WindowEvent::Resized 也会触发
+  // 同样的写盘逻辑（lib.rs:218），两路冗余确保不丢；同一尺寸重复 save 是
+  // idempotent，文件被覆盖成相同内容，无副作用。
+  useEffect(() => {
+    let timer: number | null = null;
+    const persist = () => {
+      const w = Math.round(window.innerWidth);
+      const h = Math.round(window.innerHeight);
+      if (w < 240 || h < 360) return;
+      import("@tauri-apps/api/core")
+        .then(({ invoke }) =>
+          invoke("set_window_geometry", { width: w, height: h }).catch(() => {
+            // command 可能不存在（旧 Rust 二进制）— 静默忽略
+          }),
+        )
+        .catch(() => {
+          /* not under Tauri */
+        });
+    };
+    const onResize = () => {
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(persist, 800);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, []);
+
   // Control channel (text chat + interrupt + emotion/action events)
   const { state, lastMessage, sendChatV2, sendInterrupt, getChannel: getControlChannel } =
     useControlChannel(BACKEND_PORT, secret);
@@ -1399,6 +1430,11 @@ function App() {
     return a instanceof RelayAuthAdapter ? a : null;
   }, []);
 
+  // 2026-05-26: 账户面板触发器 — RelayEdition mount 时把 setShowAccount
+  // 写入 .current；Toolbar 的 onAccount 通过这个 ref 触发。pill 视觉挪
+  // 进 Toolbar 后两边解耦，RelayEdition 只管 modal。
+  const openAccountRef = useRef<(() => void) | null>(null);
+
   // WI-R3: in relay edition the forced login modal must come BEFORE the
   // onboarding wizard. Track auth state so the wizard is gated on it.
   // Non-relay editions: no adapter → `relayAuthed` stays true → wizard
@@ -1428,7 +1464,9 @@ function App() {
       {/* W3.3: relay-edition UI lives entirely under this single
           conditional. Manual / null editions render zero relay nodes
           and pay zero runtime cost beyond one instanceof check above. */}
-      {relayAdapter && <RelayEdition adapter={relayAdapter} />}
+      {relayAdapter && (
+        <RelayEdition adapter={relayAdapter} openAccountRef={openAccountRef} />
+      )}
 
       {/* 2026-05-19: 消息面板已抽成**独立窗口**（message-panel），不再
           内嵌于桌宠窗。这里不再渲染 aside —— 桌宠窗保持「仅桌宠、全
@@ -1887,6 +1925,11 @@ function App() {
           setCodeModeState((s) => ({ ...s, enabled: true, project_name: "" }));
         }}
         codeModeActive={codeModeState.enabled}
+        onAccount={
+          relayAdapter && relayAuthed
+            ? () => openAccountRef.current?.()
+            : undefined
+        }
         autostartReady={autostart.ready}
         autostartEnabled={autostart.enabled}
         onToggleAutostart={autostart.toggle}
@@ -1922,6 +1965,7 @@ function App() {
         lastMessage={lastMessage}
         secret={secret}
         onConfigChanged={() => setRouteKind(null)}
+        relayAdapter={relayAdapter}
       />
 
       {/* P2-1-S8 budget-exceeded toast */}

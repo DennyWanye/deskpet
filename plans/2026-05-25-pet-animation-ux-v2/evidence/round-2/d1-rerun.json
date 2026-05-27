@@ -1,0 +1,32 @@
+[cdp] target = http://localhost:5173/ (7958FDE982C55EEEE1976CF94F77BE3B)
+{
+  "D1_emotion_happy": {
+    "observed": "happy",
+    "pass": true
+  },
+  "D1_emotion_sad": {
+    "observed": "sad",
+    "pass": true
+  },
+  "D1_emotion_surprised": {
+    "observed": "surprised",
+    "pass": true
+  },
+  "D1_emotion_angry": {
+    "observed": "angry",
+    "pass": true
+  },
+  "D1_emotion_neutral": {
+    "observed": "neutral",
+    "pass": true
+  },
+  "D1-07_lock_release_on_new_chat": {
+    "locked_as": "sad",
+    "after_release": "neutral",
+    "pass": true
+  },
+  "D1-08_voting": {
+    "note": "classifier is internal; vitest covers (525/525 confirmed by main agent). CDP only verifies setter accepts result.",
+    "pass": "COVERED-BY-VITEST"
+  }
+}

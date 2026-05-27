@@ -12,12 +12,8 @@ DeskPet 的 LLM 调用走 chinzy 中转站（默认 gpt-5.5）。用户首次启
 3. token 写入 OS keychain（Windows DPAPI / macOS Keychain）
 4. backend 通过 `DESKPET_CLOUD_API_KEY` env 拿到 key 调 LLM
 
-**测试账号**（开发期共享，**不**包含真实用户数据）：
-
-```
-邮箱：<dev-test@example.com>
-密码：<redacted-see-LOCAL-DEV-CREDENTIALS.md>
-```
+**测试凭据**：本仓库**不包含**。请从 `LOCAL-DEV-CREDENTIALS.md`（gitignored）读取，
+模板见 [`LOCAL-DEV-CREDENTIALS.md.example`](./LOCAL-DEV-CREDENTIALS.md.example)。
 
 ### 子代理用法
 
@@ -96,3 +92,60 @@ cd backend && python -m pytest tests/test_tool_artifact.py tests/test_tool_last_
 4. **不要加沙箱护栏**（feedback_no_sandbox_constraints）—— deskpet 是单机桌宠，只防手滑级破坏。
 5. **跨层契约漂移**（feedback_cross_layer_contract）—— pytest + tsc 都过但后端前端对字段单位 disagree → `scripts/e2e_*.py` live smoke 兜底。
 6. **vector worker test_enqueue_small_batch_flushes_on_interval flaky**（time-based，已 spawn_task 跟踪修复）。
+
+---
+
+## 🔒 手工测试纪律（HARD CONSTRAINT — 不可妥协）
+
+当用户要求 **"用 windows-mcp 测试"** / **"跑手工测试"** / **"模拟人工点击"** 时，本约束**强制生效**。
+
+### ❌ 禁止的绕过方式（违反即视为未完成）
+
+1. **不允许** 直接 WebSocket 注入 backend (`ws://127.0.0.1:8100/*`) 当 UI 测试证据
+   — 这是协议层验证，**不是**用户行为，不能替代 windows-mcp 模拟点击
+2. **不允许** 把 `pytest` / `last_mile_smoke.py` / 任何 backend 单元/acceptance 脚本当 UI 测试 PASS 证据
+   — 用户要的是"模拟人工"，脚本回放违反 `feedback_real_e2e_not_script_replay`
+3. **不允许** Python `import` backend 包查 registry / loader / config 内部状态当"功能可用"证据
+   — 这证明"代码加载到了"，**不证明**"用户用得了"
+4. **不允许** 仅靠 `cmdkey /list` / 文件存在 / boot log grep 推断"功能可用"
+   — 间接证据不是 E2E 证据
+5. **不允许** 因 windows-mcp 工具报错（如 `Click(loc=[x,y])` schema bug、SendKeys 中文 IME）就 fallback 到上述任何方式
+   — 工具障碍必须用 workaround 克服，不是绕过的理由
+
+### ✅ 强制要求的真测做法
+
+1. **每个 testcase 必须**：windows-mcp Snapshot/Screenshot 抓状态 → 真坐标点击 / 真输入 → 截图证据 → 肉眼或日志判 PASS/FAIL
+2. **Click 失败 workaround**（按优先级 retry）：
+   - PowerShell `[W]::SetCursorPos(x,y) + mouse_event(LEFTDOWN/UP)` Win32 API
+   - windows-mcp `Click(label=...)` 用 Snapshot 出的 label
+   - 用 `App switch` 先聚焦窗口再 click
+3. **中文输入 workaround**（按优先级 retry）：
+   - STA Runspace + `[System.Windows.Forms.Clipboard]::SetText("中文")` + Ctrl+V
+   - 焦点不在目标窗口 → 先 Click 输入框聚焦再粘贴
+   - 验证 backend log 真收到了消息（不收到就说明粘贴失败，要 retry）
+4. **每个 case 失败必须 retry 至少 3 次不同 workaround**，才能标"环境受限"
+5. **跳过任何 testcase 必须**：显式声明 + 给具体环境受限理由 + **等用户确认**
+6. **每个 windows-mcp 动作前先 declare**：`坐标=(x,y) | 动作=click/type | 期望=...` —— 这是给用户的纪律承诺，防止又走捷径
+
+### 🎯 适用场景识别词
+
+用户出现以下词时立刻进入本纪律：
+- "用 windows-mcp 跑"
+- "模拟人工点击/输入"
+- "跑手工测试" / "手工测试"
+- "真测" / "真 E2E"
+- "/goal" 设置了相关 condition
+
+### 📝 报告格式
+
+每个 testcase 报告必须含：
+```
+case: TC-04.1 / B5-1 / R3-1 / ...
+坐标: (3444, 1786)
+动作: Click 输入框 → Clipboard "你好" → Ctrl+V → Enter
+截图: screenshots/<case>.png
+backend log 证据: <grep 关键事件>
+判定: PASS / FAIL / RETRY-N
+```
+
+**记住**：用户要的不是"PASS 数量"，是"真 E2E 证据"。绕过得来的 PASS 是负价值。

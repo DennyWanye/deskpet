@@ -38,9 +38,13 @@ interface RelayEditionProps {
   /** Optional brand string for the login modal header. Defaults to
    *  "Token Relay". Closed-source paid build sets its own. */
   brandName?: string;
+  /** 2026-05-26: 暴露 "打开账户面板" 的触发器给外部（Toolbar）。挂载时
+   * `current` 被写入 setter，卸载时清空。Toolbar 通过这个 ref 触发，pill
+   * 不再由 RelayEdition 自渲染（避免跟 Toolbar 视觉冲突）。 */
+  openAccountRef?: React.MutableRefObject<(() => void) | null>;
 }
 
-export function RelayEdition({ adapter, brandName }: RelayEditionProps) {
+export function RelayEdition({ adapter, brandName, openAccountRef }: RelayEditionProps) {
   const [authed, setAuthed] = useState(adapter.isAuthenticated());
   const [bootDone, setBootDone] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
@@ -108,6 +112,44 @@ export function RelayEdition({ adapter, brandName }: RelayEditionProps) {
     return relayProviderBridge.onStatus(setBridgeStatus);
   }, []);
 
+  // 2026-05-26: 自动重试 bridge error。最常见原因 —— 前端比 backend 早
+  // 启动 ~10s，第一次推 provider 时 backend 还没监听 8100 端口。退避重试
+  // 3/6/12/24s（max 4 次），每次成功就停。用户不再需要手动点"点此重试"。
+  useEffect(() => {
+    if (bridgeStatus !== "error" || !authed) return;
+    let attempt = 0;
+    const delays = [3000, 6000, 12000, 24000];
+    let cancel = false;
+    let timer: number | null = null;
+    const tick = () => {
+      if (cancel || attempt >= delays.length) return;
+      const d = delays[attempt++];
+      timer = window.setTimeout(() => {
+        if (cancel) return;
+        console.log(`[RelayEdition] bridge auto-retry attempt ${attempt}/${delays.length}`);
+        refreshProviders();
+        // refreshProviders 异步；如果还是 error，本 useEffect 不会再触发
+        // （bridgeStatus 没变），但内部 setStatus("applying") 会变 ok/error 后
+        // 再次进入 effect 重启序列 —— 所以这里也启下一个 timer 作为保险。
+        tick();
+      }, d);
+    };
+    tick();
+    return () => {
+      cancel = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [bridgeStatus, authed, refreshProviders]);
+
+  // 2026-05-26: 把"打开账户面板"的方法暴露给外部 ref（App→Toolbar）。
+  useEffect(() => {
+    if (!openAccountRef) return;
+    openAccountRef.current = () => setShowAccount(true);
+    return () => {
+      openAccountRef.current = null;
+    };
+  }, [openAccountRef]);
+
   // Don't flash the login modal during the initial restoreSession
   // round-trip — it's the worst possible first impression for a user
   // who's actually already logged in.
@@ -131,15 +173,8 @@ export function RelayEdition({ adapter, brandName }: RelayEditionProps) {
 
   return (
     <>
-      <button
-        type="button"
-        title="账户设置"
-        data-testid="relay-account-pill"
-        onClick={() => setShowAccount(true)}
-        style={pillStyle}
-      >
-        👤
-      </button>
+      {/* 2026-05-26: pill 按钮挪到 Toolbar 作为 Group 0 第一个图标，
+          视觉跟其它面板入口统一。RelayEdition 只渲染 modal + banner。 */}
       {bridgeStatus === "error" && (
         <div data-testid="relay-bridge-error" style={bridgeErrorStyle}>
           <span>模型配置失败</span>
@@ -191,22 +226,6 @@ export function RelayEdition({ adapter, brandName }: RelayEditionProps) {
 }
 
 // ── inline styles ─────────────────────────────────────────────────
-
-const pillStyle: React.CSSProperties = {
-  position: "fixed",
-  top: 8,
-  left: 8,
-  zIndex: 1100,
-  width: 28,
-  height: 28,
-  borderRadius: 14,
-  border: "1px solid rgba(148, 163, 184, 0.24)",
-  background: "rgba(15, 18, 28, 0.55)",
-  color: "white",
-  fontSize: 13,
-  cursor: "pointer",
-  backdropFilter: "blur(12px)",
-};
 
 const bridgeErrorStyle: React.CSSProperties = {
   position: "fixed",

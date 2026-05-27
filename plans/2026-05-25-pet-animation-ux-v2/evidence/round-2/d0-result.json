@@ -1,0 +1,41 @@
+[cdp] target = http://localhost:5173/ (7958FDE982C55EEEE1976CF94F77BE3B)
+{
+  "D0-01_startDragging": {
+    "ok": true
+  },
+  "D0-04_hiyori_params": {
+    "has_bench": true,
+    "has_v2_debug": true,
+    "debug_v2_keys": [
+      "held_state",
+      "held_wobble_deg",
+      "held_surprise",
+      "user_input_active",
+      "thinking_active",
+      "mouth_fade_mode",
+      "current_emotion",
+      "viseme_queue_size",
+      "low_energy",
+      "welcome_active",
+      "welcome_intensity",
+      "edge_attached",
+      "dnd_active",
+      "dnd_reasons",
+      "celebration_active",
+      "red_alert_active"
+    ]
+  },
+  "D0_frontend_observability": {
+    "overlay_present": true,
+    "metrics_present": true,
+    "fake_helpers": {
+      "fakeIdle": "function",
+      "fakeEmotion": "function",
+      "fakeMilestone": "function",
+      "fakeDnd": "function",
+      "fakeViseme": "function",
+      "fakeCelebration": "function",
+      "smoke": "function"
+    }
+  }
+}

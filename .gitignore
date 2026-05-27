@@ -132,3 +132,18 @@ plans/test-screenshots/
 # .mjs / .py / 文本日志仍入库 — 那些是真实工具/报告，体积可控）
 plans/*/evidence/*/screenshots/*.png
 plans/*/evidence/*/screenshots/*.jpg
+
+# ─── 2026-05-26 开源准备（OSS hygiene）───
+# 个人开发凭据 — 永远不要入库。模板见 LOCAL-DEV-CREDENTIALS.md.example
+LOCAL-DEV-CREDENTIALS.md
+.env
+.env.local
+.env.*.local
+
+# 顶层 tauri dev session log（npm run tauri:dev 自动产生在 cwd）
+/tauri-dev*.log
+/backend-manual.log
+/ci.log
+
+# 临时 continuation note（dev 手稿，不属于源码）
+/CONTINUE-*.md

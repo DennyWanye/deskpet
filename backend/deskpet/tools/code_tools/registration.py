@@ -52,6 +52,11 @@ def register_code_tools(
     """Register glob/grep/web_search statically + todo_write/agent
     using caller-built closures (because they need session-db / llm-shim
     bindings that only exist at startup time).
+
+    WI-T4.1 v3 (MR-T-11-6): main.py 设计上分两阶段调用本函数 —
+    第一次（main.py:343）注册最小集；第二次（main.py:1294）注册含
+    todo_write/agent 闭包的全集。两次同名 register 必须有一方 opt-in
+    replace_allowed 否则抛 ToolNameConflictError → 整个 v2 init 失败。
     """
     registry.register(
         name="glob",
@@ -71,6 +76,7 @@ def register_code_tools(
         ),
         handler=glob_tool,
         permission_category="read_file",
+        replace_allowed=True,
     )
 
     registry.register(
@@ -102,6 +108,7 @@ def register_code_tools(
         ),
         handler=grep_tool,
         permission_category="read_file",
+        replace_allowed=True,
     )
 
     registry.register(
@@ -121,6 +128,7 @@ def register_code_tools(
         ),
         handler=web_search,
         permission_category="network",
+        replace_allowed=True,
     )
 
     # P5-S2 G1: fetch_tool_result — retrieve full body of a truncated
@@ -134,6 +142,7 @@ def register_code_tools(
         schema=FETCH_TOOL_RESULT_SCHEMA,
         handler=fetch_tool_result_handler,
         permission_category="read_file",
+        replace_allowed=True,
     )
 
     if todo_write_handler is not None and todo_write_schema is not None:
@@ -143,6 +152,7 @@ def register_code_tools(
             schema=todo_write_schema,
             handler=todo_write_handler,
             permission_category="read_file",
+            replace_allowed=True,
         )
 
     if agent_handler is not None and agent_schema is not None:
@@ -152,4 +162,5 @@ def register_code_tools(
             schema=agent_schema,
             handler=agent_handler,
             permission_category="read_file",
+            replace_allowed=True,
         )

@@ -32,6 +32,8 @@ interface Props {
   onCodeMode: () => void;
   /** True when Code mode is currently active for this session. */
   codeModeActive?: boolean;
+  /** 2026-05-26: relay edition 账户按钮。null/undefined 时不渲染（OSS 默认）。 */
+  onAccount?: () => void;
   autostartReady: boolean;
   autostartEnabled: boolean;
   onToggleAutostart: () => void;
@@ -55,6 +57,7 @@ export const Toolbar: React.FC<Props> = ({
   onExit,
   onCodeMode,
   codeModeActive,
+  onAccount,
   autostartReady,
   autostartEnabled,
   onToggleAutostart,
@@ -92,6 +95,19 @@ export const Toolbar: React.FC<Props> = ({
         WebkitBackdropFilter: "blur(20px) saturate(1.5)",
       }}
     >
+      {/* Group 0 — 账户（relay edition 才出现） */}
+      {onAccount && (
+        <>
+          <IconButton
+            title="账户设置"
+            testId="relay-account-pill"
+            icon="user"
+            onClick={onAccount}
+          />
+          <Divider />
+        </>
+      )}
+
       {/* Group 1 — panel toggles */}
       <IconButton title="记忆管理" testId="memory-toggle" icon="archive" onClick={onMemory} />
       <IconButton title="ContextTrace" testId="trace-toggle" icon="compass" onClick={onTrace} />

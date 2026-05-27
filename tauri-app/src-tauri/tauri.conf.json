@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "npm run dev:relay",
+    "beforeBuildCommand": "npm run build:relay"
   },
   "app": {
     "withGlobalTauri": true,
@@ -17,12 +17,16 @@
         "title": "Desktop Pet",
         "width": 360,
         "height": 600,
+        "minWidth": 240,
+        "minHeight": 360,
+        "maxWidth": 1200,
+        "maxHeight": 1600,
         "x": 2140,
         "y": 640,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
-        "resizable": false,
+        "resizable": true,
         "skipTaskbar": true
       },
       {
