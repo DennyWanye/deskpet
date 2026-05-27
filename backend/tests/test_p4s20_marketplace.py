@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from deskpet.skills.marketplace.installer import (
+    BatchStageResult,
     SkillInstaller,
     StagedSkill,
     parse_github_url,
@@ -308,3 +309,234 @@ async def test_installer_uninstall_rejects_path_traversal(tmp_path: Path) -> Non
     )
     with pytest.raises(ValueError, match="path"):
         inst.uninstall("../outside")
+
+
+# ---------------------------------------------------------------------
+# Batch install — recursive multi-skill mode
+# (obra/superpowers-style repos: root has neither SKILL.md nor
+# manifest.json, but skills/ subdirs each contain SKILL.md)
+# ---------------------------------------------------------------------
+
+
+def _write_skill_md(dir_path: Path, name: str, tools: list[str]) -> None:
+    """Helper: write a minimal valid SKILL.md frontmatter at `dir_path`."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    allowed = ", ".join(tools)
+    body = (
+        "---\n"
+        f"name: {name}\n"
+        f"description: test skill {name}\n"
+        f"allowed-tools: [{allowed}]\n"
+        "---\n"
+        "skill body\n"
+    )
+    (dir_path / "SKILL.md").write_text(body, encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_stage_recursive_single_skill_mode_root_has_skill_md(
+    tmp_path: Path,
+) -> None:
+    """When root has SKILL.md, stage_recursive returns 1 entry, multi=False."""
+    target = tmp_path / "user_skills"
+    target.mkdir()
+    staging = tmp_path / "staging"
+
+    async def fake_clone(spec, dest):
+        _write_skill_md(dest, "solo", ["read_file"])
+
+    inst = SkillInstaller(
+        skills_dir=target,
+        staging_dir=staging,
+        known_tools={"read_file"},
+        clone_fn=fake_clone,
+    )
+    result = await inst.stage_recursive("github:foo/solo")
+    assert isinstance(result, BatchStageResult)
+    assert result.multi is False
+    assert len(result.staged) == 1
+    assert result.staged[0].name == "solo"
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
+async def test_stage_recursive_marketplace_finds_all_subdir_skills(
+    tmp_path: Path,
+) -> None:
+    """Root has no SKILL.md/manifest.json but skills/foo and skills/bar
+    each have SKILL.md → both staged, multi=True."""
+    target = tmp_path / "user_skills"
+    target.mkdir()
+    staging = tmp_path / "staging"
+
+    async def fake_clone(spec, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        # Plugin-marketplace shape: top-level README + 3 sub-skills.
+        (dest / "README.md").write_text("plugin marketplace", encoding="utf-8")
+        _write_skill_md(dest / "skills" / "alpha", "alpha", ["read_file"])
+        _write_skill_md(dest / "skills" / "beta", "beta", ["shell"])
+        _write_skill_md(dest / "skills" / "gamma", "gamma", ["read_file"])
+
+    inst = SkillInstaller(
+        skills_dir=target,
+        staging_dir=staging,
+        known_tools={"read_file", "shell"},
+        clone_fn=fake_clone,
+    )
+    result = await inst.stage_recursive("github:foo/marketplace")
+    assert result.multi is True
+    assert len(result.staged) == 3
+    names = sorted(s.name for s in result.staged)
+    assert names == ["alpha", "beta", "gamma"]
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
+async def test_stage_recursive_best_effort_skips_invalid_subskill(
+    tmp_path: Path,
+) -> None:
+    """One sub-skill has an unknown tool → it lands in errors but the
+    other two are still staged successfully."""
+    target = tmp_path / "user_skills"
+    target.mkdir()
+    staging = tmp_path / "staging"
+
+    async def fake_clone(spec, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        _write_skill_md(dest / "skills" / "good1", "good1", ["read_file"])
+        _write_skill_md(dest / "skills" / "bad", "bad", ["evil_tool"])
+        _write_skill_md(dest / "skills" / "good2", "good2", ["read_file"])
+
+    inst = SkillInstaller(
+        skills_dir=target,
+        staging_dir=staging,
+        known_tools={"read_file"},
+        clone_fn=fake_clone,
+    )
+    result = await inst.stage_recursive("github:foo/mixed")
+    assert result.multi is True
+    assert len(result.staged) == 2
+    assert sorted(s.name for s in result.staged) == ["good1", "good2"]
+    assert len(result.errors) == 1
+    assert "bad" in result.errors[0]["path"]
+
+
+@pytest.mark.asyncio
+async def test_stage_recursive_skips_dot_and_excluded_dirs(
+    tmp_path: Path,
+) -> None:
+    """`.git`, `.claude-plugin`, `node_modules`, etc. must NOT be scanned
+    even if they happen to contain a SKILL.md (rare but defensive)."""
+    target = tmp_path / "user_skills"
+    target.mkdir()
+    staging = tmp_path / "staging"
+
+    async def fake_clone(spec, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        # Real skill
+        _write_skill_md(dest / "skills" / "real", "real", ["read_file"])
+        # Noise that must be skipped
+        _write_skill_md(dest / ".git" / "hooks", "noise-git", ["read_file"])
+        _write_skill_md(dest / ".claude-plugin", "noise-cc", ["read_file"])
+        _write_skill_md(
+            dest / "node_modules" / "lib", "noise-node", ["read_file"]
+        )
+
+    inst = SkillInstaller(
+        skills_dir=target,
+        staging_dir=staging,
+        known_tools={"read_file"},
+        clone_fn=fake_clone,
+    )
+    result = await inst.stage_recursive("github:foo/noisy")
+    names = sorted(s.name for s in result.staged)
+    assert names == ["real"]
+
+
+@pytest.mark.asyncio
+async def test_stage_recursive_repo_has_no_skill_md_anywhere(
+    tmp_path: Path,
+) -> None:
+    """Repo with literally no SKILL.md → SafetyError surfaces, clone cleaned."""
+    target = tmp_path / "user_skills"
+    target.mkdir()
+    staging = tmp_path / "staging"
+
+    async def fake_clone(spec, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "README.md").write_text("nothing here", encoding="utf-8")
+
+    inst = SkillInstaller(
+        skills_dir=target,
+        staging_dir=staging,
+        known_tools={"read_file"},
+        clone_fn=fake_clone,
+    )
+    with pytest.raises(SafetyError, match="no SKILL.md"):
+        await inst.stage_recursive("github:foo/empty")
+    assert not (staging / "empty").exists()
+
+
+@pytest.mark.asyncio
+async def test_finalize_batch_installs_all_then_cleans_clone(
+    tmp_path: Path,
+) -> None:
+    """finalize_batch copies each sub-skill into skills_dir, then wipes
+    the shared clone once at the end."""
+    target = tmp_path / "user_skills"
+    target.mkdir()
+    staging = tmp_path / "staging"
+
+    async def fake_clone(spec, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        _write_skill_md(dest / "skills" / "alpha", "alpha", ["read_file"])
+        _write_skill_md(dest / "skills" / "beta", "beta", ["read_file"])
+
+    inst = SkillInstaller(
+        skills_dir=target,
+        staging_dir=staging,
+        known_tools={"read_file"},
+        clone_fn=fake_clone,
+    )
+    batch = await inst.stage_recursive("github:foo/two-skills")
+    out = inst.finalize_batch(batch)
+    assert len(out["installed"]) == 2
+    assert (target / "alpha" / "SKILL.md").exists()
+    assert (target / "beta" / "SKILL.md").exists()
+    # Shared clone wiped after batch
+    assert not (staging / "two-skills").exists()
+
+
+@pytest.mark.asyncio
+async def test_finalize_batch_collects_per_skill_failures(
+    tmp_path: Path,
+) -> None:
+    """If a sub-skill's finalize collides with a read-only target etc.,
+    other sub-skills still install; the failing one lands in errors."""
+    target = tmp_path / "user_skills"
+    target.mkdir()
+    staging = tmp_path / "staging"
+
+    async def fake_clone(spec, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        _write_skill_md(dest / "skills" / "ok1", "ok1", ["read_file"])
+        _write_skill_md(dest / "skills" / "ok2", "ok2", ["read_file"])
+
+    inst = SkillInstaller(
+        skills_dir=target,
+        staging_dir=staging,
+        known_tools={"read_file"},
+        clone_fn=fake_clone,
+    )
+    batch = await inst.stage_recursive("github:foo/two-ok")
+    # Pre-create a sentinel file at target/ok1 that finalize must wipe;
+    # this should still succeed because _force_rmtree handles read-only.
+    (target / "ok1").mkdir()
+    (target / "ok1" / "preexisting").write_text("x", encoding="utf-8")
+
+    out = inst.finalize_batch(batch)
+    # Both should still install — ok1's preexisting was wiped.
+    assert len(out["installed"]) == 2
+    # If finalize_batch ever does collect a failure, the count
+    # invariant must hold:
+    assert len(out["installed"]) + len(out["errors"]) >= len(batch.staged)

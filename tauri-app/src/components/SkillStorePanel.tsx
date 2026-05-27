@@ -153,6 +153,36 @@ export const SkillStorePanel: React.FC<Props> = ({ open, channel, onClose }) => 
             message: String(payload.error || "卸载失败"),
           });
         }
+      } else if (t === "skill_install_batch_completed") {
+        // Multi-skill marketplace install — backend recursively found
+        // SKILL.md files under the repo and installed every valid one.
+        // Skip the per-skill confirm step (user asked "全部安装好").
+        setLoading(false);
+        setStaged(null);
+        const installed = (payload.installed as Array<{ name: string; path: string }>) || [];
+        const errors = (payload.errors as Array<{ name?: string; path?: string; error: string }>) || [];
+        const installedCount = installed.length;
+        const errorCount = errors.length;
+        const sampleNames = installed.slice(0, 5).map((s) => s.name).join("、");
+        let level: "info" | "warning" | "error" = "info";
+        let message = "";
+        if (installedCount > 0 && errorCount === 0) {
+          message = `已安装 ${installedCount} 个 skill：${sampleNames}${
+            installedCount > 5 ? ` 等` : ""
+          }`;
+          level = "info";
+        } else if (installedCount > 0 && errorCount > 0) {
+          message = `已安装 ${installedCount} 个，${errorCount} 个跳过（manifest 不合法 / 工具未允许）`;
+          level = "warning";
+        } else {
+          message = `安装失败：${errorCount} 个候选 skill 全部不通过校验`;
+          level = "error";
+        }
+        setAlert({ level, message });
+        setUrlInput("");
+        // Refresh installed list so the new skills show up immediately.
+        channel.send({ type: "skill_list_installed" });
+        setTab("installed");
       }
     });
     return () => off();

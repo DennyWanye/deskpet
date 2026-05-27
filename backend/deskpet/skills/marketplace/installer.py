@@ -185,6 +185,24 @@ class StagedSkill:
     permission_categories: list[str] = field(default_factory=list)
 
 
+@dataclass
+class BatchStageResult:
+    """Outcome of `stage_recursive` — multi-skill best-effort install.
+
+    Single-skill mode (root has SKILL.md or manifest.json, OR subpath
+    pinned in URL): ``staged`` has exactly 1 entry, ``errors`` empty.
+
+    Multi-skill mode (root lacks both AND no subpath): ``staged`` has
+    every successfully validated sub-skill; ``errors`` collects per-
+    sub-skill failures (safety violation, invalid manifest, etc.) so
+    the caller / UI can show partial-success outcomes.
+    """
+    staged: list[StagedSkill] = field(default_factory=list)
+    errors: list[dict[str, str]] = field(default_factory=list)
+    multi: bool = False
+    repo_dir: Optional[Path] = None
+
+
 # ---------------------------------------------------------------------
 # Installer
 # ---------------------------------------------------------------------
@@ -208,7 +226,6 @@ class SkillInstaller:
 
     async def stage(self, url: str) -> StagedSkill:
         spec = parse_github_url(url)
-        staging_id = uuid.uuid4().hex[:12]
         full_staging = self.staging_dir / spec.repo
         # Wipe any leftover from a prior abandoned stage
         if full_staging.exists():
@@ -223,8 +240,7 @@ class SkillInstaller:
                 raise FileNotFoundError(
                     f"subpath {spec.subpath!r} not present in cloned repo"
                 )
-            manifest = self._read_manifest(skill_root)
-            validate_manifest(manifest, known_tools=self.known_tools)
+            return self._stage_at_dir(skill_root, spec)
         except SafetyError:
             _force_rmtree(full_staging)
             raise
@@ -232,6 +248,159 @@ class SkillInstaller:
             _force_rmtree(full_staging)
             raise
 
+    async def stage_recursive(self, url: str) -> BatchStageResult:
+        """Best-effort multi-skill stage.
+
+        When the URL points at a repo root that contains NO SKILL.md
+        and NO manifest.json (typical of plugin-marketplace repos like
+        obra/superpowers), recursively find every nested SKILL.md and
+        stage each subdir as its own pending skill.
+
+        Failures of individual sub-skills (safety violation, invalid
+        manifest, etc.) are collected into ``errors`` rather than
+        aborting the whole batch — the user explicitly asked for
+        "install whatever can be installed".
+
+        Single-skill paths (root has SKILL.md/manifest.json, or URL
+        has a subpath) still produce a list of one item — same shape,
+        simpler call site.
+
+        Args:
+            url: One of the three supported GitHub URL forms.
+
+        Returns:
+            BatchStageResult with ``staged`` list, ``errors`` list,
+            and ``multi`` flag indicating whether the multi-SKILL.md
+            recursion path was taken.
+        """
+        spec = parse_github_url(url)
+        full_staging = self.staging_dir / spec.repo
+        if full_staging.exists():
+            _force_rmtree(full_staging)
+
+        try:
+            await self.clone_fn(spec, full_staging)
+        except Exception:
+            _force_rmtree(full_staging)
+            raise
+
+        skill_root = (
+            full_staging / spec.subpath if spec.subpath else full_staging
+        )
+        if not skill_root.exists():
+            _force_rmtree(full_staging)
+            raise FileNotFoundError(
+                f"subpath {spec.subpath!r} not present in cloned repo"
+            )
+
+        # Single-skill mode: root has manifest.json or SKILL.md.
+        has_manifest = (skill_root / "manifest.json").exists()
+        has_skill_md = (skill_root / "SKILL.md").exists()
+        if has_manifest or has_skill_md:
+            try:
+                staged = self._stage_at_dir(skill_root, spec)
+                return BatchStageResult(
+                    staged=[staged],
+                    errors=[],
+                    multi=False,
+                    repo_dir=full_staging,
+                )
+            except SafetyError as exc:
+                _force_rmtree(full_staging)
+                # Re-raise so single-skill paths keep their old
+                # surface-the-error semantics.
+                raise
+
+        # Multi-skill mode: recurse, stage each, collect failures.
+        candidates = self._discover_skill_dirs(skill_root)
+        result = BatchStageResult(multi=True, repo_dir=full_staging)
+        if not candidates:
+            _force_rmtree(full_staging)
+            raise SafetyError(
+                "repository has no SKILL.md anywhere (checked root + recursive)"
+            )
+
+        for sub_dir in candidates:
+            try:
+                # Synthesise a per-sub-skill GithubSpec so finalize knows
+                # which staging tree to clean up after we're done.
+                sub_spec = GithubSpec(
+                    owner=spec.owner,
+                    repo=spec.repo,
+                    branch=spec.branch,
+                    subpath=(
+                        str(sub_dir.relative_to(full_staging)).replace(
+                            os.sep, "/"
+                        )
+                    ),
+                    git_url=spec.git_url,
+                )
+                staged = self._stage_at_dir(sub_dir, sub_spec)
+                result.staged.append(staged)
+            except SafetyError as exc:
+                result.errors.append({
+                    "path": str(sub_dir.relative_to(full_staging)).replace(
+                        os.sep, "/"
+                    ),
+                    "error": f"SafetyError: {exc}",
+                })
+            except Exception as exc:  # noqa: BLE001
+                result.errors.append({
+                    "path": str(sub_dir.relative_to(full_staging)).replace(
+                        os.sep, "/"
+                    ),
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
+        if not result.staged:
+            # Nothing usable — clean up the clone, surface a clear error.
+            _force_rmtree(full_staging)
+            raise SafetyError(
+                f"no valid skills in repository ({len(result.errors)} "
+                f"candidates failed validation)"
+            )
+
+        return result
+
+    # -----------------------------------------------------------------
+    # Recursive discovery helpers
+    # -----------------------------------------------------------------
+    def _discover_skill_dirs(self, root: Path) -> list[Path]:
+        """Find every directory under ``root`` that contains a SKILL.md.
+
+        Hidden dirs (``.git``, ``.github``, ``.claude-plugin``, etc.) and
+        common non-skill subtrees (node_modules, __pycache__, etc.) are
+        skipped to keep the scan cheap on big repos.
+        """
+        skip_names = {
+            ".git", ".github", ".claude-plugin", ".cursor-plugin",
+            ".codex-plugin", ".opencode", "node_modules", "__pycache__",
+            ".pytest_cache", "dist", "build", "target", ".venv", "venv",
+            ".idea", ".vscode",
+        }
+        results: list[Path] = []
+        # Use os.walk so we can prune by mutating dirnames.
+        for dirpath, dirnames, filenames in os.walk(root):
+            # Prune in place — saves descending into noise.
+            dirnames[:] = [d for d in dirnames if d not in skip_names]
+            if "SKILL.md" in filenames:
+                results.append(Path(dirpath))
+        # Stable order so tests + UI list deterministically.
+        results.sort()
+        return results
+
+    def _stage_at_dir(
+        self, skill_root: Path, spec: GithubSpec
+    ) -> StagedSkill:
+        """Read + validate manifest at ``skill_root``; return StagedSkill.
+
+        Used by both single-skill ``stage()`` and per-sub-skill
+        ``stage_recursive()``. Caller owns the clone lifecycle (cleanup
+        on error happens at the outer scope).
+        """
+        manifest = self._read_manifest(skill_root)
+        validate_manifest(manifest, known_tools=self.known_tools)
+        staging_id = uuid.uuid4().hex[:12]
         return StagedSkill(
             staging_id=staging_id,
             staging_path=skill_root,
@@ -243,7 +412,19 @@ class SkillInstaller:
             ),
         )
 
-    def finalize(self, staged: StagedSkill) -> Path:
+    def finalize(self, staged: StagedSkill, *, cleanup_repo: bool = True) -> Path:
+        """Move the staged sub-tree into the final skills directory.
+
+        Args:
+            staged: The StagedSkill to install.
+            cleanup_repo: When True (default), also wipe the top-level
+                staging clone after copy. Set False in batch mode where
+                multiple sub-skills share one clone — the caller wipes
+                the clone once after the whole batch completes.
+
+        Returns:
+            The absolute path of the installed skill directory.
+        """
         target = self.skills_dir / staged.name
         if target.exists():
             _force_rmtree(target)
@@ -252,10 +433,40 @@ class SkillInstaller:
         if staging_root.parent != self.staging_dir:
             # subpath case: copy only the subpath dir to final
             shutil.copytree(staging_root, target)
-            _force_rmtree(self._top_staging_dir(staged))
+            if cleanup_repo:
+                _force_rmtree(self._top_staging_dir(staged))
         else:
             shutil.move(str(staging_root), str(target))
         return target
+
+    def finalize_batch(self, result: "BatchStageResult") -> dict[str, Any]:
+        """Finalize every staged sub-skill in a BatchStageResult.
+
+        Iterates each StagedSkill, calls finalize(..., cleanup_repo=False),
+        then wipes the shared clone once at the end. Per-skill failures
+        are collected; one bad sub-skill does not abort the rest.
+
+        Returns a dict with ``installed`` (list of {name, path}) and
+        ``errors`` (list of {name, error}) — same shape as the ws
+        ``skill_install_batch_completed`` payload.
+        """
+        installed: list[dict[str, str]] = []
+        errors: list[dict[str, str]] = list(result.errors)  # carry over staging-time errors
+        for staged in result.staged:
+            try:
+                final_path = self.finalize(staged, cleanup_repo=False)
+                installed.append({"name": staged.name, "path": str(final_path)})
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "name": staged.name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+        # Single cleanup of the shared clone — only in multi mode where
+        # we actually shared one. Single-skill batches don't have a
+        # top-level clone separate from the moved staging_root.
+        if result.multi and result.repo_dir is not None:
+            _force_rmtree(result.repo_dir)
+        return {"installed": installed, "errors": errors}
 
     def cancel(self, staged: StagedSkill) -> None:
         _force_rmtree(self._top_staging_dir(staged))

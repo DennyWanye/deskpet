@@ -2812,7 +2812,13 @@ async def control_channel(ws: WebSocket):
                 })
 
             elif msg_type == "skill_install_from_url":
-                # P4-S20 Stage C — stage clone, return manifest for confirm.
+                # P4-S20 Stage C + post-ship: support both
+                #   (a) single-skill mode (root has SKILL.md / manifest.json,
+                #       or URL has a subpath) → original pending+confirm flow
+                #   (b) multi-skill mode (root has NEITHER → recursive
+                #       discovery of every SKILL.md, batch install all,
+                #       skip per-skill confirm because the user explicitly
+                #       asked to "装能找到的所有 skill")
                 payload = raw.get("payload", {}) or {}
                 url = payload.get("url", "")
                 if skill_installer is None:
@@ -2822,18 +2828,46 @@ async def control_channel(ws: WebSocket):
                     })
                     continue
                 try:
-                    staged = await skill_installer.stage(url)
-                    _skill_staged[staged.staging_id] = staged
-                    await ws.send_json({
-                        "type": "skill_install_pending",
-                        "payload": {
-                            "ok": True,
-                            "staging_id": staged.staging_id,
-                            "name": staged.name,
-                            "manifest": staged.manifest,
-                            "permission_categories": list(staged.permission_categories),
-                        },
-                    })
+                    batch = await skill_installer.stage_recursive(url)
+                    if not batch.multi:
+                        # Single-skill mode → preserve original UX (user
+                        # sees the manifest, clicks "确认安装").
+                        staged = batch.staged[0]
+                        _skill_staged[staged.staging_id] = staged
+                        await ws.send_json({
+                            "type": "skill_install_pending",
+                            "payload": {
+                                "ok": True,
+                                "staging_id": staged.staging_id,
+                                "name": staged.name,
+                                "manifest": staged.manifest,
+                                "permission_categories": list(staged.permission_categories),
+                            },
+                        })
+                    else:
+                        # Multi-skill mode → finalize EVERY staged sub-skill
+                        # immediately. Per-skill failures (staging or
+                        # finalize) come back in the errors list.
+                        result = skill_installer.finalize_batch(batch)
+                        try:
+                            loader = service_context.get("skill_loader")
+                            if loader is not None and hasattr(loader, "reload"):
+                                loader.reload()
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "skill_loader_reload_failed_batch",
+                                error=str(exc),
+                            )
+                        await ws.send_json({
+                            "type": "skill_install_batch_completed",
+                            "payload": {
+                                "ok": True,
+                                "installed": result["installed"],
+                                "errors": result["errors"],
+                                "installed_count": len(result["installed"]),
+                                "error_count": len(result["errors"]),
+                            },
+                        })
                 except Exception as exc:  # noqa: BLE001
                     await ws.send_json({
                         "type": "skill_install_pending",
