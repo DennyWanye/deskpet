@@ -29,7 +29,7 @@
 > | 左上角 👤 账户菜单 | ❌ 不渲染 | ✅ 渲染（点击打开 `AccountSettingsPanel`） |
 > | 强制登录窗 | ❌ 没有 | ✅ 没 token 就弹 `<RelayAuthModal>`，**无法关闭** |
 > | LLM key 来源 | 用户自己在「设置面板 → 模型」手填 | relay 自动下发 `tsk_xxx` device key → keychain |
-> | 适用场景 | OSS 自托管 / 自带 OpenAI key | 用上面那个测试账号走 chinzy 中转站 |
+> | 适用场景 | OSS 自托管 / 自带 OpenAI key | 用自己注册的中转站账号走 chinzy（凭据见 `LOCAL-DEV-CREDENTIALS.md`） |
 >
 > **`tauri.conf.json` 的 `beforeDevCommand` / `beforeBuildCommand` 决定 `tauri dev` / `tauri build` 默认走哪套**。本仓库当前为 `dev:relay` / `build:relay`，因此 `cargo tauri dev` 起来就有左上角登录 pill + 强制登录窗。要回到 OSS manual 默认，把那两行改回 `npm run dev` / `npm run build`。
 
