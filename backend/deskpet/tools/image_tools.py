@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """generate_image tool — text→image via the existing the relay endpoint.
 
 User says 生成图片 → agent calls this tool → POST

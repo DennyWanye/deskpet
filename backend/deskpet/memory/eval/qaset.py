@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """QA set builder — auto-generate (query, expected_msg_id) pairs.
 
 Strategy

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-1 — [memory.v2] config schema（WI-M0.3）。
 
 [memory.v2] / [memory.v2.facts] 是 [memory] 的嵌套子表；_load_section 只做

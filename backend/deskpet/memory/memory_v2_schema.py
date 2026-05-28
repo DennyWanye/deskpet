@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """memory-v2 (Phase A-E) — runtime-applied schema helper.
 
 Why not a `migrations/009_*.sql` file?

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-5 — chunking + query rewriting 集成测试（WI-M1.5）。
 
 chunker 是写入侧改造：长消息切块 + embed 进 messages_chunks；召回命中

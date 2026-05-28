@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-8 — eval 回归门控测试（WI-M0.2）。
 
 中文回测集 fixture 可复现；EvalReport 带 token_per_query；eval_gate 的

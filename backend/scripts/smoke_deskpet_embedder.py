@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S2 smoke — end-to-end Embedder + VectorWorker + SessionDB hook.
 
 Scenario:

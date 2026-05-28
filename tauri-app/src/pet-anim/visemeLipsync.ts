@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * visemeLipsync (pet-anim/B3 main path) — Pet Animation UX v2.
  *

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Base :class:`Component` protocol + :class:`ComponentContext` (P4-S7).
 
 Every component receives the same ``ComponentContext`` and returns a

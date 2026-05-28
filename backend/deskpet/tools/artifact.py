@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """ToolArtifact — 工具产物统一信封（PRD §3 D1）。
 
 WI-T1.1 — Stage 1 第一基石。所有产生"用户可操作产物"的工具，由 registry

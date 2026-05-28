@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S2 L3 vector write worker — async batch embedder → messages_vec.
 
 职责

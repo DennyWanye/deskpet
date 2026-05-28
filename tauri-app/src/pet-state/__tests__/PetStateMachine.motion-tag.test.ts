@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * PetStateMachine — motion_tag_pool extension tests (PRD FR-5).
  * TC-PSM-01 / TC-PSM-02 from TDD §4.13.

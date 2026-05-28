@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * RelayAuthAdapter — paid-edition implementation of `AuthAdapter` that
  * talks to the relay station (your-llm-relay.example.com).

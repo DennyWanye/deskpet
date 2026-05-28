@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Sanity test — click the mic button, check for REC indicator."""
 from __future__ import annotations
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for config.py loader resilience.
 
 Rationale (P2-1-S1 review follow-up):

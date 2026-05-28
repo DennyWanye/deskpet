@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """edge-tts provider — Microsoft Edge TTS as Phase 1 fallback.
 
 P2-2-M2: 新增 synthesize_pcm_stream() —— edge-tts 只出 MP3，前端实时

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4 state.db 启动守门：备份 → 迁移 → 失败回滚。
 
 职责（和 migrator.py 的分工）：

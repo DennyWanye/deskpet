@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T3.1/T3.2/T3.3 v3 — stubs.py 替换真实现验证.
 
 T3.1: memory_write / memory_read / memory_search 真接 facts.py

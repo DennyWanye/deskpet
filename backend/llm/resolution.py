@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 3.2 — per-session provider resolution.
 
 ``resolve_provider_for_session(base_sid, *, is_code_session, registry,

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5: browser_use_tool unit tests.
 
 NEVER launches a real browser or LLM — the browser-use ``Agent`` /

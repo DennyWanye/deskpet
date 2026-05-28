@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """API key resolution: env > keyring, with log-safe masking.
 
 No fallback to config.toml — keys in config.toml would slip into commits

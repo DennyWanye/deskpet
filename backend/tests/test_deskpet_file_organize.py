@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TDD T4 — file_organize_tools.py."""
 from __future__ import annotations
 

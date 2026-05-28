@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Drive Esc interrupt: send a long prompt, then press Esc ~0.5s later.
 
 Expected UI changes:

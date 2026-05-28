@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Voice pipeline: VAD → ASR → LLM → TTS, fully streaming."""
 from __future__ import annotations
 

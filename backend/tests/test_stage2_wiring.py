@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """验证 Stage 2 接电（修 v2 评审 P0-1/P0-2）。
 
 P0-1: registry.execute_tool 在 receipt_store_provider 注入后必须真 emit。

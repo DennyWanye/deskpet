@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S21 #16 — ContextBundle.history is populated from L2 raw rows
 and consumed by build_messages as real OpenAI messages[].
 

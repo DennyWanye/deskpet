@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Sensitive-information filter for memory writes.
 
 V5 §6 threat model: "记忆写入前经过敏感信息过滤器（正则+分类器）".

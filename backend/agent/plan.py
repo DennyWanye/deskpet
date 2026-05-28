@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S25 A2 — Plan/Replan helper.
 
 Before launching the ReAct loop on a complex code-mode request, do a

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TDD T0 — office_paths.py path authorization (防手滑层)."""
 from __future__ import annotations
 

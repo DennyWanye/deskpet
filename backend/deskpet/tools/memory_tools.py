@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Stage 2 / WI-S2.1a — ``memory_forget`` tool + WI-T3.1 v3 memory_* 真实现.
 
 设计要点（PRD/TDD D5 v2 / D6 v2 + v3 §A8 schema migration）：

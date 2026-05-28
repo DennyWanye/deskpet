@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """
 End-to-end test: verifies the full chat flow works.
 Requires: backend running on port 8100.

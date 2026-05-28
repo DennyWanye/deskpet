@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S1: SessionActivityStore unit tests."""
 from __future__ import annotations
 

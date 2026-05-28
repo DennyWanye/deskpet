@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S1/S2: SessionSnapshot builder.
 
 The supervisor LLM doesn't get the raw conversation — that's a deliberate

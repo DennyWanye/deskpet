@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S21 #13 — PermissionGate auto_mode short-circuit + voice TTS hint.
 
 When ``auto_mode == True`` the gate returns ALLOW for every request

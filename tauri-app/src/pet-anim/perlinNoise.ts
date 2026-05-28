@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * perlinNoise.ts — TDD §2.1 / §3.1.
  *

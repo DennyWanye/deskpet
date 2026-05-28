@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S12 §17.1 — Phase-4 component bench.
 
 Benchmarks the P4 memory/skill/assembler layer in isolation so we can

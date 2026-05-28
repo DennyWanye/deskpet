@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Lightweight keyword-based intent detector for "wants to start a project".
 
 Used by the chat handler: when a user message in plain (non-code) mode

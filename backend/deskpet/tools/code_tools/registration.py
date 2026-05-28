@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Register the 5 Code-mode tools into a ToolRegistry.
 
 Called once at backend startup (after the 7 OS tools have been

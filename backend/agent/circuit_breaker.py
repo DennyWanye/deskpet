@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 3.1: per-(session, tool) circuit breaker.
 
 Spec: ``openspec/changes/p5-s2-self-healing-harness/specs/tool-registry/circuit-breaker.md``

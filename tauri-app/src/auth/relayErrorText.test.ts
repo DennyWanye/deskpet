@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * TDD T6-3 — relay 错误码 → 友好提示。
  */

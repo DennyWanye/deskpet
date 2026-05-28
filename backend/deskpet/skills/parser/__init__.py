@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Claude Code SKILL.md v1 parser package."""
 
 from .parse_skill_md import (

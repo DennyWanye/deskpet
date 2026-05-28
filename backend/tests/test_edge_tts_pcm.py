@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Task 9 (P2-2-M2): EdgeTTSProvider.synthesize_pcm_stream —
 
 ffmpeg subprocess MP3 → s16le 24kHz mono, sliced into fixed-size PCM

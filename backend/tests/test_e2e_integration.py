@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """S10 E2E integration tests — FastAPI TestClient with the real app wiring.
 
 These are NOT offline unit tests: they import the actual ``main.app``

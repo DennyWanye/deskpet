@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """SkillLoader — SKILL.md hot-reload engine (P4-S10, tasks 15.1-15.9).
 
 Scans two directories for ``SKILL.md`` files:

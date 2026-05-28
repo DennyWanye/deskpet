@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P6 agent-loop-refactor — feature flag tests.
 
 Phase 0 of the p6-agent-loop-refactor change introduced a process-wide

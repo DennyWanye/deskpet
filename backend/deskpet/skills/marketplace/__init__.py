@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Stage C — skill marketplace backend."""
 
 from .installer import SkillInstaller, StagedSkill, parse_github_url, GithubSpec

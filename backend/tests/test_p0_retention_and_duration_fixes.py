@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T2.2 + WI-T2.3 v3 — P0 bug 修复回归测试.
 
 WI-T2.2 P0-2: ReceiptStore retention 被 `min(retention, 7)` 截断

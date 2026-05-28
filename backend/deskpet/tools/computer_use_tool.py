@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """OS-level computer-use toolset (toolset=``computer_use``).
 
 Lets a code-mode session agent (model ``gpt-5.5``, vision-capable, via

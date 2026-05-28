@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for the P4-S8 Context Compressor.
 
 Spec — openspec/changes/p4-poseidon-agent-harness/tasks.md §13:

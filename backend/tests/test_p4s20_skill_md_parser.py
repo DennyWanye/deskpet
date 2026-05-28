@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Wave 3a: Claude Code SKILL.md v1 parser tests."""
 from __future__ import annotations
 

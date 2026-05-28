@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Context compressor — rolling summary when prompt tokens near cap (P4-S8).
 
 Implements the agent-loop Context Engine hook described in

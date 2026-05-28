@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TDD T3 — WI-R2 relay LLM bridge: the `persist_key` bypass on
 POST /config/cloud.
 

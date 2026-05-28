@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S5: web tool tests.
 
 We mock the network layer (httpx) with ``respx`` if available, else

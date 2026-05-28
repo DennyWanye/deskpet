@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P3-S1 CI guard: no backend code may hardcode ``"assets"`` path segments.
 
 After the P3-S1 rename ``backend/assets/`` → ``backend/models/`` and the

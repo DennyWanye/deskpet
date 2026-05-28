@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """PPT generation tool — python-pptx wrapper with themes + layouts.
 
 Architecture

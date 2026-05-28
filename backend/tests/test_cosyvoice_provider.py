@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """S9 tests: CosyVoice 2 provider — fallback path is the only reachable
 branch on CI (no GPU, no cosyvoice package), so we test that.
 

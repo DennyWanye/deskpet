@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """glob — find files by glob pattern under the project root.
 
 Pattern syntax follows ``pathlib.PurePath.match`` semantics, plus

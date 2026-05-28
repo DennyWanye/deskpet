@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Memory DB schema migrations (P4-S1, tasks 2.1-2.5).
 
 Schema versioning is tracked via ``PRAGMA user_version``. Each migration

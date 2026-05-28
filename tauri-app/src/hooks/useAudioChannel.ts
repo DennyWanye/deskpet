@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 import { useEffect, useRef, useState, useCallback } from "react";
 import { AudioChannel, type AudioConnectionState } from "../ws/AudioChannel";
 import type { AudioMessage } from "../types/messages";

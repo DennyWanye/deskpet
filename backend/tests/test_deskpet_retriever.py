@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S3 retriever 测试：RRF 融合 + salience boost + decay + L3 降级。
 
 测试矩阵（对应 tasks.md §5.6 / §5.7 + spec "Hybrid Retrieval with RRF" /

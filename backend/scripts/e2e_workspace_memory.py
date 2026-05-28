@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Stage 2 / WI-V.1 (MR-S2-6) — workspace memory end-to-end GUI smoke.
 
 针对 PRD §4.6 DoD：

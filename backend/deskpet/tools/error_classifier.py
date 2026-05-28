@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S5: classify tool handler exceptions into retriable vs permanent.
 
 Used by ``ToolRegistry.dispatch`` — when a handler raises, we wrap the

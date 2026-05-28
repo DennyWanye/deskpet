@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P6 Phase 4 — chat handler ContextManager integration tests.
 
 Direct ws-message-branch testing of main.py's chat handler is brittle

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """grep — content search across project files via Python ``re``.
 
 We deliberately don't shell out to ripgrep — keeps the frozen bundle

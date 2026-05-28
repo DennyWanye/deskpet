@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TDD T2 — doc_tools.py (doc_create / doc_read / doc_edit)."""
 from __future__ import annotations
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Companion session write-scope (OpenSpec §D3)。
 
 **为什么存在**：`default` 陪伴 session 直接 `mkdir G:\\projects\\deskpet\\

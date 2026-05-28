@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-S2-4 真 LLM：episodic→semantic 固化通路端到端。
 
 构造 1 个老 session（>20 message + 全部 31d 前）→ summarize_old_sessions

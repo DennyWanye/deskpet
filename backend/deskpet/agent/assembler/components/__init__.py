@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """ContextAssembler built-in components (P4-S7, task 12.5).
 
 Six components ship in v1, each exposing ``async def provide(ctx) -> Slice``:

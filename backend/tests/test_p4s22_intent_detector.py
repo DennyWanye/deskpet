@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S22 — keyword-based "wants to start a project" detector."""
 from __future__ import annotations
 

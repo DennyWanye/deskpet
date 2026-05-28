@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Word document tools — python-docx wrapper (beta builtin skill).
 
 Three tools power the ``doc-edit`` skill:

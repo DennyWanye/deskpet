@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S21 #12 — `seed_user_config_if_missing` auto-migrates legacy
 ``[llm.local]`` / ``[llm.cloud]`` configs to the unified ``[llm]``
 schema. Backs up the old file as ``.legacy-bak`` and copies the

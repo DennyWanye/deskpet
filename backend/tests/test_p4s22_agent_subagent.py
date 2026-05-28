@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S22 — agent (subagent) tool.
 
 We focus on the parts that don't require a real LLM:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Temporary mock LLM endpoint for R6/R8-6 manual testing.
 
 Returns HTTP 402 (insufficient balance) or 401 (key invalid) for

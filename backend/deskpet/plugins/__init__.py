@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Stage D — plugin system.
 
 A plugin is a directory under ``%APPDATA%/deskpet/plugins/<name>/`` that

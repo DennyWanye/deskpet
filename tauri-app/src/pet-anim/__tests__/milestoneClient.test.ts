@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * Unit tests for milestoneClient — D2 client-side (TDD §4.15-b TC-D2-06 focus).
  */

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-12 — 字节级一致回归 (WI-T3.3)。
 
 PRD §3 G5 + D1 末段 + D10 末段 + TG-2 T2-5b 守护的"flag-off 字节级一致"

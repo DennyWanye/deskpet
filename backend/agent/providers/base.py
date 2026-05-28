@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Agent 层 Provider 抽象协议。
 
 V5 §2.3 ServiceContext 要求 agent_engine 与 llm_engine 分层；

@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T3.5 — DeskPet 工具调用 last-mile 升级 · 自动化 acceptance 脚本。
 
 对齐 2026 业界 Spec Kit / acceptance.sh 模式。把 PRD §2 G1-G5 + 4 项

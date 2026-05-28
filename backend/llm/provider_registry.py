@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """LLMProviderRegistry — P5-S2 Phase 1 (multi-provider-management).
 
 This is the single source of truth for the user's list of LLM providers.

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 1 — SSE diagnostic logging tests.
 
 Goal: when ``_stream_one_attempt`` finishes, every accumulated tool_call

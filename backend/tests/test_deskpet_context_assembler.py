@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for P4-S7 ContextAssembler (tasks 12.1-12.17).
 
 Covers all "Scenario" acceptance criteria in

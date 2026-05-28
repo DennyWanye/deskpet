@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for deskpet.tools.research_tools — DeepResearch orchestrator.
 
 Coverage:

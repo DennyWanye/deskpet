@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T2.1 stub — ToolReceipt + HMAC (PRD §3 D5 + D11)。
 
 **Stub-only**：本文件先提供完整接口签名 + dataclass schema，让 TG-0

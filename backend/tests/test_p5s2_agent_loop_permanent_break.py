@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 2.2: agent loop must break out on permanent tool error.
 
 The motivating bug (vpn-tunnel, 2026-05-10): the LLM kept invoking

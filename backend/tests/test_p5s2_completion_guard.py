@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Hook A: completion guard in agent_loop.
 
 When the LLM tries to finalize (stop_reason ≠ tool_use) but the session

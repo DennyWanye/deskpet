@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T2.1 v3 — build_agent 工厂 wiring 测试.
 
 验证 main.build_agent(...) 工厂真正把 VerifyGate / ReceiptStore /

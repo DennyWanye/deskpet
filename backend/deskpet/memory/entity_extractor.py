@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Stage 2 WI-S2.2 — Entity extraction for query-side NER.
 
 Three-tier degradation chain (see PRD §3.3 / TDD §A2.2):

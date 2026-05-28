@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """End-to-end integration test for the P4 three-layer memory stack.
 
 Wires the real components from S1+S2+S3+S4:

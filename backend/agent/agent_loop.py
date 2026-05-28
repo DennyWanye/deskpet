@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """DeskPet agent loop (P4-S6 §11 skeleton).
 
 One pass = one LLM turn + optional tool dispatch round. Loop until

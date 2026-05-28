@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Google Gemini adapter via the `google-genai` SDK.
 
 Gemini diverges from the OpenAI function-calling mental model enough

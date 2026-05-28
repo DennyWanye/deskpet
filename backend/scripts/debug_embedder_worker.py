@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Reproduce backend's worker spawn protocol to see what fails."""
 import asyncio
 import sys

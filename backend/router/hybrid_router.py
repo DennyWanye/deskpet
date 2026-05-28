@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """HybridRouter — local_first LLM 路由 + circuit breaker + 预算钩子.
 
 Implements LLMProvider Protocol, drop-in replacement for a single

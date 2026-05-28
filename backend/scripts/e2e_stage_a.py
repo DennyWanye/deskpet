@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Wave 2a — Stage A end-to-end smoke.
 
 Validates the full tool_use loop path WITHOUT a live LLM:

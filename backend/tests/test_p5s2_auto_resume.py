@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 4: AutoResumeOrchestrator tests.
 
 Spec: ``openspec/changes/p5-s2-self-healing-harness/specs/pet-supervisor/auto-resume.md``

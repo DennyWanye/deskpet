@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """E2E cross-session memory scope smoke (P2-0-S3).
 
 Seeds turns from two distinct sessions, then verifies:

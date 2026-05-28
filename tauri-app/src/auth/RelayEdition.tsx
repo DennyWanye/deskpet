@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * RelayEdition — the entire relay-edition UI surface, wrapped so App.tsx
  * only conditionally mounts ONE component.

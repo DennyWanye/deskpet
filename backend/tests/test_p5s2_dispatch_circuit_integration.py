@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 3.2: ToolRegistry.execute_tool integrates the breaker.
 
 * Breaker OPEN → dispatch refuses to call the handler and returns a

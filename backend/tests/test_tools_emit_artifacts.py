@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-3 — 5 工具显式 emit artifacts[]（WI-T1.2）。
 
 PRD §3 D1：每个生成文件型工具在成功 return 时显式 emit ``artifacts: list[dict]``，

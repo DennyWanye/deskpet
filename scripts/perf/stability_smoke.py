@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Short-horizon stability smoke — surrogate for the 8h V5 §1.1 gate.
 
 Hammer the control WS with text-chat requests at a configurable rate for

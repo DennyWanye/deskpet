@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """In-process reminder scheduler (V5 §9).
 
 Allows the LLM to set a note-to-self: ``<tool>reminder</tool>`` (free-text

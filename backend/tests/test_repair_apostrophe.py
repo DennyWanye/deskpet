@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """LLM JSON args repair tests (P6 bugfix 2026-05-14).
 
 Mirrors the multi-strategy repair chain in

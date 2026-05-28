@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-6 — artifact 默认保存路径 + title_slug 规则（WI-T1.5）。
 
 PRD §3 D4 v2.1：

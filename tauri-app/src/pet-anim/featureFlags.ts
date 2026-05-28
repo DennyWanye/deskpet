@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * featureFlags.ts — TDD §2.9 (v2: all=off hard kill).
  *

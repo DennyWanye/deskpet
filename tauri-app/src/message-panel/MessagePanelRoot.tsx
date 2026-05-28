@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * 2026-05-19 — slim message panel as its OWN Tauri window, docked to
  * the pet's left. Independent always-on-top transparent window so the

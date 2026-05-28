@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Time component (P4-S7 task 12.5).
 
 Emits current local time / date / timezone for the LLM. Placed in the

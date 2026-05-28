@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Per-base-session Code mode state.
 
 A user normally lives in ``session_id="default"`` for chat. When they

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Register the 7 OS tools into a ToolRegistry.
 
 Called once at backend startup from main.py — kept out of __init__.py

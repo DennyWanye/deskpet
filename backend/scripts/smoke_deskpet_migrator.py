@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S1 task 2.5 — 手动 smoke for deskpet.memory.migrator + schema.
 
 Run:

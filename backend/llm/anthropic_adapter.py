@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Anthropic Claude adapter with prompt-caching support.
 
 Prompt caching strategy (spec requirement `llm-providers.Anthropic Prompt

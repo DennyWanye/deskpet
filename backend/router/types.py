@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Shared types for router-level budget hook (P2-1-S6 skeleton).
 
 `BudgetHook` is the async contract HybridRouter calls before delegating to

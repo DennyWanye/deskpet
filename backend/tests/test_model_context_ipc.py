@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 1.1.6 — 模型上下文配置卡片的后端 IPC handler 单测。
 
 两个新消息类型（与 SettingsPanel「模型上下文」卡片对接）：

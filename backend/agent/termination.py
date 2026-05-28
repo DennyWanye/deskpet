@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P6 — TerminationGate state machine.
 
 Centralized termination decisions for AgentLoop. Hard limits (turns, tools,

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * Phase 1.1.6（context-1m-rearch）— ModelContextCard ws 线格式 + 编辑解析。
  *

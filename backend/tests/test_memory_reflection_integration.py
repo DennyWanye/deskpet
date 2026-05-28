@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-7 — reflection + skill memory 集成测试（WI-M1.7）。
 
 ReflectionWorker.run_once 产物写进 facts 表（category=reflection）；

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase B — Structured fact storage with mem0-style merge semantics.
 
 Architecture

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! WI-01 (beta-100) — first-run onboarding state.
 //!
 //! A brand-new install has no `%AppData%\deskpet\onboarding_done.json`.

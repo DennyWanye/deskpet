@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S2 task 4.1 / 4.2 / 4.4 — Embedder 单元测试。
 
 覆盖：

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-1-S6 cloud TTFT smoke — run N rounds of force_cloud chat, print p50/p95.
 
 Usage:

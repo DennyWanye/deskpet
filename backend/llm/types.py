@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Normalized LLM response data model.
 
 Each provider adapter MUST map its native response into these pydantic

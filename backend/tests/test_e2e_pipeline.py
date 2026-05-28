@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """End-to-end test: simulate a user speaking by streaming real audio to /ws/audio."""
 from __future__ import annotations
 

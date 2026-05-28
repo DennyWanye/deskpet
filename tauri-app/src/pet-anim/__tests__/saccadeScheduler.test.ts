@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * saccadeScheduler.test.ts — TDD §4.3 (TC-S-01..04)
  */

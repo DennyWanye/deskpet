@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """ToolUsingAgent — wraps any AgentProvider with text-protocol tool routing.
 
 Text protocol (MVP): LLM emits `<tool>NAME</tool>` anywhere in its reply.

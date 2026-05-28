@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """desktop_create_file tool — ergonomic wrapper around write_file.
 
 `desktop_create_file(name, content)` resolves to the user's desktop on

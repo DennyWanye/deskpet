@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-2-F1: short-audio padding + hotwords bias tests.
 
 Drives the two core changes in FasterWhisperASR:

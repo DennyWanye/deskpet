@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """GPU VRAM detection + dynamic model-tier selection (V5 §4.2).
 
 Goal: let the user plug in any GPU (or none) and have the backend pick a

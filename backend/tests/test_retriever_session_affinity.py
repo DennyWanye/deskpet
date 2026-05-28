@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P1 (D1) — retriever session-affinity 单测。
 
 对应 OpenSpec change ``2026-05-16-companion-context-isolation``：

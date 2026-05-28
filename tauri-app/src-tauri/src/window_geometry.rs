@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! 桌宠主窗口尺寸持久化。
 //!
 //! 把 main 窗口的 (width, height) 写到 `<user_data>/window_geometry.json`。

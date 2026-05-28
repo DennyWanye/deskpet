@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Clipboard read tool (V5 §9 tools/ directory).
 
 Returns the current clipboard text so the LLM can quote or act on whatever

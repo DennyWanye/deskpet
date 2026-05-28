@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Task 10 (P2-2-M2): VoicePipeline TTS 走 synthesize_pcm_stream 的端
 到端契约测试。
 

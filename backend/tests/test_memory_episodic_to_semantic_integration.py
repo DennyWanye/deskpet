@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-S5 — episodic→semantic 固化通路集成测试（Stage 2 / WI-S2.4）。
 
 TDD §TG-S5 (TS5-1 ~ TS5-10)：summarize_old_sessions 跑完后，flag 开

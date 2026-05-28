@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * metricsRing.test.ts — TDD §4.8 (TC-MR-01..06)
  */

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! W2 (relay integration): stable device identifier.
 //!
 //! The relay station scopes device-key issuance by `X-Device-Id`. Each

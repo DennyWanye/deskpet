@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-T-1 实机 boot smoke — verify_gate_init 真写 metrics.jsonl 硬证据.
 
 用途：用户 goal "必须有 boot smoke + metrics.jsonl 真出现 verify_* event 才算

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for P4-S10 SkillLoader (tasks 15.1-15.10).
 
 Covers every Requirement / Scenario in spec §15:

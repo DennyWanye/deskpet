@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Sample a process's RSS over time — replaces the "open Task Manager
 and squint at deskpet.exe" footnote in docs/PERFORMANCE.md.
 

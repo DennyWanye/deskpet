@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """code-session-model-params — SessionDB model_params round-trip.
 
 Spec: openspec/changes/code-session-model-params/specs/

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Unit tests for llm.registry: list_providers, fallback chain, 429 retry."""
 from __future__ import annotations
 

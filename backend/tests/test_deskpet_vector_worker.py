@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S2 task 4.3 / 4.4 / 4.6 — VectorWorker 单元测试。
 
 覆盖：

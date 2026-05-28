@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for [voice] section loading (P2-2-M3 Task 13).
 
 Backend-only config for TTS-phase barge-in behavior. The [vad] section

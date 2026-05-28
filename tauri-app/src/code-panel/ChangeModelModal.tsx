@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * code-session-model-params S2 — Cursor-style per-code-session model +
  * params picker (replaces the old free-text model `<input>`).

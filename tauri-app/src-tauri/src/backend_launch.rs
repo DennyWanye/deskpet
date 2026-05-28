@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! P3-S3 — Backend path resolver (Supervisor 自管 backend 路径).
 //!
 //! The Rust supervisor is now the single source of truth for where

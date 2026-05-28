@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """code-session-model-params — pure model-params → request mapper.
 
 Maps a code session's Cursor-style ``model_params`` (thinking / fast /

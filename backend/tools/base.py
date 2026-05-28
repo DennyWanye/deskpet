@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tool protocol for the S3 tool routing layer.
 
 MVP: tools are zero-arg for now (get_time doesn't need params). Protocol

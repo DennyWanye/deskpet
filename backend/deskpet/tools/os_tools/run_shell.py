@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """run_shell tool — `run_shell(command, cwd=None, timeout=30)`.
 
 P5-S2 (2026-05-10): instead of unconditionally `shell=True` (which on

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S22 — web_search tool (DDG HTML scrape, mocked httpx)."""
 from __future__ import annotations
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Skill system with SKILL.md hot reload (P4-S10, tasks 15.x).
 
 - ``loader.py``       — scans ``%APPDATA%/deskpet/skills/{built-in,user}/``

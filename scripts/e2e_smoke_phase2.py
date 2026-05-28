@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-1 finale Phase 2 smoke — verifies BillingLedger actually accrues spend
 after a local chat call, and that budget_status reflects the debit.
 """

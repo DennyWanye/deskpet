@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """HybridRouter cloud_first 单元测试.
 
 Mirrors local_first coverage:

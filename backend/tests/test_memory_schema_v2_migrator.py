@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-S0 — schema_v2_migrator 测试（Stage 2 / M0）。
 
 针对 PRD/TDD §A0 D1 v2：facts 表加 ``superseded_by`` + ``forgotten_at``

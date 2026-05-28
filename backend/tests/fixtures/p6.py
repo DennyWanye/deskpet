@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Shared test fixtures for the p6-agent-loop-refactor change.
 
 Phase 0 deliverable — the rest of the change relies on these helpers so

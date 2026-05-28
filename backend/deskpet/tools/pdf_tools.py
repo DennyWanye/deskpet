@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """PDF export tool — LibreOffice headless wrapper (pdf-export builtin skill).
 
 ``pdf_export(input_path)`` converts ``.docx`` / ``.pptx`` / ``.xlsx`` /

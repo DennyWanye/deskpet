@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-1 — [tools.last_mile] / [tools.verifier] config schema（WI-T0.3）。
 
 PRD §3 D10 invariant 表落到 _validate_flag_invariants；与 [memory.v2] 嵌套

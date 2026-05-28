@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Wave 0c: ToolRegistry v2 extension TDD tests.
 
 These verify the new fields, schema methods, permission-gated execution,

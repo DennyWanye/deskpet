@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Claude Code SKILL.md v1 parser (P4-S20 Wave 3a).
 
 Spec: https://code.claude.com/docs/en/skills + reference impl

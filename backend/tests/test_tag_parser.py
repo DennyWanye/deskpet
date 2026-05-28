@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for StreamingTagParser — parses [emotion:xxx] / [action:xxx]
 from a token stream without losing non-tag characters."""
 from __future__ import annotations

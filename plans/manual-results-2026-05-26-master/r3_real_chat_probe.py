@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """R3-1 真测探针：通过 WebSocket 直接发 '你好' 给 backend → 看是否真的拿到 LLM 回复。
 
 不走 UI，不靠 SendKeys/Clipboard — 用 Python websockets 库直接打 ws://127.0.0.1:8100/ws/control，

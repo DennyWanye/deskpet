@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase E — Daily reflection + procedural-memory skeleton.
 
 This module provides two long-tail pieces:

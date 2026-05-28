@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5: browser-use backed autonomous E2E browser tool (toolset=e2e).
 
 One tool, ``run_browser_task``, that lets a code-mode session agent run a

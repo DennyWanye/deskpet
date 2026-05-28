@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S9 task 14.1: MCP bootstrap helper.
 
 A thin factory that reads ``[mcp]`` from the deskpet ``config.toml`` and

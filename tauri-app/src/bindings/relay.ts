@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * W2 (relay integration): typed wrappers around the Rust `secrets::*`
  * relay slots + `device::*` commands.

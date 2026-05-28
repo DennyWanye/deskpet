@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P6 Phase 1 — TerminationGate state machine unit tests.
 
 TDD-ordered per openspec/changes/p6-agent-loop-refactor/tasks.md Phase 1.

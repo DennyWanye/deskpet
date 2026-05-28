@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """todo_write — replace the entire task list for the current code session.
 
 Idempotent semantics matching Claude Code's TodoWrite: every call

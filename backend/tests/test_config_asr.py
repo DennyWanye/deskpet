@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for [asr] section loading — P2-2-F1 hotwords support.
 
 [asr] already existed (provider/model/device/compute_type). This slice

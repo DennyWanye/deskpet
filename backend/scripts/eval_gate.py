@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """记忆系统升级 WI-M0.2 / D8 — eval 指标 pre-merge 门控脚本。
 
 memory-v2 上一轮变死代码的同类失误就是"靠人工记得跑"。本脚本把 eval

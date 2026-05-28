@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Versioned SQLite migrations for the memory store.
 
 V5 §7.3: `每次启动时检查 schema_version，自动执行迁移脚本`.

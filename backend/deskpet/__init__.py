@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """DeskPet Phase 4 (Poseidon) package root.
 
 This package is the home of all Phase 4 agent harness + long-term memory

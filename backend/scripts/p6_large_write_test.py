@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Force the agent to write a large React file via write_file —
 reproduces the max_tokens-truncation bug + verifies the 8192 fix.
 

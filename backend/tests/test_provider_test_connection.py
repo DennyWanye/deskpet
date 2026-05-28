@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-1-S3 Task 5: control-WS ``provider_test_connection`` handler.
 
 The test doesn't boot ``main.app`` — ``main.py`` pulls in faster_whisper

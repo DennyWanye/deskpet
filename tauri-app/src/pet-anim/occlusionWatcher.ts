@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * occlusionWatcher (pet-anim/E2) — Pet Animation UX v2.
  *

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Skill component (P4-S7 task 12.5).
 
 Emits a short "skill prelude" listing skills that are currently applicable

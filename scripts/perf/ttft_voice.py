@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Measure voice-pipeline TTFT (V5 §1.1 target: < 2.5s).
 
 Definition of TTFT here: time from the last PCM chunk sent (i.e., the

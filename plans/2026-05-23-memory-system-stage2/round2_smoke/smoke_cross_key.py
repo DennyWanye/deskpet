@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-S2-1 真人工测试：cross-key 矛盾治理（真 LLM via the relay deepseek-v4-pro）。
 
 跑前提：

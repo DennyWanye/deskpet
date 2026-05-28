@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 (2026-05-10): tier-based shell detection for run_shell.
 
 Verifies the priority chain Git Bash → bundled busybox → PowerShell →

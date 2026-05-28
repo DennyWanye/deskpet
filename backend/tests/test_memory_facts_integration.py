@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-2 — facts 抽取接入集成测试（WI-M1.2）。
 
 集成层：真实 ``SessionDB`` + 真实 ``FactExtractor`` + 与 main.py 同形状的

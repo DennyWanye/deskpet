@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-T-8 实机 smoke — fake-completion 拦截硬证据.
 
 用 strict mode + 真 patterns + 真 metrics_sink 路径，模拟一次 fake-completion

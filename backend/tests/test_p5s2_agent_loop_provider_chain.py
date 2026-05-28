@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 3.1: AgentLoop walks a provider chain.
 
 When AgentLoop.run() is invoked with a ``provider_chain`` parameter,

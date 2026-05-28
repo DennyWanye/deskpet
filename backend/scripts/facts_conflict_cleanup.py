@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Stage 2 / WI-S2.1a — facts 表 cross-key 矛盾批量清理脚本。
 
 Stage 1 已存在的 facts 表里可能积累了大量"跨 key 矛盾"行（用户原话

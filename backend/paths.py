@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Model / asset / user-data directory resolution.
 
 P3-S1 birthed :func:`model_root` and :func:`resolve_model_dir`.

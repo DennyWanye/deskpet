@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T2.4/T2.4b — VerifyGate 真正实现（PRD §3 D6 + 二轮 N1/N2）。
 
 stub 时期已建好接口；本次升级把 stub 替换为真正逻辑：

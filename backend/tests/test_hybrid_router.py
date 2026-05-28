@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """HybridRouter 单元测试 (P2-1-S2).
 
 Strategy: local_first

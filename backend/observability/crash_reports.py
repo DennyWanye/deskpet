@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Crash-report infrastructure (V5 §7.2).
 
 Installs a ``sys.excepthook`` that writes the uncaught-exception traceback

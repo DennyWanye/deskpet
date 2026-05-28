@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * TDD T2 — relayProviderBridge：登录态 → 后端 LLM endpoint 桥接。
  */

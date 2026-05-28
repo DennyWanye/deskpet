@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 2 — settings_providers_* + code_session_set_* IPC tests.
 
 Covers `multi-provider-management` change, spec

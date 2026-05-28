@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * Tests for petText — the companion pet-window display filter.
  * Covers the exact junk classes observed leaking into the pet bubble

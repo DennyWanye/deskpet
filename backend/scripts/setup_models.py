@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """One-shot model setup for fresh deskpet installs.
 
 After installing the thin NSIS bundle, run this once to populate

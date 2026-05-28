@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * e2e_wire.test.ts — TDD §4.12 (TC-E2E-01..03).
  *

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S1: per-session activity tracking for the supervisor watchdog.
 
 Lives next to ``agent_loop.py``. Pure data — no I/O, no LLM. The watchdog

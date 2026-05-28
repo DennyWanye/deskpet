@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 2 — capability gate 单测 (OpenSpec 2026-05-16-companion-context-isolation §D2)。
 
 回归背景：用户在 `default` 陪伴 session 说"你能帮我生成一个海报图片嘛？"，

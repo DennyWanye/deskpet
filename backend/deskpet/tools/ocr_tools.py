@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Image OCR tool — RapidOCR wrapper (screenshot-ocr builtin skill).
 
 ``image_ocr(image_path)`` extracts text from an image (screenshot,

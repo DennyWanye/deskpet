@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T2.6 — AgentLoop end_turn VerifyGate wiring（修 ship-readiness P0-3）。
 
 子代理 round-2 评审指出 AgentLoop 不调 VerifyGate → 生产抓获率仍 0%。

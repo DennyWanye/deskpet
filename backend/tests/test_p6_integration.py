@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P6 Phase 5 — End-to-end integration tests.
 
 These tests prove the P6 refactor actually solves the documented bugs:

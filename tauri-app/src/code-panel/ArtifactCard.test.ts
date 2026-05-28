@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 // TG-5 部分 — ArtifactCard 纯函数测试（WI-T1.4 / WI-T1.7）
 //
 // vitest 当前为 node env（无 DOM），DOM 渲染/点击测试留 jsdom follow-up；

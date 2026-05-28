@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T3.2 v3 — ``skill_invoke`` 真实现.
 
 替换 ``stubs.py`` 同名 stub（字典序：'sk' < 'st' → 本文件先注册，stubs.py 守卫

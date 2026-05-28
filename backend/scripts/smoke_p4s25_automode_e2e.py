@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S25 auto_mode end-to-end smoke:
 
 Trigger a chat that requires shell permission. With auto_mode ON,

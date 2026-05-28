@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Regression: companion-session context hijack (2026-05-16 01:02).
 
 Real bug (evidence in backend/userdata/data/state.db):

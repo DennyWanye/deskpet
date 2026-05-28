@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WorkspaceMemoryComponent — 记忆系统升级 WI-M1.6。
 
 把 Phase D 的 ``WorkspaceMemoryStore`` 接进 assembler：code 任务装配

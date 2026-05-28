@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S15 — full-stack integration tests.
 
 Replicates main.py's S15 wire-in (Embedder + SessionDB + VectorWorker +

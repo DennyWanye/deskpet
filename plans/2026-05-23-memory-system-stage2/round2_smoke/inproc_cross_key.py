@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-S2-1 in-process 真 LLM cross-key 矛盾治理验证。
 
 绕开 chat_v2 链路（the relay 抖动严重）—— 直接构造 FactExtractor +

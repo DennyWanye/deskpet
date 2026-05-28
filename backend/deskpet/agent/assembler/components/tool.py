@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tool component (P4-S7 task 12.5).
 
 Filters :class:`~deskpet.tools.registry.ToolRegistry`'s schema list down

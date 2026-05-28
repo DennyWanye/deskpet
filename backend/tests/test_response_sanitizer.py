@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TDD for deepseek-inline-cot-dsml-sanitize.
 
 Fixtures captured verbatim from the real incident that corrupted

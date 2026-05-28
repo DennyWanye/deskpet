@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """E2E memory management API smoke.
 
 Simulates MemoryPanel.tsx operations over the control WS:

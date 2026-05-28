@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S25 auto_mode persistence smoke:
 
 1. Send permission_auto_mode_set enabled=true via WS

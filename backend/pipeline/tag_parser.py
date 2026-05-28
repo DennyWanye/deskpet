@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Streaming parser for [emotion:xxx] / [action:xxx] tags in LLM output.
 
 Design goal: feed LLM tokens one at a time, yield either:

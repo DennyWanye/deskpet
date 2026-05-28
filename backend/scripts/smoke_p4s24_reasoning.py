@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S24 manual smoke: send 2 sequential chat_v2 turns through the
 control WS and assert neither produces an LLM HTTP 400 (the
 reasoning_content round-trip bug).

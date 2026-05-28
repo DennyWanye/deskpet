@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """code-session-model-params — live model catalog + per-model caps.
 
 The picker must not hardcode models; ``model_param_caps`` is the

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 真实市场端到端 — 通过 WS 走完整 IPC 链路装一个真实 GitHub 技能。
 
 此脚本验证：

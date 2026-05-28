@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Full UI driver — locate controls by pixel color, click them, verify.
 
 Avoids hard-coded coords so it survives DPR/scaling. Colors are taken from

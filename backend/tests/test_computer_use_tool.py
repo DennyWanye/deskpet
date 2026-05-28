@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Unit tests for the OS-level computer-use toolset.
 
 No real screenshots / clicks ever happen here:

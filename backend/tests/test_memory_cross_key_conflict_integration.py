@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-S1 — cross-key 矛盾治理集成测试（Stage 2 / WI-S2.1a）。
 
 针对 TDD §TG-S1 (TS1-1 ~ TS1-14)，验证 FactExtractor.cross_key_merge

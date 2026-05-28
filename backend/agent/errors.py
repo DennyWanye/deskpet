@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 2: tool error classification.
 
 Classifies a tool error (dict envelope, raw string, or Exception) into one

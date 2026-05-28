@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for observability.metrics Prometheus registry (P2-1-S6)."""
 from __future__ import annotations
 

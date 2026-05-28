@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Generate task ids for agent loop runs.
 
 Format: `task_<YYMMDDHHMMSS>_<short_uuid>` — sortable prefix gives

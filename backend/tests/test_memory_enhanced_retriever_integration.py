@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-4 — EnhancedRetriever 接管召回集成测试（WI-M1.4）。
 
 验证 facts 经**向量召回**进 RRF 结果、合成 Hit 文本能渲染进 prompt、

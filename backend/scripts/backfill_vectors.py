@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """一次性补齐历史 messages 的向量索引。
 
 向 messages_vec 写入所有 messages.embedding IS NULL 的历史消息的

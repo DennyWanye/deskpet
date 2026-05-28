@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Workspace component (P4-S7 task 12.5).
 
 Emits a short summary of the user's workspace directory — file count,

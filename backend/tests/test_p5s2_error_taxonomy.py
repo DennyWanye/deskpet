@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 2.1: tool error classifier.
 
 The classifier turns a raw tool error (dict / str / Exception) into one of

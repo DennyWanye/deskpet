@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-1-S1 application-level smoke test.
 
 Connects to running backend at ws://127.0.0.1:8100/ws/control as a synthetic

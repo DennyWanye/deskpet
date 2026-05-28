@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S5: ToolRegistry unit tests (tool-framework spec).
 
 Covers every Requirement in ``openspec/changes/p4-poseidon-agent-harness

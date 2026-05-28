@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """SimpleLLMAgent — V5 §12 要求的 '降级档' Agent 实现。
 
 直接代理 LLMProvider.chat_stream,无工具调用。S2 起可选注入 MemoryStore

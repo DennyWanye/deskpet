@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """``python -m deskpet.memory.eval`` CLI.
 
 Two subcommands:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Policy loader + user overrides merge (P4-S7 tasks 12.7, 12.8).
 
 Policies live as declarative YAML. The packaged default sits at

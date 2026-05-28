@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * P5-S2: tests for splitThinkBlocks — the parser that handles
  * <think>...</think> chain-of-thought leaks in visible content.

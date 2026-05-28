@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """code-session-model-params — live model catalog + per-model param caps.
 
 The Cursor-style picker must not hardcode a model list. This module:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P3-S2 — structured startup-error registry.
 
 Lifespan (`backend/main.py`) loads ASR/TTS/VAD engines best-effort.

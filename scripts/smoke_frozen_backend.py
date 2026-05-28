@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P3-S4 — Smoke test the frozen backend exe.
 
 Spawns `backend/dist/deskpet-backend/deskpet-backend.exe`, captures

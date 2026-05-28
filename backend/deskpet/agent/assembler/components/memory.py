@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Memory component (P4-S7 task 12.5).
 
 Wraps the three-layer :class:`~deskpet.memory.manager.MemoryManager`. On

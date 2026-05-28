@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-9 — VerifyGate cascade extractor + claim matching + ephemeral 救援
 （WI-T2.4 + T2.4b）。
 

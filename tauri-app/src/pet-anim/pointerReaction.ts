@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * pointerReaction.ts — TDD §2.7 (v3 — rename + 3-tuple transition table).
  *

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Excel generation tool — openpyxl wrapper (beta builtin skill).
 
 The LLM produces a structured ``spec`` (a dict, or a JSON string of one);

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """ContextAssembler policy files (P4-S7, tasks 12.7 / 12.8).
 
 Houses the declarative YAML assembly policies:

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 // P2-1-S8 — Watch ControlChannel messages for budget_exceeded flags and
 // surface a toast-style notification.
 //

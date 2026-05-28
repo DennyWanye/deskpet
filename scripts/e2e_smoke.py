@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-1 finale manual E2E smoke — exercises S3/S6/S7/S8 end-to-end against
 a running backend (assumes DESKPET_DEV_MODE=1 so we don't need the secret).
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TaskClassifier — three-tier cascade (P4-S7 tasks 12.1-12.4).
 
 Stages in order:

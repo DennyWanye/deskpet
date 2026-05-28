@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S9 task 14.11: MCPManager unit tests.
 
 Covers every Requirement in ``openspec/changes/p4-poseidon-agent-harness

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """E2E text chat smoke — full stack, real Ollama.
 
 Simulates what App.tsx does on the control channel:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for ImageGenerationWorker (async fire-and-quick-return).
 
 OpenSpec 2026-05-16-async-image-gen specs/async-tools/spec.md.

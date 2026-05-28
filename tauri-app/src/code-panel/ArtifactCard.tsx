@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 // WI-T1.4/T1.7 — ArtifactCard：按 kind 分发的产物卡片 + action 埋点
 //
 // PRD §3 D2：MessageBubble.tsx 的 ToolResultCard 在 result 含 artifacts[]

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S1 tasks 2.4 — deskpet.memory.migrator unit tests.
 
 Covers:

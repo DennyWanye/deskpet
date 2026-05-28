@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Persona component (P4-S7 task 12.5, P4-S20-LLM-Unified updated).
 
 Emits the pet's persona / system-prompt header. Content is pulled from

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Download the BGE-M3 embedding weights into the per-user models directory.
 
 P4-S0, task 1.3. Target layout:

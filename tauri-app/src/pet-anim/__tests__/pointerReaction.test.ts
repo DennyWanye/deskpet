@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * pointerReaction.test.ts — TDD §4.7 (TC-PR-01..10)
  */

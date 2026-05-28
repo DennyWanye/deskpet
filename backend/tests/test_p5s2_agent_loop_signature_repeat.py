@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 3.3: same-(name, args) repeat detection in agent loop.
 
 When the LLM keeps invoking the exact same ``(tool_name, args)`` triple

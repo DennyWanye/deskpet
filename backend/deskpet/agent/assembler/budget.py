@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """BudgetAllocator — trim context when over budget (P4-S7 task 12.9).
 
 Called after the :class:`ComponentRegistry` has fanned out and collected

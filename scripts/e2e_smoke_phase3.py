@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-1 finale Phase 3 smoke — S7 fallback + S8 budget denial, both
 exercised at the HybridRouter level directly (no WS), since enabling
 a real cloud endpoint in config.toml for every E2E run isn't practical.

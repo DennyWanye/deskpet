@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4 tool framework + built-in tools (P4-S5, tasks 7.x / 8.x / 9.x).
 
 Module layout

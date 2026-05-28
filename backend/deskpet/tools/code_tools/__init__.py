@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S22 Code mode tools.
 
 Five tools registered alongside the seven OS tools when Code mode is

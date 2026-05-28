@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-M0.1 — memory-v2 死代码体检 + smoke 回归。
 
 逐个构造 Phase A-E 模块并做最小真实调用，捕获接口腐烂

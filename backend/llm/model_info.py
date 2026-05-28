@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 1.1 — per-model 上下文窗口 + compaction 阈值的内置表 + 三层 override 解析。
 
 Why

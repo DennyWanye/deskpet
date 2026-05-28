@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Capability gate — agent loop 前置能力门 (OpenSpec §D2)。
 
 **为什么存在**：deskpet 无图像/视频/语音/3D 生成工具。用户在 `default`

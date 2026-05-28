@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S19 BGE-M3 子进程 worker — 隔离 PyTorch+ctranslate2 segfault。
 
 **绝对约束**：本文件**不** import 任何 deskpet 内部模块、faster_whisper、

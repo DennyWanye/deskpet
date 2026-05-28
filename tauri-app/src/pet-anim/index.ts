@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * AnimationOverlay (pet-anim) — TDD §2.10 / §3.6 / §3.7 / §3.8.
  *

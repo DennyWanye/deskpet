@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TDD T1 — excel_tools.py (excel_create)."""
 from __future__ import annotations
 

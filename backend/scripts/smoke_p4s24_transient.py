@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S24 transient-retry smoke: hammer the LLM with 6 sequential
 requests on independent sessions to hit the relay's flaky 'Server
 disconnected' behavior. Verifies:

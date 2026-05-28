@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4 memory DB migration runner (clean-room, 不共享 P3 代码).
 
 Scope: 负责 ``backend/deskpet/memory/migrations/*.sql`` 的发现、执行、幂等

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-S2-3 真 LLM：entity 索引检索路。"""
 from __future__ import annotations
 

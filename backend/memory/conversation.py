@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """SQLite-backed short-term conversation memory.
 
 Uses aiosqlite for async access. Schema is append-only (no updates):

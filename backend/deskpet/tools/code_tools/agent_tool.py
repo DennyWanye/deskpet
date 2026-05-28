@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """agent — spawn a nested AgentLoop with a focused subset of tools.
 
 Use case: the parent loop needs to do an expensive sub-investigation

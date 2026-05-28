@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """ComponentRegistry with parallel fan-out (P4-S7 task 12.6).
 
 The registry owns every component instance, resolves which ones to run

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Quick debug: test repair strategies against latest malformed args
 from tauri-dev.log. Bypasses bash escaping problems."""
 from __future__ import annotations

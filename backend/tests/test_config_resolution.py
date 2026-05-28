@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P3-S7: config.toml resolution + memory/billing db_path behaviour.
 
 Covers:

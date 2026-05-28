@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-S2 — memory_forget 工具 + FactsStore forget 配套（Stage 2 WI-S2.1a）。
 
 针对 TDD §TG-S2 (TS2-1 ~ TS2-13)，覆盖：

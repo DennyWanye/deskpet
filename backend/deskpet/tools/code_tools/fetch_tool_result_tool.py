@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 G1 — fetch_tool_result tool.
 
 Companion to B1 (tool_result_truncator). When the agent loop truncates a

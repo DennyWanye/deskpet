@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MCP (Model Context Protocol) client (P4-S9, tasks 14.x).
 
 Wraps the official ``mcp>=1.0`` SDK so DeskPet can consume third-party

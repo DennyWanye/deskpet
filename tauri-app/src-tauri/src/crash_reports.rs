@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Rust panic → file-based crash report (V5 §7.2).
 //!
 //! When a panic escapes a Tauri thread, we want a durable copy of the

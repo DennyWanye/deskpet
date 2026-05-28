@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S22+ portable mode — `<install>/userdata/.deskpet-portable` sentinel
 re-routes all user paths from `%AppData%` to the install directory.
 

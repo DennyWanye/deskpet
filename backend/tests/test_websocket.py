@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 import pytest
 from starlette.websockets import WebSocketDisconnect
 from fastapi.testclient import TestClient

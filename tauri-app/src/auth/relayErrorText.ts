@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * relayErrorText — WI-R5 / T6-3：把后端 `chat_v2_error` 的结构化 relay
  * 错误码翻译成对用户友好的中文提示。

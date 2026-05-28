@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * Unit tests for emotionClassifier — D1 fallback voting (TDD §4.9).
  */

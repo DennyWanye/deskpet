@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S1 task 3.5 — SessionDB 性能回归测试（默认不跑）。
 
 Mark: ``@pytest.mark.perf`` —— 默认被 ``pyproject.toml`` 的

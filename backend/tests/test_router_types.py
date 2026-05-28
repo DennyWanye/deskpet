@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for router.types — BudgetHook contract skeleton (P2-1-S6).
 
 The contract is consumed by S3 / S7 / S8; we verify shape, immutability,

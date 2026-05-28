@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Stage C — skill installer (git clone → stage → confirm → finalize).
 
 Windows note: ``shutil.rmtree`` on a freshly-cloned ``.git`` directory

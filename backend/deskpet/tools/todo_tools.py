@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S5: todo tools (toolset=todo).
 
 Simplified flat-JSON storage: a single ``todo.json`` under the user data

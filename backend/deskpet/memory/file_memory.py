@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """L1 file-backed memory (MEMORY.md + USER.md).
 
 P4-S4 deliverable. Two markdown files under ``base_dir``:

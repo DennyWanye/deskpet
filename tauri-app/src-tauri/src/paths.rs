@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! P3-S8 — Rust-side mirror of `backend/paths.py`.
 //!
 //! Both the Tauri supervisor and the Python backend need to agree on

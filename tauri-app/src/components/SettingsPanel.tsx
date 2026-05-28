@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * P2-1-S3: SettingsPanel —— 云端账号 / 路由策略 / 今日使用（占位）。
  *

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Measure backend cold-boot time — replaces the "manual stopwatch
 against python main.py" footnote in docs/PERFORMANCE.md.
 

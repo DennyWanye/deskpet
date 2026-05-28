@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-3 T3-2 — ppt_create dry_run outline 预览（WI-T1.6）。
 
 PRD §3 D9 + plans/2026-05-23-tool-last-mile-upgrade/01-TDD.md §B TG-3 T3-2。

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-1-S8 BillingLedger — SQLite per-call usage & cost recording.
 
 Data model: single `calls` table, one row per chat_stream completion.

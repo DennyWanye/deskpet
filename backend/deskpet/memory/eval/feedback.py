@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Thumbs-up / thumbs-down feedback store.
 
 Tiny CRUD wrapper over ``memory_user_feedback``. Consumed by:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase C — Cross-encoder reranker for retriever output.
 
 Two implementations, identical interface:

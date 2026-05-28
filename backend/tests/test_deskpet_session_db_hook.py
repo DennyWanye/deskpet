@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S2 task 4.3 — SessionDB.on_message_written hook 集成测试。
 
 契约验证：

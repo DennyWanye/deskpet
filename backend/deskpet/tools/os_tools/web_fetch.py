@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """web_fetch tool — `web_fetch(url, max_bytes=1_000_000)`.
 
 Permission category: ``network``. Refuses non-http(s) schemes

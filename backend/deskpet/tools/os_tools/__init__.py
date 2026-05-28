@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 OS-level tools.
 
 These are the 7 tools exposed to the LLM via the new tool_use loop.

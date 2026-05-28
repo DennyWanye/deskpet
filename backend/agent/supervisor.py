@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2: SupervisorAgent — LLM-based diagnosis of stuck Code-mode sessions.
 
 The watchdog calls ``SupervisorAgent.diagnose(sid, snapshot)`` when a

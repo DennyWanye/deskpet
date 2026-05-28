@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Sample GPU VRAM usage over time — feeds the V5 §1.1 "< 200MB/h leak" gate.
 
 Writes CSV rows (unix_ts, device_index, used_mb, total_mb) to --out and

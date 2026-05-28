@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * WI-S2.1b — MemoryPanel facts view（事实 tab） vitest 覆盖。
  *

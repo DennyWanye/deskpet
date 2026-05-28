@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! WebView2 permission handler — auto-grants microphone (and camera) to the
 //! embedded WebView2 so `navigator.mediaDevices.getUserMedia` works inside the
 //! desktop-pet window without any user prompt.

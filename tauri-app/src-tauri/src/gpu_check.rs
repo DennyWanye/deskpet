@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! P3-S2 — NVIDIA GPU precheck.
 //!
 //! Runs in `lib.rs` `.setup()` before the Python backend is spawned.

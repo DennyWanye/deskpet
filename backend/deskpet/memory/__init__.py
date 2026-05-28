@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4 three-layer memory system.
 
 - L1 (file memory, P4-S4): ``file_memory.py``

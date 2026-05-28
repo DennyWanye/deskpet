@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Daily USD budget tracker.
 
 Persists usage to a JSON file (atomic rewrite) so restart doesn't leak

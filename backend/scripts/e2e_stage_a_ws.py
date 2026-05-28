@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 真实 WS 端到端测试 — 模拟前端打实跑后端 chat_v2 路径。
 
 不依赖 Tauri 桌面壳像素截图，而是直接打 ws://127.0.0.1:8100/ws/control

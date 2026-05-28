@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S13 — integration test for the read-only P4 wire-in.
 
 Validates that the registration pattern main.py uses puts real

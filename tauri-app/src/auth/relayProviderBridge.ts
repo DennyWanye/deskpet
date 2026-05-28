@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * relayProviderBridge — WI-R2 的"最后一公里"：把中转站登录后下发的
  * provider（base_url + model + 轮换的 tsk_xxx key）推给后端 LLM endpoint，

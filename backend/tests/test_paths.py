@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for backend.paths — model + user-data directory resolution.
 
 Covers both the original P3-S1 model_root/resolve_model_dir API and the

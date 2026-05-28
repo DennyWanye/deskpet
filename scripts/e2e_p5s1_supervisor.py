@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S1/S2/S3/S4 — visual / behavioral E2E smoke for the supervisor stack.
 
 Drives the running backend through its real WS surface and SessionDB:

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * blinkScheduler.ts — TDD §2.2 / §3.2 / §3.3.
  *

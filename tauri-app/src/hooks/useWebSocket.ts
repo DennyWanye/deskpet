@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 import { useEffect, useRef, useState, useCallback } from "react";
 import { ControlChannel, type ConnectionState } from "../ws/ControlChannel";
 import type { IncomingMessage } from "../types/messages";

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20-D 严格 E2E 测试 — 不依赖单测桩，纯真实 backend + 真实 Ollama LLM。
 
 5 个测试维度：

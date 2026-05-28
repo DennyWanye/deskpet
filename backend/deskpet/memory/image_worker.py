@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """ImageGenerationWorker — async fire-and-quick-return for slow image gen.
 
 OpenSpec 2026-05-16-async-image-gen. `generate_image` was a synchronous

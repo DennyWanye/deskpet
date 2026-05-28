@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 1.1.4 — ContextManager.for_session 工厂：按 model + project_root
 三层 resolve 注入 ModelContextInfo（design.md D1/D2 集成点）。
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Native file/folder picker tool — the user-consent gate for office skills.
 
 The office skills (doc-edit / pdf-export / file-organize / ocr) need to

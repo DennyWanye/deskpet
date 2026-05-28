@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TDD T6-1 / T6-2 — relay error classification (WI-R5).
 
 TODO(M6): assertions track the heuristic contract in

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * 单测 — AuthAdapter 契约 + Null/Manual 行为 + 工厂逻辑。
  * 不连接任何 IO；纯接口形态 / 错误码 / 事件订阅验证。

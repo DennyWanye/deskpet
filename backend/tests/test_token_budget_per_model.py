@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 1.1 followup — token_budget must honor the per-model window.
 
 Bug: token_budget.get_context_window had its own stale _KNOWN_WINDOWS

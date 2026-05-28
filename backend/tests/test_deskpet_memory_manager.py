@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for MemoryManager — P4-S4.
 
 Covers the frozen-snapshot pattern, graceful degradation when layers

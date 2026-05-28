@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T1.7 — POST /metrics/event 端点测试（前端 ArtifactCard 埋点 sink）。"""
 from __future__ import annotations
 

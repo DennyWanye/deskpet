@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 1.1.3 — ContextConfig per-model 比例阈值（D2）单测。
 
 覆盖 spec `per-model-context` 的 "ContextManager thresholds derive from

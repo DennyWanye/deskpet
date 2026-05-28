@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 (2026-05-11): malformed tool_call.arguments JSON handling.
 
 Regression: deepseek-v4-pro on the relay occasionally emits broken JSON

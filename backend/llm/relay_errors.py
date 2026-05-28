@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Relay (中转站) error classification — WI-R5.
 
 When a chat LLM call goes through the the relay relay, two failure modes

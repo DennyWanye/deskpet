@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """ContextBundle + AssemblyPolicy + Slice dataclasses (P4-S7).
 
 The assembler runs once per user turn and produces a :class:`ContextBundle`

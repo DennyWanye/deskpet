@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Real-test variant of smoke_chat: writes UTF-8 output so the cloud
 reply is legible on Windows (default cp936 mangles CJK)."""
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for the P4-S11 IPC handlers (MemoryPanel + ContextTrace).
 
 Cover the five new message types with:

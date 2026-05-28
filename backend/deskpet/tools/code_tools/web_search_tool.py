@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """web_search — DuckDuckGo HTML scrape.
 
 We picked DDG because it doesn't require an API key (Bing/Google do)

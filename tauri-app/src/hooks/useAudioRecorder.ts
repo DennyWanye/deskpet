@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 import { useState, useRef, useCallback } from "react";
 
 const TARGET_SAMPLE_RATE = 16000;

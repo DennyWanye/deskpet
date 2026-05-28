@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * motionPicker.test.ts — TDD §4.5 (TC-MP-01..05)
  */

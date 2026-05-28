@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Office-file path authorization — the "防手滑" layer (beta builtin skills).
 
 The office skills (excel / doc / pdf / file-organize / ocr) intentionally

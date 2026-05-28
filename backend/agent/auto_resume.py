@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 4: AutoResumeOrchestrator — closes the supervisor → main-agent loop.
 
 When the agent loop fails recoverably (max_iterations / circuit_open /

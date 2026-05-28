@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * P5-S2 Phase 5.3 — auto-resume settings toggle 序列化测试。
  *

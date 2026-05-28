@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-S4 — eval 门控严格化测试（WI-S2.3 / PRD D10, D11）。
 
 10 个用例覆盖：

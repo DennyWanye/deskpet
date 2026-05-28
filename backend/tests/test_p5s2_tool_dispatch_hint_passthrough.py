@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 0 task 0.9 — registry execute_tool must not eat hint field.
 
 Spec: openspec/changes/p5-s2-self-healing-harness/specs/tool-registry/sensor-feedback.md

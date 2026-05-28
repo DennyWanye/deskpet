@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for P2-2-M3 Task 13: dynamic VAD threshold during TTS.
 
 While TTS is playing, we raise the VAD threshold to reduce false

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * AnimationOverlay v2 integration tests — TDD §4.13 (new TC-O-v2-* cases).
  *

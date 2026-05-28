@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 1.2 — File-read dedup（design.md D3）单测。
 
 覆盖 spec `long-run-context` 的 "File-read deduplication supersedes stale

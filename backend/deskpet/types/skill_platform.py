@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 shared dataclasses for the skill-platform IPC + permission contracts.
 
 These types are the **wire contract** between backend ↔ frontend ↔ tools ↔

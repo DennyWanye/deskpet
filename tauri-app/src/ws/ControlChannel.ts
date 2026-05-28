@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 import type { ControlMessage, IncomingMessage } from "../types/messages";
 
 export type ConnectionState = "disconnected" | "connecting" | "connected";

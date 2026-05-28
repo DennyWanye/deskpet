@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MemoryStore Protocol and value objects.
 
 V5 §4.5 envisions semantic memory (bge-m3 + sqlite vector). S2 ships

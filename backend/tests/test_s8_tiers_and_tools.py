@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Tests for S8: 4-tier VRAM classifier + clipboard/reminder tools."""
 from __future__ import annotations
 

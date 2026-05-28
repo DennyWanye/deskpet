@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P3-S2 — /health and WS /ws/control integration with startup_errors.
 
 Uses FastAPI TestClient to drive the live app. The module-level

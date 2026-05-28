@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S2 L3 embedding service — BGE-M3 + mock fallback.
 
 封装 FlagEmbedding ``BGEM3FlagModel``，对外暴露统一 async API：

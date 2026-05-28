@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Per-model USD pricing table, indexed by (provider, model).
 
 Units: USD per 1M tokens. input = prompt, output = completion,

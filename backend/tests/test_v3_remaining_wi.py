@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T2.5 / WI-T4.2 / WI-T5.1 子项 测试.
 
 WI-T2.5: vitest CI workflow 存在性 — 文档级（CI 配置文件检查）

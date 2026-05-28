@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-S2-13 真 LLM 测试：R-MISS-2 防覆盖。
 
 forget 一条 fact → user 重提同事 → FactExtractor 应跳过插入

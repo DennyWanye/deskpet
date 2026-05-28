@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Dump messages for the p4s24-smoke session — debug helper."""
 import os
 import sqlite3

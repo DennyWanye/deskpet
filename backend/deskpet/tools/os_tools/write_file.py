@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """write_file tool — `write_file(path, content, overwrite=False)`.
 
 Permission category: ``write_file``. Creates parent directories

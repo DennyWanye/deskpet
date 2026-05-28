@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Wave 2b — thin LLM shim for AgentLoop.
 
 AgentLoop expects a ``chat_with_fallback(messages, tools=, ...)``

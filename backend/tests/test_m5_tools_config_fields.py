@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T5.1 v3 — ToolsConfig 5 字段端到端测试.
 
 字段（按 TDD §A12）:

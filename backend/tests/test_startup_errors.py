@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P3-S2 — startup error registry & classification tests.
 
 Red phase: these tests describe the contract the upcoming

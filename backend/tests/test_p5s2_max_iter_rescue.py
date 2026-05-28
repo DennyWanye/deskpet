@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S2 Phase 7 — supervisor max_iterations rescue + agent_loop self-check.
 
 Two new mechanisms:

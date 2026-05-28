@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """ContextAssembler v1 (P4-S7, tasks 12.1-12.17).
 
 Runs once before every DeskPet agent loop iteration to:

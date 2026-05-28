@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S5: tool-local config loader.
 
 The tool package lives under ``deskpet.tools`` and is imported by the

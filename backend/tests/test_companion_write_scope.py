@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 3 — companion session write-scope 单测 (OpenSpec §D3)。
 
 回归背景：`default` 陪伴 session 直接 `mkdir G:\\projects\\deskpet\\backend\\

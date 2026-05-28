@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """list_directory tool — `list_directory(path, max_entries=100)`.
 
 Permission category: ``read_file`` (default-allow). Returns structured

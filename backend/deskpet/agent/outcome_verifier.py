@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T2.5 — Outcome Verifier 4 件套（PRD §3 D7）。
 
 声明"会动文件 / 会跑测试 / 会改代码"的工具调用后，自动跑校验：

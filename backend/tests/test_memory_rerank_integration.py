@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-3 — reranker 接入集成测试（WI-M1.3）。
 
 验证 EnhancedRetriever 在 RRF 之后插 reranker；mock reranker 自动 bypass

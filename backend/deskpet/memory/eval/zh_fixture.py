@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """记忆系统升级 WI-M0.2 — 中文回测集 fixture（可复现的稳定基准）。
 
 为什么需要它

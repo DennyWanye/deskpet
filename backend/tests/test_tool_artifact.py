@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-2 — ToolArtifact 信封 + registry 包装（WI-T1.1）。
 
 PRD §3 D1 信封 + D5 sha256 异步；测试对照 plans/2026-05-23-tool-last-mile-upgrade/01-TDD.md §B TG-2。

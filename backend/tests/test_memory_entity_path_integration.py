@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-S3 — entity 索引检索路集成测试（Stage 2 WI-S2.2）。
 
 PRD：plans/2026-05-23-memory-system-stage2/00-PRD.md §3.3

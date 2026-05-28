@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * AC-3 v1 zero-regression snapshot suite — Pet Animation UX v2 PRD §6.11.
  *

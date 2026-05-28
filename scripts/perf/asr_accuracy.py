@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-2-F1 ASR accuracy bench — short-audio hotwords + padding.
 
 Compares two FasterWhisperASR configs against a folder of .wav samples

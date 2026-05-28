@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-6 — 工作记忆接入集成测试（WI-M1.6）。
 
 验证 file_read/file_write（已改 async）成功后经 record_action 落

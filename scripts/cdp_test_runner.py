@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """CDP-based testcase runner — drives deskpet WebView2 via Chrome DevTools
 Protocol on localhost:9222. Substitute for the disconnected computer-use MCP.
 

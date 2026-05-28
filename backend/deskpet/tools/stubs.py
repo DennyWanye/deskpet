@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S5: stub tools for features owned by later slices.
 
 WI-T4.1 v3 D11（守卫模式）：``registry.has(name)`` 检查 + ``replace_allowed=True``

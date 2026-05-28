@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-11 — 失败反馈回灌格式（WI-T2.5 / WI-T2.6）。
 
 PRD §3 D8 schema + 01-TDD.md §B TG-11 + ship-readiness round 1 残留。

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """code-session-model-params — resolution wiring.
 
 Spec: "Bound model+params apply to the code session's next agent call",

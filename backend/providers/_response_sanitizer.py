@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Provider response sanitizer — 2026-05-17 deepseek-inline-cot-dsml-sanitize.
 
 the relay-served deepseek-v4-pro sometimes emits its chain-of-thought and tool

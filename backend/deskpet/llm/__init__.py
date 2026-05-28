@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Multi-provider LLM adapters (P4-S6, tasks 10.x).
 
 Unified surface via ``base.py::LLMClient`` — every adapter returns a

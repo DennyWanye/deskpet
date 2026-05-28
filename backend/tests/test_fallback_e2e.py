@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-1-S7 fallback E2E — DEPRECATED post-P4-S20-LLM-Unified.
 
 Tested the legacy chat path: TestClient(/ws/control) -> agent_engine ->

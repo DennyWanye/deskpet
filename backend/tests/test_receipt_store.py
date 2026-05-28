@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-7/TG-8 — ReceiptStore 持久化 + HMAC keystore wrapper（WI-T2.1/T2.2）。
 
 覆盖 PRD §3 D5 + D11 + 二轮 N1（信任面）+ §5 健康区间 metric。

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P5-S4: NudgeQueue — supervisor hint injection queue.
 
 When the supervisor LLM decides ``action=nudge``, it pushes a hint here.

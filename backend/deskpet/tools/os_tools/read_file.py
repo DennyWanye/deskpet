@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """read_file tool — `read_file(path, offset=0, limit=2000)`.
 
 Permission category: ``read_file`` (default-allow). Sensitive paths

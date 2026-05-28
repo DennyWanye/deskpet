@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-12 — minimal local observability sink (beta-100 readiness).
 
 Writes anonymous, append-only usage counters to

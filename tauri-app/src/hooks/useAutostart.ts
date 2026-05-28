@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * W5 (R17) — autostart toggle backed by @tauri-apps/plugin-autostart.
  *

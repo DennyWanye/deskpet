@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * PetDNDBadge (pet-anim/F1 UI) — ZZZ corner badge per PRD §3 F1 m-5 spec.
  *

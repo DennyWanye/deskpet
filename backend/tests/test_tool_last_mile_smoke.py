@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-0 — tool last-mile 模块 smoke 测试（WI-T0 / 接口腐烂守护）。
 
 PRD/TDD 提到的全部新模块必须可被 import 且接口签名稳定。这是 strangler-fig

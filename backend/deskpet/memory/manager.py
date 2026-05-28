@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Unified three-layer memory entrypoint.
 
 P4-S4 **skeleton**. Wires L1 file memory + L2 session DB + (future) L3

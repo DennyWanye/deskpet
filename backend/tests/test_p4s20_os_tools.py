@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Wave 1a: OS-tools TDD tests.
 
 Covers spec `os-tools` for all 7 tools. Tests instantiate handlers

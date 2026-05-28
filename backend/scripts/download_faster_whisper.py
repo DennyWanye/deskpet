@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Download faster-whisper-large-v3-turbo INT8 weights into the per-user models dir.
 
 P4-S20+ install bundle Plan A: the NSIS installer ships a thin backend

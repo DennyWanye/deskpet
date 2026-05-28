@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! P3-S8 / P3-S9 — user-data filesystem commands exposed to the UI.
 //!
 //! - `open_log_dir`  — P3-S8: the "打开日志目录" button on the startup

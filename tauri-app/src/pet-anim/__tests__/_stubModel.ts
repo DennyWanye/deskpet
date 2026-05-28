@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * Stub Live2D coreModel for AnimationOverlay tests (TDD §5.2).
  *

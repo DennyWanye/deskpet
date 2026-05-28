@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Folder organization tool — file-organize builtin skill.
 
 ``file_organize(dir_path, mode, dry_run)`` tidies a folder:

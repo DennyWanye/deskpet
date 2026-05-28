@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Stage C — manifest.json safety check.
 
 Validates a skill's ``manifest.json`` against a known-tool allow-list

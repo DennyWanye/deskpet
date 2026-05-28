@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 //! WI-T1.3 — Tauri commands for artifact actions (PRD §3 D3).
 //!
 //! 4 commands invoked by the frontend ArtifactCard buttons:

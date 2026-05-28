@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P2-1-S3: cloud API key lives in Windows Credential Manager (via Tauri),
 reaches the backend through the ``DESKPET_CLOUD_API_KEY`` env var, and is
 **never** read from config.toml.

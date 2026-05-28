@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S24 manual smoke #2: send a chat to the user's REAL `default`
 session, which has assistant rows persisted before the reasoning_content
 fix landed. Without the retry shim, this would fail with HTTP 400.

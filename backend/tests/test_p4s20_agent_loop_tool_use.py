@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S20 Wave 1b: agent loop tool_use TDD tests.
 
 Verifies that AgentLoop routes through ToolRegistry.execute_tool (which

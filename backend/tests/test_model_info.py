@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 1.1 — per-model 上下文窗口 + 三层 override 解析单测。
 
 覆盖 spec `per-model-context` 的 5 个场景：

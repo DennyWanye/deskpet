@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P4-S5: tool_search meta-tool tests (tool-framework spec).
 
 Covers the "Tool Search for Lazy Schema Loading" requirement:

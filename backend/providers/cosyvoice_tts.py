@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """CosyVoice 2 local TTS provider with graceful edge-tts fallback (R11).
 
 V5 §4.1 / Phase 2 goal: run a fully-local TTS stack when the machine

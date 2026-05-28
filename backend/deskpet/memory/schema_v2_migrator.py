@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Additive column migration for memory-v2 tables (Stage 2).
 
 Strategy: ``PRAGMA table_info(<table>)`` introspection + ``ALTER TABLE

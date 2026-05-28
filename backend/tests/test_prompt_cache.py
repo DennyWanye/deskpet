@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Phase 1.3 — 4-breakpoint prompt cache + 前缀稳定纪律 (OpenSpec
 2026-05-15-context-1m-rearch, design.md D4).
 

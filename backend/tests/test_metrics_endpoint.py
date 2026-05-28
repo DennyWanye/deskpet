@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Test /metrics endpoint auth + content (P2-1-S6).
 
 Auth model:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """向量数据库健康检查 — 五维度 end-to-end。
 
 不依赖 backend 进程，独立运行。每个维度独立打印结果，单独 PASS/FAIL，

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * S12 — listens for the Rust-side supervisor's lifecycle events so the
  * React tree can refresh its shared secret (and thus reconnect WS)

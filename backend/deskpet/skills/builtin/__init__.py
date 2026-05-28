@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Built-in skills shipped with DeskPet.
 
 Each subdirectory holds a ``SKILL.md`` bundle. The installer seeds

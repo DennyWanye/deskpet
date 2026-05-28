@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TDD: generate_image tool — gpt-image-2 via the relay, save to workspace,
 open with OS viewer.
 

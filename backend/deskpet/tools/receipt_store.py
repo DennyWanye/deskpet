@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-T2.1/T2.2 — ToolReceipt 持久化 + HMAC keystore wrapper。
 
 PRD §3 D5/D11 真正实现：

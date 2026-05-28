@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-S2-1-9 真模型 N=30 cross_key 误判率统计。
 
 5 矛盾对 × 6 次 = 30 次新 fact 写入：

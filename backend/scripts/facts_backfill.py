@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """记忆系统升级 WI-M1.2 — facts 存量 backfill。
 
 facts 抽取只在新消息写入时触发（``_on_message_written`` fanout），历史

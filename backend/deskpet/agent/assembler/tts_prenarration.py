@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TTS pre-narration hook (P4-S7 tasks 12.14, 12.15).
 
 Goal (spec design.md §TTS): user hears the pet speak within 500ms of

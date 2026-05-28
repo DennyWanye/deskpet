@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """TG-10 — Outcome Verifier 4 件套（WI-T2.5）。
 
 PRD §3 D7 + D8 + TDD §B TG-10 T10-1~T10-9。

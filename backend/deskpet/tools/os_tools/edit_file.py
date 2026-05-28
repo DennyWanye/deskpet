@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """edit_file tool — exact-string replacement, no regex.
 
 Refuses if ``old_string`` is not unique unless ``replace_all=True``.

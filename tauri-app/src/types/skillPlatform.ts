@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * P4-S20 skill-platform shared types — TypeScript mirror of
  * `backend/deskpet/types/skill_platform.py`.

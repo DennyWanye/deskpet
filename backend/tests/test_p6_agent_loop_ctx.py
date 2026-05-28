@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """P6 Phase 6 — AgentLoop integration with ContextManager (always on).
 
 See openspec/changes/p6-agent-loop-refactor/design.md §"模块 2: ContextManager"
