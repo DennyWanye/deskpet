@@ -51,6 +51,32 @@
 
 ---
 
+> ## 📜 许可证 & 第三方资产
+>
+> **DeskPet 主体代码** 采用 [BUSL-1.1](./LICENSE)（Business Source License 1.1），
+> 2030-05-27 自动转 Apache License 2.0。个人 / 公司内部 / 研究 / 非竞争性产品都可商业使用；
+> 受限的只有"把 DeskPet 作为托管/嵌入服务卖给第三方跟原作付费版本竞争"这一种场景。
+> 详见中文 FAQ：[`LICENSE.FAQ.md`](./LICENSE.FAQ.md)。
+>
+> **⚠️ Live2D 第三方资产**（重要）：本仓库为了开箱即用，bundle 了 Live2D Inc. 的两项专有内容，
+> **它们不受 DeskPet 的 BUSL-1.1 覆盖**，下游 fork / 商业发布时**你**需要遵守 Live2D Inc. 的独立条款：
+>
+> | 组件 | 文件 | 许可证 | 归属 |
+> |---|---|---|---|
+> | Live2D Cubism Core 运行时 | `tauri-app/public/lib/live2dcubismcore.min.js` | Live2D Proprietary Software License Agreement | [`licenses/LIVE2D-CUBISM.md`](./licenses/LIVE2D-CUBISM.md) |
+> | Hiyori 示例模型 | `tauri-app/public/assets/live2d/hiyori/` | Live2D Free Material License Agreement | [`licenses/LIVE2D-HIYORI.md`](./licenses/LIVE2D-HIYORI.md) |
+>
+> 关键 caveats：
+> - npm 包 `live2dcubismcore@1.0.2` 的 `package.json` 标了 `"license": "ISC"`，**这是错的** —— 实际是 Live2D 专有 EULA
+> - 个人 / 小企业（年营收 < 10M JPY）使用 Hiyori 商业 / 非商业都允许，超阈值需要 Live2D Publication License
+> - 不能把 Hiyori 模型文件作为独立内容重新发布（典型 SaaS 模型站行为）
+> - DeskPet **不是** Live2D Inc. 出品 / 认证 / 推荐的产品；Live2D® 是 Live2D Inc. 注册商标
+>
+> 其他三方依赖（PixiJS / React / FastAPI / PyTorch / transformers / ...）索引见
+> [`licenses/README.md`](./licenses/README.md)。
+
+---
+
 > **硬件兼容性：** 当前仅支持 NVIDIA GPU（CUDA-only）。AMD / Intel / CPU-only 路径作为长期 backlog，详见 [`HARDWARE_COMPROMISES.md`](./HARDWARE_COMPROMISES.md)。
 
 ## 目录结构
