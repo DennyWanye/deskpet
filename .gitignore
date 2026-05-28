@@ -130,8 +130,11 @@ plans/test-screenshots/
 
 # pet-anim / 其他 PRD evidence 目录里的截图二进制（PNG 体积大；
 # .mjs / .py / 文本日志仍入库 — 那些是真实工具/报告，体积可控）
-plans/*/evidence/*/screenshots/*.png
-plans/*/evidence/*/screenshots/*.jpg
+# 2026-05-28 OSS prep Phase 4：扩展为所有层级，覆盖 manual-results / evidence / round-N 等
+plans/**/screenshots/*.png
+plans/**/screenshots/*.jpg
+plans/**/evidence/**/*.png
+plans/**/evidence/**/*.jpg
 
 # ─── 2026-05-26 开源准备（OSS hygiene）───
 # 个人开发凭据 — 永远不要入库。模板见 LOCAL-DEV-CREDENTIALS.md.example
@@ -153,3 +156,11 @@ LOCAL-DEV-CREDENTIALS.md
 # 但不发布到公开仓 —— 含具体供应商品牌、URL、商务条款。
 docs/中转站建议.md
 plans/Token Relay × DeskPet 集成对接文档.md
+
+# ─── 2026-05-28 OSS prep Phase 4：plans/ 内部业务往来 + legacy 文档 ───
+# DeskPet ↔ Token Relay 集成对接业务文档（公开仓不放）
+plans/DESKPET-INTEGRATION-GUIDE.md
+plans/DESKPET-INTEGRATION-REPLY.md
+plans/RELAY-INTEGRATION-REQUEST.md
+# 项目前期 .docx 草稿（2026-04 时代历史遗物，本地可保留）
+plans/*.docx
