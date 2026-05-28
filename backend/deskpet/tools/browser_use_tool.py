@@ -82,7 +82,7 @@ _APP_NAME = "deskpet"
 # the relay OpenAI-compatible endpoint + the multimodal code-mode model.
 # These are *defaults* only — overridable via llm_runtime.json or the
 # [code_e2e] config section. Never a secret (no api_key here).
-_DEFAULT_BASE_URL = "https://chinzy.com/v1"
+_DEFAULT_BASE_URL = "https://your-llm-relay.example.com/v1"
 _DEFAULT_MODEL = "gpt-5.5"
 
 # Hosts a test agent is allowed to drive without `allow_external=true`.

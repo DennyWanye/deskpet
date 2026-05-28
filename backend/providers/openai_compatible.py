@@ -827,7 +827,7 @@ class OpenAICompatibleProvider:
             else "transient-other"
         )
         # P5-S2 D1: stream → non-stream same-provider fallback.
-        # Chinzy-like proxies idle-timeout long SSE streams (>~30s) and reset
+        # Relay-style OpenAI-compatible proxies idle-timeout long SSE streams (>~30s) and reset
         # the connection. A single POST that returns the whole completion
         # in one body completes inside the idle window, so falling back to
         # non-streaming after stream retries are exhausted typically

@@ -48,7 +48,7 @@
 
 #### Scenario: Code session pinned to single provider
 
-- **GIVEN** code_session_provider for sid "vpn-tunnel" has `provider_id="the relay"`
+- **GIVEN** code_session_provider for sid "vpn-tunnel" has `provider_id="relay"`
 - **WHEN** chat handler resolves chain
 - **THEN** chain = `[the relay]` only — even if global chain has 3 providers
 - **AND** transient error in the relay yields `ErrorEvent` immediately (no fallback to global chain by default)

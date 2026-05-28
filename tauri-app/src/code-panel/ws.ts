@@ -116,7 +116,7 @@ async function open_socket() {
     ws?.send(JSON.stringify({ type: "code_models_list" }));
     // Pull the provider list so the per-session provider dropdown shows
     // the REAL provider names from Settings → LLM Providers (e.g.
-    // "the relay"), not just the generic "Global Chain" placeholder.
+    // "relay"), not just the generic "Global Chain" placeholder.
     ws?.send(JSON.stringify({ type: "settings_providers_list_request" }));
     // Also pull current todos for the active session in case they
     // changed since last connect.

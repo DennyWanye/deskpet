@@ -31,7 +31,7 @@ _LOCAL_ROUTE = "local"
 # WI-R5 (beta-100 relay): the 80%-budget warning embeds a recharge hint
 # pointing at the 中转站 console. Kept here so the message stays in one
 # place; the frontend renders it verbatim.
-RECHARGE_HINT_URL = "https://chinzy.com/console/billing"
+RECHARGE_HINT_URL = "https://your-llm-relay.example.com/console/billing"
 
 # P2-1-S8 review: daily rollover defaults to Asia/Shanghai because the
 # product targets Chinese users — at 02:00 Beijing the UTC `.date()` is

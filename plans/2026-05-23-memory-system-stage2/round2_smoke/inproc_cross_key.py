@@ -40,8 +40,8 @@ async def make_llm():
     import keyring
 
     api_key = (
-        keyring.get_password("deskpet", "provider.the relay")
-        or keyring.get_password("deskpet", "provider.the relay-deepseek")
+        keyring.get_password("deskpet", "provider.relay")
+        or keyring.get_password("deskpet", "provider.relay-deepseek")
     )
     if not api_key:
         print("ERROR: no the relay api key in keyring", file=sys.stderr)

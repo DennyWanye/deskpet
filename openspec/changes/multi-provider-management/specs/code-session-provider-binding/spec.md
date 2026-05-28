@@ -24,7 +24,7 @@ A new SessionDB table `code_session_provider` SHALL hold optional per-`base_sess
 
 #### Scenario: Clear override (set provider_id to null) restores global chain
 
-- **GIVEN** code session "vpn-tunnel" has binding `provider_id="the relay"`
+- **GIVEN** code session "vpn-tunnel" has binding `provider_id="relay"`
 - **WHEN** `code_session_set_provider {session_id: "vpn-tunnel", provider_id: null}`
 - **THEN** SessionDB row updated to provider_id=NULL (or row deleted if preferred_model also NULL)
 - **AND** chat handler resumes walking global chain

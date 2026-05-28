@@ -147,3 +147,9 @@ LOCAL-DEV-CREDENTIALS.md
 
 # 临时 continuation note（dev 手稿，不属于源码）
 /CONTINUE-*.md
+
+# ─── 2026-05-27 OSS prep Phase 3：本地保留、远端不入库的内部文档 ───
+# 第三方 relay 供应商业务往来材料 / 内部集成对接文档。本地可以继续维护，
+# 但不发布到公开仓 —— 含具体供应商品牌、URL、商务条款。
+docs/中转站建议.md
+plans/Token Relay × DeskPet 集成对接文档.md

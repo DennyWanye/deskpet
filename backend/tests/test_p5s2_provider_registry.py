@@ -86,8 +86,8 @@ def legacy_toml(tmp_path: Path) -> Path:
             host = "127.0.0.1"
 
             [llm.local]
-            base_url = "https://api.the relay.example/v1"
-            model = "the relay-deepseek-v3"
+            base_url = "https://api.your-llm-relay.example.com/v1"
+            model = "relay-deepseek-v3"
             api_key = "from-keychain"
             temperature = 0.7
             max_tokens = 2048
@@ -108,11 +108,11 @@ def providers_toml(tmp_path: Path) -> Path:
             schema_version = 1
 
             [[llm.endpoints]]
-            id = "the relay-deepseek"
-            name = "Chinzy DeepSeek"
-            base_url = "https://api.the relay.example/v1"
+            id = "relay-deepseek"
+            name = "Relay DeepSeek"
+            base_url = "https://api.your-llm-relay.example.com/v1"
             model = "deepseek-v3"
-            api_key_ref = "deskpet.provider.the relay-deepseek"
+            api_key_ref = "deskpet.provider.relay-deepseek"
             priority = 1
             enabled = true
             """
@@ -127,9 +127,9 @@ def providers_toml(tmp_path: Path) -> Path:
 
 def _make_provider_kwargs(**overrides: Any) -> dict[str, Any]:
     base = {
-        "id": "the relay-deepseek",
-        "name": "Chinzy DeepSeek",
-        "base_url": "https://api.the relay.example/v1",
+        "id": "relay-deepseek",
+        "name": "Relay DeepSeek",
+        "base_url": "https://api.your-llm-relay.example.com/v1",
         "model": "deepseek-v3",
         "api_key": "sk-real-secret",
         "priority": 1,
@@ -149,7 +149,7 @@ async def test_add_provider_persists(empty_toml: Path, fake_keyring):
 
     items = reg.list_providers()
     assert len(items) == 1
-    assert items[0]["id"] == "the relay-deepseek"
+    assert items[0]["id"] == "relay-deepseek"
 
     # toml on disk has the entry
     import tomli
@@ -158,13 +158,13 @@ async def test_add_provider_persists(empty_toml: Path, fake_keyring):
         data = tomli.load(fh)
     providers = data["llm"]["endpoints"]
     assert len(providers) == 1
-    assert providers[0]["id"] == "the relay-deepseek"
+    assert providers[0]["id"] == "relay-deepseek"
     # api_key plaintext NOT written to toml
     assert "api_key" not in providers[0]
-    assert providers[0]["api_key_ref"] == "deskpet.provider.the relay-deepseek"
+    assert providers[0]["api_key_ref"] == "deskpet.provider.relay-deepseek"
 
     # keychain has it
-    assert fake_keyring.get_password("deskpet", "provider.the relay-deepseek") == "sk-real-secret"
+    assert fake_keyring.get_password("deskpet", "provider.relay-deepseek") == "sk-real-secret"
 
 
 @pytest.mark.asyncio
@@ -331,10 +331,10 @@ def test_migrate_legacy_llm_local_to_providers(legacy_toml: Path, fake_keyring):
     assert len(providers) == 1
     entry = providers[0]
     assert entry["id"] == "legacy-default"
-    assert entry["base_url"] == "https://api.the relay.example/v1"
+    assert entry["base_url"] == "https://api.your-llm-relay.example.com/v1"
     # v2 schema: models is the canonical array
-    assert entry["models"] == ["the relay-deepseek-v3"]
-    assert entry.get("default_model") == "the relay-deepseek-v3"
+    assert entry["models"] == ["relay-deepseek-v3"]
+    assert entry.get("default_model") == "relay-deepseek-v3"
     assert entry["api_key_ref"] == "deskpet.cloud_api_key"
     assert entry["priority"] == 1
     assert entry["enabled"] is True
@@ -357,7 +357,7 @@ def test_migration_idempotent(providers_toml: Path, fake_keyring):
     assert before_data["llm"]["endpoints"] == after_data["llm"]["endpoints"]
     # And specifically: still exactly 1 entry, not 2 (no duplicate legacy-default).
     assert len(after_data["llm"]["endpoints"]) == 1
-    assert after_data["llm"]["endpoints"][0]["id"] == "the relay-deepseek"
+    assert after_data["llm"]["endpoints"][0]["id"] == "relay-deepseek"
 
 
 def test_migration_handles_missing_keychain_key(legacy_toml: Path, fake_keyring, caplog):

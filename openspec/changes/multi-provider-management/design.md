@@ -104,7 +104,7 @@ session 啥也没配 → 完全走全局 chain。
 
 ### D7: provider_id 命名
 
-**选 user-supplied kebab-case**（用户自己起，比如 `the relay-deepseek`、`ollama-qwen`、`openrouter-claude`）。
+**选 user-supplied kebab-case**（用户自己起，比如 `relay-deepseek`、`ollama-qwen`、`openrouter-claude`）。
 
 理由：UUID 用户认不出；hash 不稳定（改 base_url 就变）；自动化命名（`base_url + model`）有特殊字符问题。要求用户起一个简短易记的 id 是合理的负担。后端校验：kebab-case + 1-32 字符 + 在 registry 里唯一。
 

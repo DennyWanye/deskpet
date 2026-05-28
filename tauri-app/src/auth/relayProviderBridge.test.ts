@@ -23,7 +23,7 @@ import { RelayProviderBridge, pickModel } from "./relayProviderBridge";
 function makeProvider(over: Partial<Provider> = {}): Provider {
   return {
     id: "p1",
-    name: "Chinzy Relay",
+    name: "My Relay",
     base_url: "https://your-llm-relay.example.com/v1",
     api_key: "tsk_relay_abc",
     models: [{ id: "gpt-5.5" }, { id: "deepseek-v4-pro" }],

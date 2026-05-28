@@ -36,7 +36,7 @@ DB = Path(r"G:\projects\deskpet\backend\userdata\data\state.db")
 
 async def make_llm_str():
     import httpx, keyring
-    api_key = keyring.get_password("deskpet", "provider.the relay")
+    api_key = keyring.get_password("deskpet", "provider.relay")
     client = httpx.AsyncClient(
         base_url="https://your-llm-relay.example.com/v1", timeout=120.0,
         headers={"Authorization": f"Bearer {api_key}"},

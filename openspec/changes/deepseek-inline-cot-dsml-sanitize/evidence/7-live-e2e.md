@@ -38,7 +38,7 @@ def add(a, b):
   importing the same `providers._response_sanitizer` wired into
   `openai_compatible.py`).
 - This live run proves **integration + zero regression**: with the fix
-  active, a real the relay-deepseek-v4-pro `write_file` round-trip (including
+  active, a real relay-deepseek-v4-pro `write_file` round-trip (including
   the structured-reasoning path) produces a byte-clean, valid file — the
   llm_service.py-style corruption cannot occur.
 - Rollback path available: `[llm] sanitize_inline_cot_dsml = false`

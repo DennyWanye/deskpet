@@ -208,7 +208,7 @@ async def test_relay_double_encoded_sse_recovers() -> None:
         },
     ]
     sse_inner = "".join(f"data: {json.dumps(c)}\n\n" for c in inner_chunks) + "data: [DONE]\n\n"
-    # CHINZY QUIRK: wrap the whole SSE in one JSON-encoded string.
+    # RELAY QUIRK: some relay proxies wrap the whole SSE in one JSON-encoded string.
     wrapped = json.dumps(sse_inner)
 
     def _h(req: httpx.Request) -> httpx.Response:
@@ -219,7 +219,7 @@ async def test_relay_double_encoded_sse_recovers() -> None:
         )
 
     p = OpenAICompatibleProvider(
-        base_url="https://the relay.example", api_key="k", model="deepseek-v4-pro"
+        base_url="https://your-llm-relay.example.com", api_key="k", model="deepseek-v4-pro"
     )
     p._test_transport = httpx.MockTransport(_h)
     out = await p.chat_with_tools([{"role": "user", "content": "ping"}])

@@ -68,7 +68,7 @@ export function build_provider_dropdown_options(
 ): ProviderDropdownOption[] {
   // value=null still means "unpinned / follow the global chain", but the
   // user wants to SEE the real provider name from Settings → LLM
-  // Providers (e.g. "the relay"), not an abstract "Global Chain". So when
+  // Providers (e.g. "relay"), not an abstract "Global Chain". So when
   // a chain head exists we label the null option with that provider's
   // name; only the genuinely-empty case keeps the generic label.
   const enabled = providers.filter((p) => p.enabled !== false);

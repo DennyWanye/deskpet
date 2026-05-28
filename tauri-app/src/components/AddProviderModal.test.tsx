@@ -24,8 +24,8 @@ import {
 import type { Provider } from "./SettingsProviders";
 
 const valid_draft: ProviderDraft = {
-  id: "the relay-ds",
-  name: "Chinzy DeepSeek",
+  id: "my-relay-ds",
+  name: "My Relay DeepSeek",
   base_url: "https://your-llm-relay.example.com/v1",
   models: ["deepseek-chat"],
   default_model: "deepseek-chat",
@@ -95,8 +95,8 @@ describe("validateProviderDraft (add mode)", () => {
 
 describe("prefillFromProvider (edit mode)", () => {
   const existing: Provider = {
-    id: "the relay",
-    name: "DeepSeek via Chinzy",
+    id: "relay",
+    name: "DeepSeek via My Relay",
     base_url: "https://your-llm-relay.example.com/v1",
     models: ["deepseek-chat", "gpt-4o"],
     default_model: "deepseek-chat",
@@ -107,8 +107,8 @@ describe("prefillFromProvider (edit mode)", () => {
 
   it("test_edit_modal_pre_fills_existing_values_except_api_key — fields copied verbatim", () => {
     const draft = prefillFromProvider(existing);
-    expect(draft.id).toBe("the relay");
-    expect(draft.name).toBe("DeepSeek via Chinzy");
+    expect(draft.id).toBe("relay");
+    expect(draft.name).toBe("DeepSeek via My Relay");
     expect(draft.base_url).toBe("https://your-llm-relay.example.com/v1");
     expect(draft.models).toEqual(["deepseek-chat", "gpt-4o"]);
     expect(draft.default_model).toBe("deepseek-chat");
@@ -165,8 +165,8 @@ describe("buildAddProviderMessage / buildUpdateProviderMessage", () => {
     const msg = buildAddProviderMessage(valid_draft);
     expect(msg.type).toBe("settings_providers_add");
     expect(msg.payload).toEqual({
-      id: "the relay-ds",
-      name: "Chinzy DeepSeek",
+      id: "my-relay-ds",
+      name: "My Relay DeepSeek",
       base_url: "https://your-llm-relay.example.com/v1",
       models: ["deepseek-chat"],
       default_model: "deepseek-chat",
@@ -204,16 +204,16 @@ describe("buildAddProviderMessage / buildUpdateProviderMessage", () => {
   });
 
   it("test_save_emits_correct_ws_message — update with new api_key includes patch.api_key + models", () => {
-    const msg = buildUpdateProviderMessage("the relay", {
+    const msg = buildUpdateProviderMessage("relay", {
       ...valid_draft,
       api_key: "sk-new",
     });
     expect(msg).toEqual({
       type: "settings_providers_update",
       payload: {
-        id: "the relay",
+        id: "relay",
         patch: {
-          name: "Chinzy DeepSeek",
+          name: "My Relay DeepSeek",
           base_url: "https://your-llm-relay.example.com/v1",
           models: ["deepseek-chat"],
           default_model: "deepseek-chat",
@@ -224,12 +224,12 @@ describe("buildAddProviderMessage / buildUpdateProviderMessage", () => {
   });
 
   it("test_save_emits_correct_ws_message — update with empty api_key OMITS patch.api_key (keychain preserved)", () => {
-    const msg = buildUpdateProviderMessage("the relay", {
+    const msg = buildUpdateProviderMessage("relay", {
       ...valid_draft,
       api_key: "",
     });
     expect(msg.payload.patch).not.toHaveProperty("api_key");
-    expect(msg.payload.patch.name).toBe("Chinzy DeepSeek");
+    expect(msg.payload.patch.name).toBe("My Relay DeepSeek");
     expect(msg.payload.patch.models).toEqual(["deepseek-chat"]);
   });
 });

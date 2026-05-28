@@ -36,8 +36,8 @@ import {
 
 const sample_providers: Provider[] = [
   {
-    id: "the relay",
-    name: "DeepSeek via Chinzy",
+    id: "relay",
+    name: "DeepSeek via My Relay",
     base_url: "https://your-llm-relay.example.com/v1",
     models: ["deepseek-chat"],
     default_model: "deepseek-chat",
@@ -65,7 +65,7 @@ describe("SettingsProviders — render helpers", () => {
       sample_providers[1],
       sample_providers[0],
     ]);
-    expect(ordered.map((p) => p.id)).toEqual(["the relay", "ollama"]);
+    expect(ordered.map((p) => p.id)).toEqual(["relay", "ollama"]);
     expect(ordered).toHaveLength(2);
   });
 
@@ -95,10 +95,10 @@ describe("SettingsProviders — render helpers", () => {
 
 describe("SettingsProviders — reorder messaging", () => {
   it("test_drag_reorder_emits_ws_message — buildReorderMessage wraps ordered_ids", () => {
-    const msg = buildReorderMessage(["ollama", "the relay"]);
+    const msg = buildReorderMessage(["ollama", "relay"]);
     expect(msg).toEqual({
       type: "settings_providers_reorder",
-      payload: { ordered_ids: ["ollama", "the relay"] },
+      payload: { ordered_ids: ["ollama", "relay"] },
     });
   });
 
@@ -128,9 +128,9 @@ describe("SettingsProviders — reorder messaging", () => {
 
 describe("SettingsProviders — wire format", () => {
   it("buildToggleEnabledMessage emits update with enabled patch", () => {
-    expect(buildToggleEnabledMessage("the relay", false)).toEqual({
+    expect(buildToggleEnabledMessage("relay", false)).toEqual({
       type: "settings_providers_update",
-      payload: { id: "the relay", patch: { enabled: false } },
+      payload: { id: "relay", patch: { enabled: false } },
     });
   });
 
@@ -168,7 +168,7 @@ describe("ws.dispatch provider events → providersStore", () => {
       payload: { providers: sample_providers },
     });
     expect(useProvidersStore.getState().providers).toHaveLength(2);
-    expect(useProvidersStore.getState().providers[0].id).toBe("the relay");
+    expect(useProvidersStore.getState().providers[0].id).toBe("relay");
   });
 
   it("settings_providers_list_response populates store", () => {
@@ -187,7 +187,7 @@ describe("ws.dispatch provider events → providersStore", () => {
     });
     __test_dispatch_provider_event({
       type: "settings_providers_error",
-      payload: { reason: "duplicate_id", detail: "id 'the relay' exists" },
+      payload: { reason: "duplicate_id", detail: "id 'relay' exists" },
     });
     expect(useProvidersStore.getState().error).toContain("duplicate_id");
     // List preserved so the UI doesn't blink to empty on a transient error.

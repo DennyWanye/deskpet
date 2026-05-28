@@ -310,7 +310,7 @@ export function AddProviderModal({
             disabled={isEditing}
             value={draft.id}
             onChange={(e) => setDraft({ ...draft, id: e.target.value })}
-            placeholder="the relay-deepseek"
+            placeholder="my-relay-deepseek"
             style={inputStyle}
           />
           {submitted && validation.errors.id && (
@@ -324,7 +324,7 @@ export function AddProviderModal({
             data-testid="provider-name-input"
             value={draft.name}
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-            placeholder="DeepSeek via Chinzy"
+            placeholder="DeepSeek via My Relay"
             style={inputStyle}
           />
           {submitted && validation.errors.name && (

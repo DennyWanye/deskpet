@@ -143,7 +143,7 @@ INFO startup complete
 
 **Credential Manager 实际内容**（`cmdkey /list | findstr deskpet`）：
 ```
-Target: provider.the relay@deskpet         ← 中转站 provider key
+Target: provider.relay@deskpet         ← 中转站 provider key
 Target: deskpet                          ← generic 容器
 Target: device_key.deskpet-relay         ← relay 设备密钥（R2 期望）
 Target: default.deskpet-cloud-llm        ← 云 LLM api key（R3 关键）

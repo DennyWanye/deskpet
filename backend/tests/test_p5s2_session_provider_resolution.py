@@ -97,11 +97,11 @@ class _StubSessionDB:
 
 @pytest.mark.asyncio
 async def test_pinned_session_returns_single_chain() -> None:
-    """3.8: binding provider_id='the relay' → chain = [the relay] only."""
+    """3.8: binding provider_id='relay' → chain = [the relay] only."""
     from llm.resolution import resolve_provider_for_session
 
     registry = _StubRegistry([
-        {"id": "the relay", "base_url": "https://the relay.example/v1",
+        {"id": "relay", "base_url": "https://your-llm-relay.example.com/v1",
          "model": "deepseek-v4-pro", "api_key": "k1", "enabled": True},
         {"id": "openrouter", "base_url": "https://openrouter.example/v1",
          "model": "claude-4.7-sonnet", "api_key": "k2", "enabled": True},
@@ -109,7 +109,7 @@ async def test_pinned_session_returns_single_chain() -> None:
          "model": "gemma", "api_key": "ollama", "enabled": True},
     ])
     sdb = _StubSessionDB({
-        "vpn-tunnel": {"provider_id": "the relay", "preferred_model": None},
+        "vpn-tunnel": {"provider_id": "relay", "preferred_model": None},
     })
 
     chain = await resolve_provider_for_session(
@@ -120,7 +120,7 @@ async def test_pinned_session_returns_single_chain() -> None:
     )
 
     assert len(chain) == 1
-    assert chain[0].id == "the relay"
+    assert chain[0].id == "relay"
     # model unchanged because preferred_model is None
     assert chain[0].model == "deepseek-v4-pro"
 
@@ -131,7 +131,7 @@ async def test_unbound_session_returns_global_chain() -> None:
     from llm.resolution import resolve_provider_for_session
 
     registry = _StubRegistry([
-        {"id": "the relay", "base_url": "https://a.example/v1",
+        {"id": "relay", "base_url": "https://a.example/v1",
          "model": "m1", "api_key": "k1", "enabled": True},
         {"id": "openrouter", "base_url": "https://b.example/v1",
          "model": "m2", "api_key": "k2", "enabled": True},
@@ -145,7 +145,7 @@ async def test_unbound_session_returns_global_chain() -> None:
         session_db=sdb,
     )
 
-    assert [p.id for p in chain] == ["the relay", "openrouter"]
+    assert [p.id for p in chain] == ["relay", "openrouter"]
 
 
 @pytest.mark.asyncio
@@ -155,7 +155,7 @@ async def test_preferred_model_only_overrides_model_field() -> None:
     from llm.resolution import resolve_provider_for_session
 
     registry = _StubRegistry([
-        {"id": "the relay", "base_url": "https://a.example/v1",
+        {"id": "relay", "base_url": "https://a.example/v1",
          "model": "deepseek-v4-pro", "api_key": "k1", "enabled": True},
         {"id": "openrouter", "base_url": "https://b.example/v1",
          "model": "claude-4.7-sonnet", "api_key": "k2", "enabled": True},
@@ -176,7 +176,7 @@ async def test_preferred_model_only_overrides_model_field() -> None:
 
     # Same two providers but model overridden on each.
     assert len(chain) == 2
-    assert chain[0].id == "the relay"
+    assert chain[0].id == "relay"
     assert chain[0].model == "claude-4.7-opus"
     assert chain[1].id == "openrouter"
     assert chain[1].model == "claude-4.7-opus"
@@ -189,8 +189,8 @@ async def test_pinned_to_deleted_provider_falls_back_to_chain() -> None:
     from llm.resolution import resolve_provider_for_session
 
     registry = _StubRegistry([
-        # Only 'the relay' exists. Binding points at 'gone-provider'.
-        {"id": "the relay", "base_url": "https://a.example/v1",
+        # Only 'relay' exists. Binding points at 'gone-provider'.
+        {"id": "relay", "base_url": "https://a.example/v1",
          "model": "m1", "api_key": "k1", "enabled": True},
     ])
     sdb = _StubSessionDB({
@@ -208,8 +208,8 @@ async def test_pinned_to_deleted_provider_falls_back_to_chain() -> None:
     )
 
     # Resolution falls through to the global chain (the only enabled
-    # provider, 'the relay').
-    assert [p.id for p in chain] == ["the relay"]
+    # provider, 'relay').
+    assert [p.id for p in chain] == ["relay"]
 
 
 @pytest.mark.asyncio
@@ -221,7 +221,7 @@ async def test_companion_session_honors_binding_2026_05_19() -> None:
     from llm.resolution import resolve_provider_for_session
 
     registry = _StubRegistry([
-        {"id": "the relay", "base_url": "https://a.example/v1",
+        {"id": "relay", "base_url": "https://a.example/v1",
          "model": "m1", "api_key": "k1", "enabled": True},
     ])
     sdb = _StubSessionDB({
@@ -236,7 +236,7 @@ async def test_companion_session_honors_binding_2026_05_19() -> None:
     )
 
     # DB WAS queried (new behavior); imaginary provider → global fallback.
-    assert [p.id for p in chain] == ["the relay"]
+    assert [p.id for p in chain] == ["relay"]
     assert sdb.get_calls == ["default"]
 
 
@@ -247,7 +247,7 @@ async def test_companion_session_preferred_model_applies() -> None:
     from llm.resolution import resolve_provider_for_session
 
     registry = _StubRegistry([
-        {"id": "the relay", "base_url": "https://a.example/v1",
+        {"id": "relay", "base_url": "https://a.example/v1",
          "model": "deepseek-v4-pro", "api_key": "k1", "enabled": True},
     ])
     sdb = _StubSessionDB({
@@ -262,6 +262,6 @@ async def test_companion_session_preferred_model_applies() -> None:
         session_db=sdb,
     )
 
-    assert [p.id for p in chain] == ["the relay"]
+    assert [p.id for p in chain] == ["relay"]
     assert chain[0].model == "gpt-5.5"  # binding overrides companion model
     assert chain[0].code_params.get("reasoning_effort") == "high"

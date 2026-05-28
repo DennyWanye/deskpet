@@ -170,7 +170,7 @@ def _seed_provider(reg: LLMProviderRegistry, **kw) -> None:
 def test_list_request_returns_sanitized(fresh_registry):
     """2.1: list_response carries api_key=******** for every entry."""
     reg, _kc, _cfg = fresh_registry
-    _seed_provider(reg, pid="the relay", api_key="sk-real-1")
+    _seed_provider(reg, pid="relay", api_key="sk-real-1")
     _seed_provider(reg, pid="openrouter", api_key="sk-real-2", priority=2)
 
     client = TestClient(app)
@@ -184,7 +184,7 @@ def test_list_request_returns_sanitized(fresh_registry):
     providers = resp["payload"]["providers"]
     assert len(providers) == 2
     ids = {p["id"] for p in providers}
-    assert ids == {"the relay", "openrouter"}
+    assert ids == {"relay", "openrouter"}
     for p in providers:
         assert p["api_key"] == "********", f"api_key leaked: {p}"
         # Full metadata present.
@@ -197,7 +197,7 @@ def test_list_request_returns_sanitized(fresh_registry):
 
 def test_add_validates_uniqueness(fresh_registry):
     reg, _kc, _cfg = fresh_registry
-    _seed_provider(reg, pid="the relay", api_key="sk-1")
+    _seed_provider(reg, pid="relay", api_key="sk-1")
 
     client = TestClient(app)
     cm, ws = _ws_open(client)
@@ -206,7 +206,7 @@ def test_add_validates_uniqueness(fresh_registry):
             {
                 "type": "settings_providers_add",
                 "payload": {
-                    "id": "the relay",  # duplicate!
+                    "id": "relay",  # duplicate!
                     "base_url": "http://y/v1",
                     "model": "m",
                     "api_key": "sk-2",
@@ -259,8 +259,8 @@ def test_update_partial_patch(fresh_registry):
     reg, _kc, _cfg = fresh_registry
     _seed_provider(
         reg,
-        pid="the relay",
-        name="Chinzy",
+        pid="relay",
+        name="Relay",
         base_url="http://x/v1",
         model="deepseek",
         api_key="sk-original",
@@ -273,7 +273,7 @@ def test_update_partial_patch(fresh_registry):
         ws.send_json(
             {
                 "type": "settings_providers_update",
-                "payload": {"id": "the relay", "patch": {"priority": 5}},
+                "payload": {"id": "relay", "patch": {"priority": 5}},
             }
         )
         # Expect: settings_providers_updated + providers_changed
@@ -284,11 +284,11 @@ def test_update_partial_patch(fresh_registry):
     types = sorted(f["type"] for f in frames)
     assert types == ["providers_changed", "settings_providers_updated"]
 
-    entry = reg.get_entry("the relay")
+    entry = reg.get_entry("relay")
     assert entry is not None
     assert entry.priority == 5
     # All other fields unchanged.
-    assert entry.name == "Chinzy"
+    assert entry.name == "Relay"
     assert entry.base_url == "http://x/v1"
     assert entry.model == "deepseek"
     assert entry.enabled is True
@@ -299,9 +299,9 @@ def test_update_partial_patch(fresh_registry):
 
 def test_update_api_key_writes_keychain(fresh_registry):
     reg, kc, _cfg = fresh_registry
-    _seed_provider(reg, pid="the relay", api_key="sk-original")
+    _seed_provider(reg, pid="relay", api_key="sk-original")
     # confirm baseline
-    assert kc[("deskpet", "provider.the relay")] == "sk-original"
+    assert kc[("deskpet", "provider.relay")] == "sk-original"
 
     client = TestClient(app)
     cm, ws = _ws_open(client)
@@ -310,24 +310,24 @@ def test_update_api_key_writes_keychain(fresh_registry):
         ws.send_json(
             {
                 "type": "settings_providers_update",
-                "payload": {"id": "the relay", "patch": {"name": "Renamed"}},
+                "payload": {"id": "relay", "patch": {"name": "Renamed"}},
             }
         )
         _collect_frames(ws, 2)  # updated + providers_changed
-        assert kc[("deskpet", "provider.the relay")] == "sk-original"
+        assert kc[("deskpet", "provider.relay")] == "sk-original"
 
         # 2) Update WITH api_key — keychain updated.
         ws.send_json(
             {
                 "type": "settings_providers_update",
-                "payload": {"id": "the relay", "patch": {"api_key": "sk-new"}},
+                "payload": {"id": "relay", "patch": {"api_key": "sk-new"}},
             }
         )
         _collect_frames(ws, 2)
     finally:
         cm.__exit__(None, None, None)
 
-    assert kc[("deskpet", "provider.the relay")] == "sk-new"
+    assert kc[("deskpet", "provider.relay")] == "sk-new"
 
 
 # ---------- 2.6 remove — cleanup ------------------------------------------
@@ -339,14 +339,14 @@ async def test_remove_cleanup(fresh_registry, fresh_session_db):
     reg, kc, _cfg = fresh_registry
     sdb = fresh_session_db
 
-    await reg.add_provider(_seed_provider_args(pid="the relay", api_key="sk-1"))
+    await reg.add_provider(_seed_provider_args(pid="relay", api_key="sk-1"))
     await reg.add_provider(_seed_provider_args(pid="openrouter", api_key="sk-2", priority=2))
-    # Two sessions bound to "the relay", one to "openrouter".
-    await sdb.set_code_session_provider_binding("sid-a", "the relay", None)
-    await sdb.set_code_session_provider_binding("sid-b", "the relay", "alt-model")
+    # Two sessions bound to "relay", one to "openrouter".
+    await sdb.set_code_session_provider_binding("sid-a", "relay", None)
+    await sdb.set_code_session_provider_binding("sid-b", "relay", "alt-model")
     await sdb.set_code_session_provider_binding("sid-c", "openrouter", None)
 
-    assert kc[("deskpet", "provider.the relay")] == "sk-1"
+    assert kc[("deskpet", "provider.relay")] == "sk-1"
 
     client = TestClient(app)
     cm, ws = _ws_open(client)
@@ -354,7 +354,7 @@ async def test_remove_cleanup(fresh_registry, fresh_session_db):
         ws.send_json(
             {
                 "type": "settings_providers_remove",
-                "payload": {"id": "the relay"},
+                "payload": {"id": "relay"},
             }
         )
         # removed + providers_changed
@@ -370,7 +370,7 @@ async def test_remove_cleanup(fresh_registry, fresh_session_db):
     assert remaining == {"openrouter"}
 
     # 2) Keychain entry for the relay gone.
-    assert ("deskpet", "provider.the relay") not in kc
+    assert ("deskpet", "provider.relay") not in kc
 
     # 3) SessionDB: sid-a / sid-b cleared; sid-c untouched.
     assert (await sdb.get_code_session_provider_binding("sid-a"))["provider_id"] is None
@@ -448,7 +448,7 @@ def test_providers_changed_broadcasts_to_all_conns(fresh_registry):
 async def test_set_provider_binding_persists(fresh_registry, fresh_session_db):
     reg, _kc, _cfg = fresh_registry
     sdb = fresh_session_db
-    await reg.add_provider(_seed_provider_args(pid="the relay", api_key="sk"))
+    await reg.add_provider(_seed_provider_args(pid="relay", api_key="sk"))
 
     client = TestClient(app)
     cm, ws = _ws_open(client)
@@ -456,7 +456,7 @@ async def test_set_provider_binding_persists(fresh_registry, fresh_session_db):
         ws.send_json(
             {
                 "type": "code_session_set_provider",
-                "payload": {"session_id": "vpn-tunnel", "provider_id": "the relay"},
+                "payload": {"session_id": "vpn-tunnel", "provider_id": "relay"},
             }
         )
         resp = _drain_until(ws, "code_session_provider_set")
@@ -465,14 +465,14 @@ async def test_set_provider_binding_persists(fresh_registry, fresh_session_db):
 
     assert resp["payload"] == {
         "session_id": "vpn-tunnel",
-        "provider_id": "the relay",
+        "provider_id": "relay",
         "preferred_model": None,
         "model_params": None,
     }
     # DB row written.
     binding = await sdb.get_code_session_provider_binding("vpn-tunnel")
     assert binding == {
-        "provider_id": "the relay",
+        "provider_id": "relay",
         "preferred_model": None,
         "model_params": None,
     }
@@ -482,8 +482,8 @@ async def test_set_provider_binding_persists(fresh_registry, fresh_session_db):
 async def test_set_provider_null_clears_binding(fresh_registry, fresh_session_db):
     reg, _kc, _cfg = fresh_registry
     sdb = fresh_session_db
-    await reg.add_provider(_seed_provider_args(pid="the relay", api_key="sk"))
-    await sdb.set_code_session_provider_binding("vpn-tunnel", "the relay", None)
+    await reg.add_provider(_seed_provider_args(pid="relay", api_key="sk"))
+    await sdb.set_code_session_provider_binding("vpn-tunnel", "relay", None)
 
     client = TestClient(app)
     cm, ws = _ws_open(client)
@@ -521,7 +521,7 @@ async def test_set_model_alone_keeps_chain_global(fresh_registry, fresh_session_
     None (still global chain), but preferred_model is recorded."""
     reg, _kc, _cfg = fresh_registry
     sdb = fresh_session_db
-    await reg.add_provider(_seed_provider_args(pid="the relay", api_key="sk"))
+    await reg.add_provider(_seed_provider_args(pid="relay", api_key="sk"))
 
     client = TestClient(app)
     cm, ws = _ws_open(client)
@@ -559,7 +559,7 @@ async def test_set_model_with_params_round_trip(fresh_registry, fresh_session_db
     and echoes model_params (code-session-model-params T4.1)."""
     reg, _kc, _cfg = fresh_registry
     sdb = fresh_session_db
-    await reg.add_provider(_seed_provider_args(pid="the relay", api_key="sk"))
+    await reg.add_provider(_seed_provider_args(pid="relay", api_key="sk"))
     params = {
         "thinking": True,
         "fast": False,

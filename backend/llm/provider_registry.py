@@ -14,11 +14,11 @@ Owns:
 Schema in config.toml::
 
     [[llm.endpoints]]
-    id = "the relay-deepseek"
-    name = "Chinzy DeepSeek"
-    base_url = "https://api.the relay.example/v1"
+    id = "relay-deepseek"
+    name = "Relay DeepSeek"
+    base_url = "https://api.your-llm-relay.example.com/v1"
     model = "deepseek-v3"
-    api_key_ref = "deskpet.provider.the relay-deepseek"
+    api_key_ref = "deskpet.provider.relay-deepseek"
     priority = 1
     enabled = true
 

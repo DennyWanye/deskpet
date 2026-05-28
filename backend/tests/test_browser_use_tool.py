@@ -246,7 +246,7 @@ def test_llm_runtime_json_overrides_config(tmp_path: Path):
     (tmp_path / "llm_runtime.json").write_text(
         json.dumps(
             {
-                "base_url": "https://chinzy.com/v1",
+                "base_url": "https://your-llm-relay.example.com/v1",
                 "model": "gpt-5.5",
                 "api_key": "runtime-key",
             }
@@ -254,13 +254,13 @@ def test_llm_runtime_json_overrides_config(tmp_path: Path):
         encoding="utf-8",
     )
     creds = but._resolve_creds()
-    assert creds["base_url"] == "https://chinzy.com/v1"
+    assert creds["base_url"] == "https://your-llm-relay.example.com/v1"
     assert creds["model"] == "gpt-5.5"
     assert creds["api_key"] == "runtime-key"
 
 
-def test_creds_default_to_chinzy(tmp_path: Path):
+def test_creds_default_to_placeholder_relay(tmp_path: Path):
     _write_cfg(tmp_path, "[code_e2e]\nbrowser_use_enabled = true\n")
     creds = but._resolve_creds()
-    assert creds["base_url"] == "https://chinzy.com/v1"
+    assert creds["base_url"] == "https://your-llm-relay.example.com/v1"
     assert creds["model"] == "gpt-5.5"
