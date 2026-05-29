@@ -64,6 +64,11 @@ VALID_EVENTS = frozenset({
     "verify_gate_init",
     # WI-T2.6 agent_loop 触发 nudge（fake-completion 拦截事件）.
     "verify_gate_nudge_injected",
+    # WI-B3 Companion+Code v1 /goal end_turn rebound checker invocations.
+    "goal_checker_invoked",
+    # WI-C1 Companion+Code v1 Stage C — agent_parallel subagent lifecycle
+    # (starting / completed / failed)；脱敏：task_id 由 caller 自管。
+    "subagent_progress",
 })
 
 # Whitelisted ``detail`` keys. A caller can ONLY write these fields —
@@ -97,6 +102,10 @@ _ALLOWED_DETAIL_KEYS = frozenset({
     "patterns_loaded", # verify_gate_init: 加载的 ClaimPattern 数
     "session_id",      # verify_gate_nudge_injected: hash 后 sid（caller 自管脱敏）
     "nudge_count",     # verify_gate_nudge_injected: 第几次 nudge
+    # WI-C1 Companion+Code v1 Stage C — agent_parallel subagent_progress
+    # detail keys.
+    "task_id",         # subagent_progress: caller-supplied short id
+    "status",          # subagent_progress: starting / completed / failed
 })
 
 # Max length of any *surviving* string value — defence-in-depth second

@@ -407,6 +407,64 @@ Schema 版本从 v9 升级到 v10。
 项目的设计文档、调研报告、内测就绪材料的速查表。代码改动遵循
 spec-first：3+ 文件的改动先有 plan/spec，再有实现。
 
+### Companion + Code 模式升级 v1（2026-05-25）
+
+给 DeskPet 加 3 个 **superpowers 级**能力：`/<skill_name>` 命令触发 skill、
+`/goal <text>` 长期目标持续工作、`agent_parallel` 多子代理并行 — 把 Claude
+Code 多 agent 工作流的思想搬进桌宠产品。
+
+| 文档 | 作用 |
+|------|------|
+| [`plans/2026-05-25-companion-code-skill-upgrade/00-PRD.md`](./plans/2026-05-25-companion-code-skill-upgrade/00-PRD.md) | PRD v1 — 6 项决策 + 3 Stage WI + 5 项风险 |
+| [`plans/2026-05-25-companion-code-skill-upgrade/01-implementation-plan.md`](./plans/2026-05-25-companion-code-skill-upgrade/01-implementation-plan.md) | 实施 plan — Stage A/B/C 子代理派单 |
+| [`plans/2026-05-25-companion-code-skill-upgrade/02-manual-test-cases.md`](./plans/2026-05-25-companion-code-skill-upgrade/02-manual-test-cases.md) | 人工测试 MR-S-0~10 + ★ 三大用例 |
+| [`plans/2026-05-25-companion-code-skill-upgrade/03-final-report.md`](./plans/2026-05-25-companion-code-skill-upgrade/03-final-report.md) | 最终实施报告（用户简单易懂版） |
+
+**核心新增**（commits TBD）：
+
+- **WI-A Slash Command 框架**（主线程 Stage A）
+  - 前端 `tauri-app/src/code-panel/InputBar.tsx` 解析 `/<cmd> [args]`
+    → 发 `slash_command` WS 消息（绕过 chat_v2 → LLM 路径）
+  - 后端 `backend/main.py` 加 `slash_command` handler + `/api/skills/list`
+    REST endpoint（前端 autocomplete 拉候选）
+  - 新建 `backend/deskpet/commands/__init__.py` — dispatch_slash_command 路由器
+    （help / goal / skill 3 路）
+- **WI-B `/goal` 长期目标**（子代理 1 Stage B）
+  - 新建 `backend/deskpet/agent/goal_store.py` — SessionGoalStore（per-sid
+    内存字典 + max_iterations 计数）
+  - 新建 `backend/deskpet/agent/goal_checker.py` — GoalChecker.check(goal, msgs)
+    → (done, hint)；3 级 JSON parse fallback + safe-fail
+  - `backend/agent/agent_loop.py` 末轮接电（verify_gate 同模式），未达成
+    回灌 system "[goal] 未达成: <hint>" + continue
+  - 35 测试全 PASS
+- **WI-C `agent_parallel` 多子代理并行**（子代理 2 Stage C）
+  - 新建 `backend/deskpet/tools/code_tools/agent_parallel_tool.py` —
+    并发派 2-4 个 ephemeral 子代理（hub-and-spoke 模式）
+  - 自动注入 **Sprint Contract JSON**（input_files / output_files /
+    forbidden_files / success_criteria）到子代理 prompt
+  - WS event `subagent_progress` 流式反馈（starting / completed / failed）
+  - 复用现有 `agent_tool` 工厂模式（15 iter cap + recursion guard）
+  - 17 测试全 PASS
+- **WI-D FeaturesConfig 守护**
+  - `backend/config.py:FeaturesConfig` 3 flag（默认 OFF）：
+    `slash_commands` / `goal_mode` / `agent_parallel`
+  - flag OFF 时全套新代码 short-circuit（BC）
+- **Observability**
+  - `metrics_sink.VALID_EVENTS` 加 `goal_checker_invoked` + `subagent_progress`
+  - `_ALLOWED_DETAIL_KEYS` 加 `task_id` + `status`
+
+**回归门控**（最终）：
+- backend pytest **2061 → 2132 passed**（+71 新增：A 12 + B 35 + C 17 + 余 7）
+- 0 failed, 11 skipped, 4 deselected
+- 2 个 boot smoke 真路径硬证据脚本：
+  - `manual_slash_smoke.py` — `/help` 真返 12 个 skill
+  - `manual_goal_smoke.py` — `/goal` 真接电 + `metrics.jsonl` 真增 `goal_checker_invoked`
+
+**Deferred（v2）**：
+- UI 反馈层 GoalBar / SubagentProgressCard 组件（后端 wiring 完成，前端组件待加）
+- SessionGoalStore SQLite persistence（v1 in-memory）
+- Tauri 真 GUI E2E 手测（需启 Tauri + 真 LLM + 登录账号）
+
 ### 工具层优化 v3（2026-05-24）
 
 修复 last-mile 升级遗留的 **P0 接电缺口**（VerifyGate 没接进 AgentLoop 导致

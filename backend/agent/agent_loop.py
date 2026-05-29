@@ -399,6 +399,10 @@ class AgentLoop:
         verify_gate: Optional[Any] = None,        # deskpet.agent.verify_gate.VerifyGate
         receipt_store: Optional[Any] = None,      # deskpet.tools.receipt_store.ReceiptStore
         max_verify_nudges: int = 2,               # PRD D6: 3 次失败强退
+        # WI-B3 Companion+Code v1: /goal command 末轮 LLM-judged rebound.
+        # 两个都 None (默认) → BC，跳过整段 goal-check 块。
+        session_goal_store: Optional[Any] = None,  # deskpet.agent.goal_store.SessionGoalStore
+        goal_checker: Optional[Any] = None,        # deskpet.agent.goal_checker.GoalChecker
     ) -> None:
         self.llm = llm_registry
         self.tools = tool_registry
@@ -426,6 +430,9 @@ class AgentLoop:
         self.verify_gate = verify_gate
         self.receipt_store = receipt_store
         self.max_verify_nudges = max_verify_nudges
+        # WI-B3 Companion+Code v1: /goal store + checker (BC: 两者皆 None → skip)
+        self.session_goal_store = session_goal_store
+        self.goal_checker = goal_checker
         # P5-S2 Phase 3.3: same-(name, args) repeat detection. When set,
         # the loop checks the activity store's per-session
         # ``tool_signature_window`` BEFORE dispatching each tool_call —
@@ -1039,6 +1046,79 @@ class AgentLoop:
                         else:
                             logger.info(
                                 "verify_gate.ephemeral_rescued sid=%s", session_id,
+                            )
+
+                # WI-B3 Companion+Code v1 — /goal end_turn rebound. Same
+                # safe-fail pattern as completion_probe / verify_gate:
+                # checker exception or done=False → inject a system
+                # message and ``continue`` the loop so the next LLM call
+                # sees the hint. Cap at ``goal.max_iterations`` so the
+                # checker can't loop forever. flag-off (store / checker
+                # = None, or no active goal, or goal.done already) →
+                # skip the block entirely (BC).
+                if (
+                    self.session_goal_store is not None
+                    and self.goal_checker is not None
+                ):
+                    _goal = self.session_goal_store.get(session_id)
+                    if (
+                        _goal is not None
+                        and not _goal.done
+                        and _goal.iterations_used < _goal.max_iterations
+                    ):
+                        try:
+                            _done, _hint = await self.goal_checker.check(
+                                _goal.text, working_messages,
+                            )
+                        except Exception as exc:  # noqa: BLE001 — safe-fail
+                            logger.warning(
+                                "goal_checker raised (sid=%s): %s — passing through",
+                                session_id, exc,
+                            )
+                            _done, _hint = True, "checker_error"
+                        # metric emit (best-effort, not blocking)
+                        try:
+                            from observability.metrics_sink import (  # noqa: PLC0415
+                                record as _goal_metric,
+                            )
+                            _goal_metric("goal_checker_invoked", {
+                                "ok": bool(_done),
+                                "count": int(_goal.iterations_used),
+                            })
+                        except Exception:  # noqa: BLE001 — metric 失败不阻
+                            pass
+                        if not _done:
+                            self.session_goal_store.increment_iteration(session_id)
+                            # Append the assistant message that triggered
+                            # this so the LLM sees its own prior end_turn
+                            # output — symmetric with completion_probe /
+                            # verify_gate rebound shape.
+                            if response.content:
+                                working_messages.append({
+                                    "role": "assistant",
+                                    "content": response.content,
+                                })
+                            working_messages.append({
+                                "role": "system",
+                                "content": (
+                                    f"[goal] 未达成 "
+                                    f"({_goal.iterations_used}/{_goal.max_iterations}): "
+                                    f"{_hint}\n继续工作直到目标完成。"
+                                ),
+                            })
+                            logger.info(
+                                "goal_checker_nudge_injected sid=%s "
+                                "iter=%d/%d",
+                                session_id,
+                                _goal.iterations_used,
+                                _goal.max_iterations,
+                            )
+                            continue
+                        else:
+                            self.session_goal_store.mark_done(session_id)
+                            logger.info(
+                                "goal_checker.marked_done sid=%s",
+                                session_id,
                             )
 
                 # P6 Phase 6 — gate records the natural terminal state

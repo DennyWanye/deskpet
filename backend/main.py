@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import time
 # Force UTF-8 stdout on Windows (default GBK chokes on emoji in LLM output)
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -639,6 +640,9 @@ def build_agent(
     completion_probe=None,
     max_completion_nudges: int = 2,
     signature_repeat_threshold=None,
+    # Companion+Code v1 — WI-B3 goal_mode 接电
+    session_goal_store=None,
+    goal_checker=None,
 ):
     """Build a wired _AgentLoop with optional VerifyGate + ReceiptStore.
 
@@ -727,6 +731,10 @@ def build_agent(
         verify_gate=verify_gate,
         receipt_store=receipt_store,
         max_verify_nudges=nudges,
+        # ─── Companion+Code v1 WI-B3 真接电 ───
+        # flag OFF 时 store/checker=None → agent_loop 跳过 goal-check（BC）
+        session_goal_store=session_goal_store,
+        goal_checker=goal_checker,
     )
 
 
@@ -1041,6 +1049,25 @@ try:
     except Exception as _sk_exc:  # noqa: BLE001
         logger.warning("p4_skill_invoke_bind_failed", error=str(_sk_exc))
 
+    # WI-B + Companion+Code v1：SessionGoalStore + GoalChecker 接电.
+    # flag OFF（默认）→ store/checker = None → AgentLoop 接电 BC（不调）.
+    # flag ON → 真构造；build_agent 工厂在 chat handler 处取用并传给 AgentLoop.
+    _session_goal_store = None
+    _goal_checker = None
+    if bool(getattr(getattr(config, "features", None), "goal_mode", False)):
+        try:
+            from deskpet.agent.goal_store import SessionGoalStore as _GS
+            from deskpet.agent.goal_checker import GoalChecker as _GC
+            _session_goal_store = _GS()
+            _goal_checker = _GC(llm_call=_make_str_llm_call(local_llm or cloud_llm))
+            logger.info("companion_code_v1_goal_mode_ready")
+        except Exception as _gm_exc:  # noqa: BLE001
+            logger.warning("companion_code_v1_goal_mode_init_failed: %s", _gm_exc)
+            _session_goal_store = None
+            _goal_checker = None
+    service_context.register("session_goal_store", _session_goal_store)
+    service_context.register("goal_checker", _goal_checker)
+
     # P4-S14 + S15: ContextAssembler — pass embedder so TaskClassifier can
     # use the embed-tier route (rule → embed → llm cascade). When BGE-M3
     # isn't loaded yet, the embed path silently falls through to default —
@@ -1290,6 +1317,29 @@ try:
                 parent_session_id_resolver=_resolve_parent_sid,
             )
 
+            # Companion+Code v1 WI-C: agent_parallel 接电（flag ON 时构造工具
+            # 闭包；OFF 时不构造、handler=None 让 register_code_tools 跳过）.
+            _parallel_handler = None
+            _parallel_schema = None
+            if bool(getattr(
+                getattr(config, "features", None), "agent_parallel", False,
+            )):
+                try:
+                    from deskpet.tools.code_tools.agent_parallel_tool import (
+                        build_agent_parallel_tool as _build_parallel,
+                    )
+                    _parallel_handler, _parallel_schema = _build_parallel(
+                        llm_shim=_shim_for_agent,
+                        parent_tool_registry=deskpet_tool_registry_v2,
+                        parent_session_id_resolver=_resolve_parent_sid,
+                    )
+                    logger.info("companion_code_v1_agent_parallel_ready")
+                except Exception as _ap_exc:  # noqa: BLE001
+                    logger.warning(
+                        "companion_code_v1_agent_parallel_init_failed: %s",
+                        _ap_exc,
+                    )
+
             # Re-register the full code tool set including the closures.
             from deskpet.tools.code_tools import (
                 register_code_tools as _register_code_tools_full,
@@ -1300,6 +1350,8 @@ try:
                 todo_write_schema=_todo_schema,
                 agent_handler=_agent_handler,
                 agent_schema=_agent_schema,
+                agent_parallel_handler=_parallel_handler,
+                agent_parallel_schema=_parallel_schema,
             )
             # P5-S2 G1: count bumped 5→6 — added fetch_tool_result
             logger.info("p4_s22_code_tools_registered", count=6)
@@ -2121,6 +2173,293 @@ app.add_middleware(
 # Track control channel connections for lip-sync forwarding
 _control_connections: dict[str, WebSocket] = {}
 
+
+# 2026-05-28 — per-session context-usage snapshot for the frontend Claude-Code-
+# style ring gauge. Keyed by chat session_id (e.g. "default", "code-XXX").
+# Updated on every successful LLM turn; pushed via ``context_usage`` ws event.
+_session_context_state: dict[str, dict[str, Any]] = {}
+
+
+def _snapshot_context_usage_event(
+    session_id: str,
+    *,
+    provider_chain: Any | None,
+    fallback_provider: Any | None = None,
+) -> dict[str, Any] | None:
+    """Pick the latest ``last_usage`` off the provider chain that actually
+    served the last turn and combine it with the resolved ModelContextInfo
+    (window / effective ceiling / compact threshold) into a single payload
+    the frontend renders as a ring gauge.
+
+    Returns ``None`` when no usage is available yet (don't emit).
+    """
+    try:
+        from llm.model_info import resolve as _resolve_model
+    except Exception:  # noqa: BLE001
+        _resolve_model = None  # type: ignore[assignment]
+
+    # Pick first provider with non-None last_usage.
+    _picked = None
+    _candidates: list[Any] = []
+    if provider_chain:
+        try:
+            _candidates.extend(list(provider_chain))
+        except Exception:  # noqa: BLE001
+            pass
+    if fallback_provider is not None:
+        _candidates.append(fallback_provider)
+    for _p in _candidates:
+        _u = getattr(_p, "last_usage", None)
+        if _u:
+            _picked = _p
+            break
+    if _picked is None:
+        return None
+    usage = getattr(_picked, "last_usage", None) or {}
+    model = getattr(_picked, "model", "") or ""
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    cached_tokens = 0
+    # cached_tokens may be nested under prompt_tokens_details (OpenAI) or
+    # at the top level (deepseek/some relays).
+    _details = usage.get("prompt_tokens_details") or {}
+    if isinstance(_details, dict):
+        cached_tokens = int(_details.get("cached_tokens") or 0)
+    if not cached_tokens:
+        cached_tokens = int(usage.get("cached_tokens") or 0)
+
+    # Resolve model context window + thresholds.
+    context_window = 32_000
+    effective_pct = 0.95
+    compact_at_pct = 0.80
+    recall_sweet = 16_000
+    if _resolve_model is not None and model:
+        try:
+            _info = _resolve_model(model)
+            context_window = int(_info.context_window)
+            effective_pct = float(_info.effective_pct)
+            compact_at_pct = float(_info.compact_at_pct)
+            recall_sweet = int(_info.recall_sweet_tokens)
+        except Exception:  # noqa: BLE001
+            pass
+    payload = {
+        "session_id": session_id,
+        "model": model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cached_tokens": cached_tokens,
+        "context_window": context_window,
+        "effective_ceiling": int(context_window * effective_pct),
+        "compact_at": int(context_window * compact_at_pct),
+        "recall_sweet": recall_sweet,
+        "updated_at": time.time(),
+    }
+    _session_context_state[session_id] = payload
+    return {"type": "context_usage", "payload": payload}
+
+
+async def _emit_context_usage(
+    originator_ws: WebSocket,
+    session_id: str,
+    *,
+    provider_chain: Any | None,
+    fallback_provider: Any | None = None,
+) -> None:
+    """Snapshot usage and push to originator + (for "default" session) peers.
+    Best-effort: any error is logged at debug and swallowed."""
+    try:
+        msg = _snapshot_context_usage_event(
+            session_id,
+            provider_chain=provider_chain,
+            fallback_provider=fallback_provider,
+        )
+        if msg is None:
+            return
+        try:
+            await originator_ws.send_json(msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("context_usage_send_originator_failed err=%s", exc)
+        await _broadcast_default_chat_peers(originator_ws, msg)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("context_usage_emit_failed sid=%s err=%s", session_id, exc)
+
+
+def _approx_tokens(text: str | None) -> int:
+    """Cheap heuristic for token count without a tokenizer dependency.
+    Mirrors the rule-of-thumb tiktoken-ish ~3.5 chars/token for mixed CJK+
+    English. Accurate enough to drive a "where did my context go" pie chart;
+    the authoritative number is the LLM's own ``prompt_tokens`` (already in
+    the ring). Returns 0 on falsy input."""
+    if not text:
+        return 0
+    return max(1, int(len(text) / 3.5))
+
+
+async def _compute_context_breakdown(session_id: str) -> dict[str, Any]:
+    """Estimate the breakdown of "what's in my context right now" for the
+    given session_id. Drives the ContextBreakdownModal that opens when the
+    user clicks the ring gauge.
+
+    Returns ``{session_id, sections: [{kind, label, tokens, preview, count?}],
+    total_estimated_tokens, last_usage_prompt_tokens, model, ts}``.
+
+    Sections (Claude-Code parity):
+      * ``system``      — system prompt boilerplate
+      * ``memory``      — recalled facts / persona (RAG injection)
+      * ``tools``       — tool definitions in context
+      * ``history``     — persisted user/assistant turns (recent N)
+      * ``current``     — none for now (the next user input lands at turn-time)
+    """
+    sections: list[dict[str, Any]] = []
+
+    # 1) Persona / system prompt — pull from the same _resolve_persona the
+    # ContextAssembler uses. This is the frozen header injected at the top
+    # of every turn.
+    persona_text = ""
+    try:
+        from deskpet.agent.assembler.components.persona import _resolve_persona  # type: ignore[attr-defined]
+        persona_text = _resolve_persona(config.raw if hasattr(config, "raw") else {}) or ""
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("breakdown_persona_probe_failed err=%s", exc)
+    sections.append({
+        "kind": "system",
+        "label": "Persona / system",
+        "tokens": _approx_tokens(persona_text),
+        "preview": persona_text[:400],
+    })
+
+    # 2) Memory — recalled facts (subset of what ContextAssembler injects).
+    mem_preview = ""
+    mem_count = 0
+    mem_total_chars = 0
+    try:
+        fs = service_context.get("facts_store")
+        if fs is not None and hasattr(fs, "list_active"):
+            _facts = await fs.list_active(limit=50)  # returns list[dict]
+            mem_count = len(_facts)
+            preview_lines = []
+            for f in _facts:
+                cat = f.get("category", "?") or "?"
+                subj = f.get("subject", "") or ""
+                val = f.get("value", "") or ""
+                mem_total_chars += len(cat) + len(subj) + len(val)
+                if len(preview_lines) < 8:
+                    preview_lines.append(f"- [{cat}] {subj}: {val[:60]}")
+            mem_preview = "\n".join(preview_lines)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("breakdown_memory_probe_failed err=%s", exc)
+    sections.append({
+        "kind": "memory",
+        "label": "Memory / facts",
+        "tokens": max(0, int(mem_total_chars / 3.5)) if mem_total_chars else 0,
+        "preview": mem_preview[:400],
+        "count": mem_count,
+    })
+
+    # 3) Tools — count + names from the v2 schema-aware registry (the
+    # one the chat_v2 agent loop actually uses). Singleton imported
+    # directly; the legacy ``tool_router`` only carries 3 hello-world tools.
+    tool_preview = ""
+    tool_count = 0
+    try:
+        from deskpet.tools.registry import registry as _v2reg
+        if _v2reg is not None and hasattr(_v2reg, "list_tools"):
+            try:
+                _names = _v2reg.list_tools()
+            except Exception:  # noqa: BLE001
+                _names = []
+            tool_count = len(_names)
+            tool_preview = ", ".join(str(n) for n in _names[:40])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("breakdown_tools_probe_failed err=%s", exc)
+    sections.append({
+        "kind": "tools",
+        "label": "Tool definitions",
+        "tokens": tool_count * 60,  # ~60 tokens per tool schema, rough
+        "preview": tool_preview[:400],
+        "count": tool_count,
+    })
+
+    # 4) History — recent user/assistant messages from SessionDB.
+    # SessionDB API: get_recent(session_id, limit=N) → list[ConversationTurn].
+    hist_text = ""
+    hist_count = 0
+    hist_tokens = 0
+    try:
+        sdb = service_context.get("session_db")
+        if sdb is not None and hasattr(sdb, "get_recent"):
+            try:
+                turns = await sdb.get_recent(session_id, limit=200)
+            except Exception:  # noqa: BLE001
+                turns = []
+            hist_count = len(turns)
+            parts = []
+            total_chars = 0
+            for t in turns:
+                role = getattr(t, "role", "?")
+                content = getattr(t, "content", "") or ""
+                total_chars += len(content)
+                if len(parts) < 12:
+                    parts.append(f"[{role}] {str(content)[:80]}")
+            hist_text = "\n".join(parts)
+            hist_tokens = max(1, int(total_chars / 3.5)) if total_chars else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("breakdown_history_probe_failed err=%s", exc)
+    sections.append({
+        "kind": "history",
+        "label": "Conversation history",
+        "tokens": hist_tokens,
+        "preview": hist_text[:400],
+        "count": hist_count,
+    })
+
+    # 5) Total + LLM authoritative number for cross-check.
+    last = _session_context_state.get(session_id) or {}
+    return {
+        "session_id": session_id,
+        "model": last.get("model", ""),
+        "sections": sections,
+        "total_estimated_tokens": sum(s["tokens"] for s in sections),
+        "last_usage_prompt_tokens": last.get("prompt_tokens", 0),
+        "context_window": last.get("context_window", 0),
+        "effective_ceiling": last.get("effective_ceiling", 0),
+        "compact_at": last.get("compact_at", 0),
+        "updated_at": last.get("updated_at", 0),
+        "ts": time.time(),
+    }
+
+
+async def _broadcast_default_chat_peers(originator_ws: WebSocket, msg: dict) -> None:
+    """2026-05-28 — 多窗口共享 "default" 会话同步广播。
+
+    主桌宠窗口 (`session_id=default`) 和左侧消息面板窗口
+    (`session_id=message-panel-main`) 是两条独立的控制通道，但都展示
+    同一个 "default" 聊天会话。原有 chat_v2_* 事件只发回给原始 WS，
+    导致 panel 看不到主桌宠发出的对话。
+
+    本 helper 在事件 `payload.session_id == "default"` 时把消息 fan-out
+    给所有 *其它* 控制通道（跳过 originator 避免重复 push）。
+    其它会话（per-tile code-*）保持单发不变。
+    Best-effort：peer 关闭/出错只 swallow。
+    """
+    if not isinstance(msg, dict):
+        return
+    payload = msg.get("payload") or {}
+    if not isinstance(payload, dict):
+        return
+    if payload.get("session_id") != "default":
+        return
+    for _peer_sid, _peer_ws in list(_control_connections.items()):
+        if _peer_ws is originator_ws:
+            continue
+        try:
+            await _peer_ws.send_json(msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "default_chat_peer_broadcast_failed sid=%s err=%s",
+                _peer_sid, exc,
+            )
+
 # P4-S23: track in-flight chat tasks per session_id so multi-session
 # panels can cancel-on-retry without leaking stale AgentLoop runs.
 _chat_inflight: dict[str, asyncio.Task] = {}
@@ -2303,6 +2642,45 @@ async def update_cloud_config(body: CloudConfigRequest, request: Request):
         "model": body.model,
         "has_api_key": bool(resolved_key) and resolved_key != "ollama",
         "strategy": llm._strategy.value,
+    }
+
+
+@app.get("/api/skills/list")
+async def api_skills_list():
+    """WI-A4 v1 — InputBar 拉 skill 列表给 / autocomplete.
+
+    Returns:
+        {
+          "feature_enabled": bool,    # [features] slash_commands flag
+          "builtins": [{name, description}, ...],
+          "skills": [{name, description}, ...],
+        }
+    """
+    enabled = bool(getattr(
+        getattr(config, "features", None), "slash_commands", False,
+    ))
+    if not enabled:
+        return {"feature_enabled": False, "builtins": [], "skills": []}
+    builtins = [
+        {"name": "help", "description": "列出所有可用命令"},
+        {"name": "goal <text>", "description": "设置 session 级长期目标"},
+        {"name": "goal clear", "description": "清除当前 goal"},
+    ]
+    skills: list[dict[str, str]] = []
+    _sl = service_context.get("skill_loader")
+    if _sl is not None:
+        try:
+            for s in _sl.list_skills():
+                skills.append({
+                    "name": s.get("name") or "",
+                    "description": (s.get("description") or "")[:120],
+                })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("/api/skills/list failed: %s", exc)
+    return {
+        "feature_enabled": True,
+        "builtins": builtins,
+        "skills": skills,
     }
 
 
@@ -3093,6 +3471,66 @@ async def control_channel(ws: WebSocket):
                     "payload": {"items": items, "session_id": target_sid},
                 })
 
+            elif msg_type == "context_usage_request":
+                # 2026-05-28 — frontend on (re)connect pulls the cached
+                # context-usage snapshot per session_id so the ring gauge
+                # can hydrate before any new LLM turn fires.
+                payload = raw.get("payload", {}) or {}
+                target_sid = payload.get("session_id") or session_id
+                cached = _session_context_state.get(target_sid)
+                if cached:
+                    try:
+                        await ws.send_json({"type": "context_usage", "payload": cached})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("context_usage_request_send_failed err=%s", exc)
+                else:
+                    # No snapshot yet — emit a "model-only" stub so the
+                    # frontend can render the ring with 0 / window before
+                    # the first real turn lands.
+                    try:
+                        from llm.model_info import resolve as _resolve_model_for_stub
+                        # Best-effort: use whatever model the local llm
+                        # is configured for (config.toml [llm].model).
+                        _stub_model = (config.raw.get("llm") or {}).get("model") or ""
+                        _info = _resolve_model_for_stub(_stub_model) if _stub_model else None
+                        _cw = int(_info.context_window) if _info else 32_000
+                        _eff = float(_info.effective_pct) if _info else 0.95
+                        _ca = float(_info.compact_at_pct) if _info else 0.80
+                        _rs = int(_info.recall_sweet_tokens) if _info else 16_000
+                        await ws.send_json({
+                            "type": "context_usage",
+                            "payload": {
+                                "session_id": target_sid,
+                                "model": _stub_model,
+                                "prompt_tokens": 0,
+                                "completion_tokens": 0,
+                                "cached_tokens": 0,
+                                "context_window": _cw,
+                                "effective_ceiling": int(_cw * _eff),
+                                "compact_at": int(_cw * _ca),
+                                "recall_sweet": _rs,
+                                "updated_at": time.time(),
+                                "stub": True,
+                            },
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("context_usage_request_stub_failed err=%s", exc)
+
+            elif msg_type == "context_breakdown_request":
+                # 2026-05-28 — drill-down composition for the ring's
+                # click-through modal. Returns each context section's
+                # token count + a short preview snippet (≤ 400 chars).
+                payload = raw.get("payload", {}) or {}
+                target_sid = payload.get("session_id") or session_id
+                breakdown = await _compute_context_breakdown(target_sid)
+                try:
+                    await ws.send_json({
+                        "type": "context_breakdown_response",
+                        "payload": breakdown,
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("context_breakdown_send_failed err=%s", exc)
+
             elif msg_type == "session_messages_load":
                 # P4-S23: panel reload (F5) needs to rehydrate chat
                 # history from SessionDB. Returns messages for the
@@ -3151,6 +3589,59 @@ async def control_channel(ws: WebSocket):
                     "payload": {"session_id": target_sid, "messages": msgs},
                 })
 
+            elif msg_type == "slash_command":
+                # WI-A1 v1 — /command 解析（plans/2026-05-25-companion-code-
+                # skill-upgrade）。InputBar 解析 `/<cmd> [args]` → 发本 WS
+                # 消息；后端直接路由到 SkillLoader / goal_store / builtins，
+                # 不走 AgentLoop。feature flag `[features] slash_commands`
+                # 默认 OFF；OFF 时返 disabled 错。
+                payload = raw.get("payload", {}) or {}
+                cmd_name = (payload.get("command") or "").lstrip("/")
+                cmd_args = payload.get("args") or ""
+                target_sid = payload.get("session_id") or session_id
+                _slash_enabled = bool(getattr(
+                    getattr(config, "features", None), "slash_commands", False,
+                ))
+                if not _slash_enabled:
+                    await ws.send_json({
+                        "type": "slash_command_result",
+                        "payload": {
+                            "command": cmd_name,
+                            "session_id": target_sid,
+                            "result": {
+                                "type": "error",
+                                "message": "slash_commands feature disabled "
+                                           "(set [features] slash_commands = true)",
+                            },
+                        },
+                    })
+                else:
+                    try:
+                        from deskpet.commands import dispatch_slash_command
+                        _slash_skill_loader = service_context.get("skill_loader")
+                        _slash_goal_store = service_context.get("session_goal_store")
+                        _slash_result = await dispatch_slash_command(
+                            cmd_name, cmd_args, target_sid,
+                            skill_loader=_slash_skill_loader,
+                            session_goal_store=_slash_goal_store,
+                        )
+                    except Exception as _slash_exc:  # noqa: BLE001
+                        logger.warning(
+                            "slash_command dispatch failed: %s", _slash_exc,
+                        )
+                        _slash_result = {
+                            "type": "error",
+                            "message": f"dispatch error: {_slash_exc}",
+                        }
+                    await ws.send_json({
+                        "type": "slash_command_result",
+                        "payload": {
+                            "command": cmd_name,
+                            "session_id": target_sid,
+                            "result": _slash_result,
+                        },
+                    })
+
             elif msg_type == "chat_v2_interrupt":
                 # P4-S25 B3: stop the in-flight chat task for a given
                 # session WITHOUT enqueueing a new one. Pairs with the
@@ -3168,13 +3659,15 @@ async def control_channel(ws: WebSocket):
                 # Tell the frontend regardless — it expects a response so
                 # the button can revert. If nothing was running, send the
                 # confirmation anyway (idempotent UX).
-                await ws.send_json({
+                _interrupt_evt = {
                     "type": "chat_v2_interrupted",
                     "payload": {
                         "session_id": target_sid,
                         "cancelled": cancelled,
                     },
-                })
+                }
+                await ws.send_json(_interrupt_evt)
+                await _broadcast_default_chat_peers(ws, _interrupt_evt)
 
             elif msg_type == "code_session_delete":
                 # P4-S24 followup: user clicked 🗑️ on a project tile / sidebar
@@ -3737,6 +4230,17 @@ async def control_channel(ws: WebSocket):
                                 "chat_persist_user_failed", error=str(exc),
                             )
 
+                    # 2026-05-28: 多窗口同步 user echo —— 把用户键入的消息
+                    # 广播给同 "default" 会话的其他控制通道 (主桌宠 + 消息
+                    # 面板互相同步)。originating WS 已经本地 push_message
+                    # 过了，所以跳过 originator 避免重复。
+                    if not _is_sentinel and _sid == "default":
+                        _user_echo_evt = {
+                            "type": "chat_v2_user_echo",
+                            "payload": {"session_id": _sid, "text": _text},
+                        }
+                        await _broadcast_default_chat_peers(_ws, _user_echo_evt)
+
                     # OpenSpec 2026-05-16 §D2 — capability gate（防漂移）。
                     # 在进 ContextAssembler / agent loop 前拦下"明显需要
                     # deskpet 没有的能力"的请求（图像/视频/语音/作曲/3D
@@ -3803,14 +4307,24 @@ async def control_channel(ws: WebSocket):
                                             "capability_gate_persist_failed error=%s",
                                             _ex,
                                         )
-                                await _ws.send_json({
+                                _refuse_final = {
                                     "type": "chat_v2_final",
                                     "payload": {
                                         "text": _refuse_text,
                                         "iterations": 0,
                                         "session_id": _sid,
                                     },
-                                })
+                                }
+                                await _ws.send_json(_refuse_final)
+                                await _broadcast_default_chat_peers(_ws, _refuse_final)
+                                # capability-gate path uses local_llm or cloud_llm
+                                # (no resolved chain); usage is best-effort.
+                                await _emit_context_usage(
+                                    _ws,
+                                    _sid,
+                                    provider_chain=None,
+                                    fallback_provider=_gate_provider or local_llm,
+                                )
                                 return
                         except Exception as _cap_exc:  # noqa: BLE001
                             # 能力门永远不能阻断正常对话——异常即放行。
@@ -4253,7 +4767,7 @@ async def control_channel(ws: WebSocket):
                                 in_code_mode=_in_code_mode,
                             )
                             if _plan is not None:
-                                await _ws.send_json({
+                                _plan_evt = {
                                     "type": "chat_v2_plan",
                                     "payload": {
                                         "session_id": _sid,
@@ -4263,7 +4777,9 @@ async def control_channel(ws: WebSocket):
                                             for s in _plan.steps
                                         ],
                                     },
-                                })
+                                }
+                                await _ws.send_json(_plan_evt)
+                                await _broadcast_default_chat_peers(_ws, _plan_evt)
                                 # Insert plan as a system message right after
                                 # the existing system stack (or at index 0
                                 # if there's nothing).
@@ -4323,6 +4839,9 @@ async def control_channel(ws: WebSocket):
                         # WI-T2.1 v3：build_agent 工厂接电 VerifyGate +
                         # ReceiptStore（修 last-mile P0-1，详 module 顶
                         # build_agent docstring）。
+                        # Companion+Code v1 WI-B3: 拉 goal_mode 接电资产 (None when flag OFF)
+                        _goal_store_for_agent = service_context.get("session_goal_store")
+                        _goal_checker_for_agent = service_context.get("goal_checker")
                         _agent = build_agent(
                             config,
                             llm_registry=_shim,
@@ -4333,6 +4852,8 @@ async def control_channel(ws: WebSocket):
                             completion_probe=_completion_probe,
                             max_completion_nudges=2,
                             signature_repeat_threshold=_sig_repeat_thr,
+                            session_goal_store=_goal_store_for_agent,
+                            goal_checker=_goal_checker_for_agent,
                         )
                         # P4-S25 A1: stream by default — gives the user
                         # instant visible feedback on thinking-mode
@@ -4410,7 +4931,7 @@ async def control_channel(ws: WebSocket):
                                 except Exception as _bump_exc:  # noqa: BLE001
                                     logger.debug("session_activity_bump_failed", error=str(_bump_exc))
                             if isinstance(ev, _AsstDelta):
-                                await _ws.send_json({
+                                _delta_msg = {
                                     "type": "chat_v2_delta",
                                     "payload": {
                                         "session_id": _sid,
@@ -4418,7 +4939,9 @@ async def control_channel(ws: WebSocket):
                                         "content": ev.content,
                                         "iteration": ev.iteration,
                                     },
-                                })
+                                }
+                                await _ws.send_json(_delta_msg)
+                                await _broadcast_default_chat_peers(_ws, _delta_msg)
                             elif isinstance(ev, _AsstEv):
                                 # P4-S20-LLM-Unified-fix: AgentLoop 在每次
                                 # LLM turn 后 emit AsstEv，最终轮还会 emit
@@ -4573,10 +5096,21 @@ async def control_channel(ws: WebSocket):
                                             "chat_persist_assistant_failed",
                                             error=str(exc),
                                         )
-                                await _ws.send_json({
+                                _final_msg = {
                                     "type": "chat_v2_final",
                                     "payload": {"text": ev.content, "iterations": ev.iteration, "session_id": _sid},
-                                })
+                                }
+                                await _ws.send_json(_final_msg)
+                                await _broadcast_default_chat_peers(_ws, _final_msg)
+                                # 2026-05-28 context-usage ring: snapshot
+                                # actual LLM prompt_tokens + model window
+                                # and push to all peers.
+                                await _emit_context_usage(
+                                    _ws,
+                                    _sid,
+                                    provider_chain=_provider_chain,
+                                    fallback_provider=local_llm,
+                                )
                                 # P5-S2 Phase 4: if this final came from
                                 # an auto-resume cycle (attempts > 0),
                                 # emit ``auto_resume_succeeded`` so the

@@ -323,6 +323,25 @@ class BillingConfig:
 
 
 @dataclass
+class FeaturesConfig:
+    """``[features]`` 父表 — Companion + Code 升级 v1 (plans/2026-05-25-...).
+
+    全 flag 默认 OFF；OFF 状态与现状字节级一致。每个 flag 守护一组改动:
+
+    * ``slash_commands`` — 启 / 命令解析（WI-A 系列）。前端 InputBar 见到 `/`
+      前缀时发 ``slash_command`` WS 消息，后端 dispatcher 路由到 SkillLoader /
+      goal_store / builtin handlers。OFF 时 / 当普通 chat 文本。
+    * ``goal_mode`` — 启 ``/goal <text>`` 长期目标 + AgentLoop 末轮 goal_checker
+      check + 未达成自动 continue（WI-B 系列）。OFF 时 SessionGoalStore 不构造。
+    * ``agent_parallel`` — 启 ``agent_parallel`` 工具暴露给 LLM（WI-C 系列）。
+      OFF 时工具不出现在 schemas，子代理并发能力不可用。
+    """
+    slash_commands: bool = False
+    goal_mode: bool = False
+    agent_parallel: bool = False
+
+
+@dataclass
 class AppConfig:
     backend: BackendConfig = field(default_factory=BackendConfig)
     llm: LLMRoutingConfig = field(default_factory=LLMRoutingConfig)
@@ -335,6 +354,9 @@ class AppConfig:
     # 工具调用 last-mile 升级（plans/2026-05-23-tool-last-mile-upgrade/）。
     # 全 flag 默认 OFF；OFF 状态与现状字节级一致（PRD §3 G5 + TG-12）。
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    # Companion + Code 升级 v1 — slash_commands / goal_mode / agent_parallel.
+    # 全 flag 默认 OFF（详 FeaturesConfig docstring）.
+    features: FeaturesConfig = field(default_factory=FeaturesConfig)
     # P4-S15: capture the raw TOML so layers that don't have a dataclass
     # yet (P4 [mcp], [agent], [context.assembler], [memory.l3], [tools.web])
     # can read their config without us having to migrate all of them at once.

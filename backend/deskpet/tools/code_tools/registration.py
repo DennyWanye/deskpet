@@ -51,6 +51,8 @@ def register_code_tools(
     todo_write_schema=None,
     agent_handler=None,
     agent_schema=None,
+    agent_parallel_handler=None,
+    agent_parallel_schema=None,
 ) -> None:
     """Register glob/grep/web_search statically + todo_write/agent
     using caller-built closures (because they need session-db / llm-shim
@@ -166,4 +168,21 @@ def register_code_tools(
             handler=agent_handler,
             permission_category="read_file",
             replace_allowed=True,
+        )
+
+    # WI-C1 (companion-code-skill-upgrade v1, Stage C): agent_parallel —
+    # 并发派 2-4 个子代理。toolset="control" 而非 "code"，因为它是 hub-
+    # and-spoke 控制流工具（参考 PRD §3 Stage C）。timeout 给 5 分钟兜底，
+    # 因为 4 个 subagent × 15 iter × 大模型响应可能拖很久；replace_allowed
+    # 留 False 防止 stub 覆盖真实现。
+    if agent_parallel_handler is not None and agent_parallel_schema is not None:
+        registry.register(
+            name="agent_parallel",
+            toolset="control",
+            schema=agent_parallel_schema,
+            handler=agent_parallel_handler,
+            permission_category="execute_command",
+            source="builtin",
+            timeout_seconds=300.0,
+            replace_allowed=False,
         )

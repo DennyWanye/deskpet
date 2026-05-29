@@ -54,6 +54,25 @@ export function InputBar({
       role: "user",
       text: t,
     });
+    // WI-A3 v1: slash command 前端解析 (plans/2026-05-25-...).
+    // `/<cmd> [args]` → 发 slash_command WS（绕过 chat_v2 → AgentLoop 路径），
+    // 后端直接调 SkillLoader / goal_store / builtin handlers。结果通过
+    // slash_command_result event 异步回包（见 ws.ts dispatch）。inflight 仍
+    // 临时标记防 race，但 slash 一般 <2s 返回，不影响主聊天感受。
+    if (t.startsWith("/")) {
+      const m = t.slice(1).match(/^(\S+)\s*(.*)$/);
+      const cmd = m ? m[1] : "";
+      const args = m ? (m[2] ?? "") : "";
+      useSessionsStore.getState().upsert(sid, {
+        status: "thinking",
+        inflight: true,
+      });
+      codePanelWS.send({
+        type: "slash_command",
+        payload: { command: cmd, args, session_id: sid },
+      });
+      return;
+    }
     useSessionsStore.getState().upsert(sid, {
       status: "thinking",
       inflight: true,
