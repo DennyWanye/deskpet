@@ -1,0 +1,68 @@
+name: Backend Tests (pytest)
+
+# 2026-05-28 OSS prep Phase 6 — backend pytest CI.
+#
+# Runs the CPU-friendly subset of pytest (skips `model_required` and `perf`
+# markers — those need real BGE-M3 weights / long-stability GPU time).
+#
+# Scope: PR + push to master that touches backend/** or this workflow.
+# Coverage: ~470 unit tests covering agent, memory, llm, providers, tools,
+# pipeline, billing, observability layers. Excludes:
+#   - model_required: needs BGE-M3 weights on disk (skipped by default)
+#   - perf: p95 / throughput / 10K-row benches (skipped by default)
+#
+# Runner: ubuntu-latest. Linux is fine for the CPU subset because none of
+# the skipped-by-default markers exercise platform-specific paths. macOS /
+# Windows runners are not needed for this subset; the release workflow
+# already builds + smokes on Windows.
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-tests.yml'
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-tests.yml'
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install backend (editable, dev extras)
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch to avoid the 2GB CUDA wheel — backend's
+          # `model_required` tests are skipped via the default addopts so
+          # torch is only needed for the import graph to load. The CPU
+          # wheel is ~200MB and installs in ~30s.
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
+          pip install -e ".[dev]"
+
+      - name: Run pytest (CPU subset)
+        working-directory: backend
+        # pyproject.toml addopts already filters: `-m 'not perf and not model_required'`.
+        # We pass extra args to surface a junit-style summary and tag the
+        # job for easy CI debugging.
+        run: |
+          python -m pytest tests/ -v --tb=short --maxfail=10
+
+      - name: Surface skipped-test count (info-only)
+        if: always()
+        working-directory: backend
+        run: |
+          python -m pytest tests/ --collect-only -q 2>&1 | tail -3

@@ -5,8 +5,23 @@ name: Release
 # `latest.json` to a GitHub Release so the updater plugin can pick
 # it up.
 #
+# ─── For forks: read this before tagging a release ────────────────────
+# This workflow is set up for the upstream repo (DennyWanye/deskpet).
+# If you forked DeskPet and want to ship your own builds, you MUST:
+#   1. Generate your OWN minisign keypair (do NOT reuse upstream's):
+#        npx @tauri-apps/cli signer generate --ci --password "" \
+#            -w $HOME/.tauri/yourname.key
+#   2. Paste the PRINTED PUBLIC KEY into tauri-app/src-tauri/tauri.conf.json
+#      under `plugins.updater.pubkey`. The pubkey IS expected to be public.
+#   3. Add the PRIVATE KEY contents as repo secret TAURI_SIGNING_PRIVATE_KEY
+#      (Settings > Secrets and variables > Actions).
+#   4. Change the updater `endpoints` in tauri.conf.json to point at YOUR
+#      releases (NOT upstream's), otherwise your users' DeskPet installs
+#      will fetch the upstream `latest.json` and try to auto-update there.
+# See RELEASE.md "Fork release guide" section for details.
+#
 # Required repo secrets (Settings > Secrets and variables > Actions):
-#   TAURI_SIGNING_PRIVATE_KEY           — contents of ~/.tauri/deskpet.key
+#   TAURI_SIGNING_PRIVATE_KEY           — contents of ~/.tauri/<name>.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — optional; only if the key has a passphrase
 #
 # Private key is generated locally with:

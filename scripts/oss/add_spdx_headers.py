@@ -21,6 +21,7 @@ Special handling:
 """
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -102,8 +103,9 @@ def insert_header(text: str, ext: str) -> str:
     return "".join(lines[:insert_at]) + header + suffix + "".join(lines[insert_at:])
 
 
-def process_file(path: Path) -> str:
-    """Return one of: 'added', 'skipped-existing', 'skipped-empty', 'error'."""
+def process_file(path: Path, check_only: bool = False) -> str:
+    """Return one of: 'added', 'skipped-existing', 'skipped-empty', 'error',
+    'missing' (check_only mode only)."""
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -112,19 +114,32 @@ def process_file(path: Path) -> str:
         return "skipped-empty"
     if already_has_spdx(text):
         return "skipped-existing"
+    if check_only:
+        return "missing"
     new_text = insert_header(text, path.suffix)
     path.write_text(new_text, encoding="utf-8", newline="\n")
     return "added"
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Do not modify files; exit 1 if any tracked source file lacks "
+             "the SPDX header. Used by CI / oss-checks.yml.",
+    )
+    args = parser.parse_args()
+
     repo_root = Path(subprocess.check_output(
         ["git", "rev-parse", "--show-toplevel"], text=True
     ).strip())
 
     files = git_tracked_files()
     counts = {"added": 0, "skipped-existing": 0, "skipped-empty": 0,
-              "skipped-excluded": 0, "skipped-d.ts": 0, "error": 0}
+              "skipped-excluded": 0, "skipped-d.ts": 0, "error": 0,
+              "missing": 0}
+    missing_files: list[str] = []
 
     for rel in files:
         if is_excluded(rel):
@@ -140,12 +155,26 @@ def main() -> int:
         if not path.is_file():
             counts["error"] += 1
             continue
-        result = process_file(path)
+        result = process_file(path, check_only=args.check)
         counts[result] = counts.get(result, 0) + 1
+        if result == "missing":
+            missing_files.append(rel)
 
-    print("=== SPDX header pass complete ===")
+    mode = "check" if args.check else "apply"
+    print(f"=== SPDX header pass complete (mode={mode}) ===")
     for k, v in counts.items():
         print(f"  {k}: {v}")
+
+    if args.check and counts["missing"] > 0:
+        print()
+        print(f"FAIL: {counts['missing']} file(s) missing SPDX header:")
+        for rel in missing_files[:20]:
+            print(f"  - {rel}")
+        if len(missing_files) > 20:
+            print(f"  ... and {len(missing_files) - 20} more")
+        print()
+        print("Fix locally: `python scripts/oss/add_spdx_headers.py`")
+        return 1
     return 0 if counts["error"] == 0 else 1
 
 
