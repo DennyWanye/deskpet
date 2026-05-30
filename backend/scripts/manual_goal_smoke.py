@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-S-2 实机 boot smoke — /goal command 真路径 + GoalChecker 真调用.
 
 跑法：

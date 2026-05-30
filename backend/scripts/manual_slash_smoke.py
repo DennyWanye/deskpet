@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """MR-S-1 实机 boot smoke — /help slash command 真路径硬证据.
 
 跑法：

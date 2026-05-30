@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """Slash command dispatcher — WI-A2 v1.
 
 用户在桌宠 chat 框输 `/<cmd> [args]` → InputBar 发 `slash_command` WS →

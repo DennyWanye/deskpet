@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
 """WI-A2/A4/A5 v1 — slash command dispatcher + REST API 测试.
 
 测试范围:
