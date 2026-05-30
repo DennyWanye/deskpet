@@ -39,18 +39,24 @@ jobs:
 
       - name: grep for chinzy.com leakage in tracked source/config
         run: |
-          # Excludes intentional historical references in the OSS-prep
-          # handoff doc (which mentions the brand as part of explaining
-          # what was cleaned).
+          # Exempted paths (intentionally retain the brand URL):
+          #   - plans/2026-05-27-oss-prep-handoff.md  — historical reference
+          #     in the OSS-prep handoff doc explaining what was cleaned.
+          #   - tauri-app/src/auth/*  — relay-edition auth UI; chinzy.com
+          #     is the maintainer's public relay console URL (not a secret).
+          #     These files are destined for a separate closed-source repo
+          #     per their own docstring; the URL is the production endpoint
+          #     users see in their address bar.
           MATCHES=$(git grep -l 'chinzy\.com' -- \
             '*.py' '*.ts' '*.tsx' '*.rs' '*.toml' '*.json' \
-            ':!plans/2026-05-27-oss-prep-handoff.md' 2>/dev/null || true)
+            ':!plans/2026-05-27-oss-prep-handoff.md' \
+            ':!tauri-app/src/auth/' 2>/dev/null || true)
           if [ -n "$MATCHES" ]; then
             echo "FAIL: 'chinzy.com' found in tracked source/config:"
             echo "$MATCHES"
             exit 1
           fi
-          echo "OK: no chinzy.com references in tracked source/config."
+          echo "OK: no chinzy.com references in tracked source/config (auth/* exempt)."
 
   no-secrets:
     name: No secrets committed
