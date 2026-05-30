@@ -164,3 +164,12 @@ plans/DESKPET-INTEGRATION-REPLY.md
 plans/RELAY-INTEGRATION-REQUEST.md
 # 项目前期 .docx 草稿（2026-04 时代历史遗物，本地可保留）
 plans/*.docx
+
+# history-rewrite tooling (Phase ② of RELEASE_CHECKLIST, throwaway)
+.filter-rules.tmp
+.filter-rules-email-only.tmp
+.filter-extract.tmp.py
+.filter-diag.tmp
+
+# Phase 7.5: local-only review of leaked credential history (delete after verify)
+.leaked-creds-review.tmp
