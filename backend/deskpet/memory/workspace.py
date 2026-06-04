@@ -220,28 +220,57 @@ class WorkspaceMemoryStore:
         if not query or not query.strip():
             return []
         await _ensure_schema(self._db_path)
-        q = f"%{query.strip()}%"
-        where = ["(path LIKE ? OR COALESCE(content_summary, '') LIKE ?)"]
-        params: list[Any] = [q, q]
+        # F5 修复（2026-06-01）：旧实现 `path/summary LIKE '%整个 query%'`，
+        # 自然语言 query 几乎永远 0 命中（真机终验暴露：agent 传
+        # "...README.md file access read touch"，path 不含整串）。改为分词
+        # OR LIKE（path / content_summary），按命中词数降序、recency 次之。
+        # 分词 LIKE 只修"词在但整串不匹配"；纯语义须走向量路（调用方负责）。
+        from deskpet.memory.text_tokenize import tokenize_query
+
+        tokens = tokenize_query(query)
+        if not tokens:
+            tokens = [query.strip()]  # 分词空 → 整串保底
+
+        score_terms = []
+        match_terms = []
+        params: list[Any] = []
+        for t in tokens:
+            pat = f"%{t}%"
+            score_terms.append(
+                "(CASE WHEN (path LIKE ? OR COALESCE(content_summary,'') LIKE ?) "
+                "THEN 1 ELSE 0 END)"
+            )
+            params.extend([pat, pat])
+            match_terms.append(
+                "(path LIKE ? OR COALESCE(content_summary,'') LIKE ?)"
+            )
+            params.extend([pat, pat])
+        match_score = " + ".join(score_terms)
+        where = [f"({' OR '.join(match_terms)})"]
         if session_id:
             where.append("session_id = ?")
             params.append(session_id)
         params.append(int(limit))
+        sql = (
+            f"SELECT *, ({match_score}) AS _match_score FROM workspace_state "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY _match_score DESC, last_action_ts DESC LIMIT ?"
+        )
         try:
             async with aiosqlite.connect(self._db_path) as conn:
                 conn.row_factory = aiosqlite.Row
-                cur = await conn.execute(
-                    "SELECT * FROM workspace_state "
-                    f"WHERE {' AND '.join(where)} "
-                    "ORDER BY last_action_ts DESC LIMIT ?",
-                    tuple(params),
-                )
+                cur = await conn.execute(sql, tuple(params))
                 rows = await cur.fetchall()
                 await cur.close()
         except aiosqlite.Error as exc:
             log.debug("workspace.recall sqlite error: %s", exc)
             return []
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            d.pop("_match_score", None)
+            out.append(d)
+        return out
 
     async def forget_session(self, session_id: str) -> int:
         await _ensure_schema(self._db_path)

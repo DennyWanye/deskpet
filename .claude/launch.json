@@ -7,6 +7,23 @@
       "runtimeArgs": ["run", "dev"],
       "port": 5173,
       "cwd": "tauri-app"
+    },
+    {
+      "name": "live2d-rewrite-preview",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "G:\\projects\\deskpet\\.claude\\worktrees\\live2d-rewrite\\scripts\\preview-vite.ps1",
+        "-Backend",
+        "sprite",
+        "-Port",
+        "5473"
+      ],
+      "port": 5473
     }
   ]
 }

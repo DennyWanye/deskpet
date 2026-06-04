@@ -24,6 +24,7 @@ export type MessageRole =
   | "tool_call"
   | "tool_result"
   | "plan"              // P4-S25 A2: plan card preceding execution
+  | "slash_result"      // FEAT-A2: /slash 命令结果（help/goal/prefs/skill/error）
   | "error";
 
 export interface PlanStep {
@@ -45,6 +46,9 @@ export interface Message {
   // P4-S25 A2: plan-card payload
   plan_rationale?: string;
   plan_steps?: PlanStep[];
+  // superpowers 决策2 plan-confirm 硬门: 等用户点 [执行]/[取消]
+  plan_awaiting_confirm?: boolean;
+  plan_sid?: string;  // which session this plan belongs to (for plan_confirm WS)
   // Bookkeeping
   ts: number;
 }
@@ -75,6 +79,32 @@ export interface SupervisorAlertEntry {
   received_at: number;
 }
 
+/** 2026-05-31 restore — single-snapshot of "how full is this session's
+ *  context". All numbers are LLM-authoritative (from ``usage.prompt_tokens``
+ *  of the most recent response) except ``context_window`` / thresholds
+ *  which come from the resolved ``ModelContextInfo``. */
+export interface ContextUsageSnapshot {
+  session_id: string;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  context_window: number;
+  /** Practical ceiling = window × effective_pct (typically 0.95). */
+  effective_ceiling: number;
+  /** Suggested compact threshold = window × compact_at_pct. Ring turns
+   *  orange when prompt_tokens crosses this line. */
+  compact_at: number;
+  /** "Recall sweet-spot" upper-bound — past this point the model's needle
+   *  recall degrades sharply. Shown as a yellow tick on the ring. */
+  recall_sweet: number;
+  updated_at: number;
+  /** True when this snapshot is a model-only stub emitted before any LLM
+   *  turn has happened (prompt_tokens=0). UI may render this slightly
+   *  dimmer than a real measured snapshot. */
+  stub?: boolean;
+}
+
 export interface SessionState {
   base_session_id: string;
   code_session_id: string | null;
@@ -83,6 +113,11 @@ export interface SessionState {
   messages: Message[];
   todos: Todo[];
   token_usage: { prompt: number; completion: number };
+  /** 2026-05-31 restore — Claude-Code-style context-usage snapshot pushed
+   * by backend after every LLM turn (and once on connect via
+   * `context_usage_request`). Drives ring gauge + breakdown modal.
+   * `null` = never received → ring renders dimmed. */
+  context_usage?: ContextUsageSnapshot | null;
   status: SessionStatus;
   last_activity: number;
   inflight: boolean;
@@ -148,6 +183,10 @@ interface SessionsStore {
    * rehydration when the panel reloads and pulls history from
    * SessionDB via `session_messages_load`. */
   set_messages(sid: string, messages: Message[]): void;
+  /** superpowers 决策2: 用户点了 plan 卡片的 [执行]/[取消] 后，清掉该
+   *  plan 消息的 awaiting_confirm（按钮消失）。msgId 可空 → 清该会话最近
+   *  一条仍 awaiting 的 plan（超时取消路径用）。 */
+  resolve_plan(sid: string, msgId?: string): void;
   upsert_todos(sid: string, todos: Todo[]): void;
   remove(sid: string): void;
   set_inflight(delta: number): void;
@@ -174,6 +213,7 @@ const blank_session = (sid: string): SessionState => ({
   messages: [],
   todos: [],
   token_usage: { prompt: 0, completion: 0 },
+  context_usage: null,
   status: "idle",
   last_activity: Date.now(),
   inflight: false,
@@ -260,6 +300,32 @@ export const useSessionsStore = create<SessionsStore>((set) => ({
         sessions: {
           ...state.sessions,
           [sid]: { ...cur, messages, last_activity: Date.now() },
+        },
+      };
+    });
+  },
+
+  resolve_plan(sid, msgId) {
+    set((state) => {
+      const cur = state.sessions[sid];
+      if (!cur) return {};
+      let cleared = false;
+      // clear by id, or (no id) the last still-awaiting plan
+      const next = [...cur.messages];
+      for (let i = next.length - 1; i >= 0; i--) {
+        const m = next[i];
+        if (m.role !== "plan" || !m.plan_awaiting_confirm) continue;
+        if (msgId && m.id !== msgId) continue;
+        next[i] = { ...m, plan_awaiting_confirm: false };
+        cleared = true;
+        if (!msgId) break; // no id → only the latest one
+        break;
+      }
+      if (!cleared) return {};
+      return {
+        sessions: {
+          ...state.sessions,
+          [sid]: { ...cur, messages: next },
         },
       };
     });

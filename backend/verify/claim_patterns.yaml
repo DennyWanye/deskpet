@@ -52,3 +52,39 @@ patterns:
       - ppt_create
       - docx_create
       - xlsx_create
+
+  # --- superpowers Layer ③: code 场景 fake-completion patterns -------------
+  # code 模式的"我做完了"断言：必须有对应工具 receipt（write_file / edit_file /
+  # run_shell）才放行；裸声明（无工具调用 = fake completion）→ strict 拦 end_turn
+  # 回灌"请真调工具"。每个工具 dispatch 都 emit receipt（registry.execute_tool），
+  # 所以真调过的任务命中、不被误杀。
+  - id: zh_created_file
+    # "已创建 X.py" / "创建了 文件 foo.md" / "已新建 bar.txt"
+    regex: '(?:已创建|已新建|创建了|新建了)\s*(?:文件\s*)?(?P<path>[^\s，。、:：]+\.[A-Za-z0-9]{1,6})'
+    artifact_kind: file
+    tool_hint:
+      - write_file
+      - artifact_create
+      - doc_create
+
+  - id: zh_modified_file
+    # "已修改 X.py" / "更新了 config.toml" / "已编辑 main.py"
+    regex: '(?:已修改|已更新|已编辑|修改了|更新了)\s*(?:文件\s*)?(?P<path>[^\s，。、:：]+\.[A-Za-z0-9]{1,6})'
+    artifact_kind: file
+    tool_hint:
+      - edit_file
+      - write_file
+
+  - id: zh_tests_passed
+    # "测试通过" / "所有测试已通过" / "测试全部通过" — 需 run_shell receipt
+    regex: '(?:测试(?:全部)?(?:已)?通过|所有测试(?:均)?通过|测试运行成功)'
+    artifact_kind: command_run
+    tool_hint:
+      - run_shell
+
+  - id: en_modified_file
+    regex: 'I (?:have )?(?:modified|updated|edited) (?P<path>[^\s,\.]+\.[a-z]{2,6})'
+    artifact_kind: file
+    tool_hint:
+      - edit_file
+      - write_file

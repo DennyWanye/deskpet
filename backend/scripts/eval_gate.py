@@ -55,6 +55,16 @@ _BASELINE_PATH = (
     Path(__file__).resolve().parent.parent
     / "deskpet" / "memory" / "eval" / "zh_baseline.json"
 )
+# F2 (memory-stage2-followup)：stage2 用独立 baseline，与 stage1 隔离。
+_BASELINE_PATH_STAGE2 = (
+    Path(__file__).resolve().parent.parent
+    / "deskpet" / "memory" / "eval" / "zh_baseline_stage2.json"
+)
+
+
+def _baseline_path_for_stage(stage: str) -> Path:
+    return _BASELINE_PATH_STAGE2 if stage == "stage2" else _BASELINE_PATH
+
 
 # hit@5 容差：浮点 + mock 向量的抖动留一点余量，但不容真回归。
 _HIT_TOLERANCE = 0.02
@@ -62,10 +72,24 @@ _HIT_TOLERANCE = 0.02
 _TOKEN_GROWTH_MAX = 1.30
 
 
-async def run_eval(*, top_k: int = 20) -> dict:
-    """seed fixture → mock embedder backfill → Retriever → MetricsRunner。"""
+async def run_eval(
+    *, top_k: int = 20, stage: str = "stage1", embedder_mode: str = "mock"
+) -> dict:
+    """seed fixture → embedder backfill → Retriever → MetricsRunner。
+
+    F2 (memory-stage2-followup)：``stage`` 决定召回器与 fixture。
+      * ``stage1``（默认，向后兼容）：35 条 message-recall QA + 裸 Retriever。
+      * ``stage2``：35 条 + 10 条 entity-targeted QA + EnhancedRetriever
+        (enhanced_retriever + entity_path)，让 entity 路真正参与召回，
+        ``--strict`` 因此能量化验证 Stage 2 召回提升。
+
+    G5.2 (记忆严测 2026-06-01)：``embedder_mode``。
+      * ``"mock"``（默认，向后兼容 + 可复现 gate）：hash 向量，确定性、无权重。
+      * ``"real"``：真 BGE-M3（子进程 worker）。用于量化"mock 伪装语义"的
+        confound —— 对比 real vs mock 的 hit@5，暴露 mock 数字虚高/虚低。
+        需本地有权重；CI gate 跑 real 须确保权重落盘。
+    """
     from deskpet.memory.eval.metrics import MetricsRunner
-    from deskpet.memory.eval.zh_fixture import seed_zh_fixture
     from deskpet.memory.embedder import Embedder
     from deskpet.memory.retriever import Retriever
     from deskpet.memory.session_db import SessionDB
@@ -73,33 +97,82 @@ async def run_eval(*, top_k: int = 20) -> dict:
 
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "eval_gate.db"
-        seed_info = await seed_zh_fixture(db_path)
+
+        if stage == "stage2":
+            from deskpet.memory.eval.zh_fixture_stage2 import (
+                seed_zh_fixture_stage2,
+            )
+            seed_info = await seed_zh_fixture_stage2(db_path)
+        else:
+            from deskpet.memory.eval.zh_fixture import seed_zh_fixture
+            seed_info = await seed_zh_fixture(db_path)
 
         sdb = SessionDB(db_path=db_path)
         await sdb.initialize()
-        # mock embedder —— 确定性、无需权重。
-        embedder = Embedder(model_path=None, use_mock_when_missing=True)
+        if embedder_mode == "real":
+            # 真 BGE-M3：子进程 worker（裸 import 会段错误）。模型路径走 app
+            # 自己的解析（paths.user_models_dir 读 DESKPET_MODEL_ROOT / portable
+            # / LocalAppData），不再硬编码 C: —— 用户把数据迁到 F 盘后硬编码会
+            # 找不到（2026-06-02 踩到）。调用方可设 DESKPET_MODEL_ROOT 覆盖。
+            from paths import user_models_dir
+            embedder = Embedder(model_path=user_models_dir() / "bge-m3-int8",
+                                use_mock_when_missing=False)
+        else:
+            # mock embedder —— 确定性、无需权重。
+            embedder = Embedder(model_path=None, use_mock_when_missing=True)
         await embedder.warmup()
         # 把 fixture 消息的向量补齐，让 Retriever 的 vec 路也参与 RRF。
         vw = VectorWorker(embedder=embedder, session_db=sdb)
         await vw.backfill_missing()
 
-        retriever = Retriever(session_db=sdb, embedder=embedder)
+        base = Retriever(session_db=sdb, embedder=embedder)
+        if stage == "stage2":
+            # 接 Stage 2 召回路径：EnhancedRetriever + facts + entity_path。
+            from deskpet.memory.enhanced_retriever import build_recall_retriever
+            from deskpet.memory.facts import FactsStore
+            from deskpet.memory.entity_extractor import RegexEntityExtractor
+
+            facts_store = FactsStore(db_path)  # mock embedder → entity 走 LIKE
+            retriever = build_recall_retriever(
+                base,
+                rerank=False,
+                enhanced_retriever=True,
+                query_rewrite=False,
+                chunking=False,
+                facts_store=facts_store,
+                facts_weight=0.2,
+                embedder=embedder,
+                entity_extractor=RegexEntityExtractor(),
+                entity_weight=0.10,
+            )
+            mode = "eval_gate_stage2"
+        else:
+            retriever = base
+            mode = "eval_gate"
+
         runner = MetricsRunner(
             db_path, retriever,
-            config_snapshot={"mode": "eval_gate", "embedder": "mock"},
+            config_snapshot={
+                "mode": mode, "embedder": embedder_mode, "stage": stage,
+            },
         )
         report = await runner.run(top_k=top_k)
         out = report.as_dict()
         out["_seed"] = seed_info
+        out["_embedder_mode"] = embedder_mode
+        try:
+            await embedder.close()
+        except Exception:  # noqa: BLE001
+            pass
         return out
 
 
-def _load_baseline() -> dict | None:
-    if not _BASELINE_PATH.exists():
+def _load_baseline(path: Path | None = None) -> dict | None:
+    p = path if path is not None else _BASELINE_PATH
+    if not p.exists():
         return None
     try:
-        return json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -197,13 +270,18 @@ async def _amain() -> int:
         help="只打印 JSON 结果，跳过门控判定",
     )
     parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument(
+        "--stage", choices=["stage1", "stage2"], default="stage1",
+        help="stage1=裸 Retriever(默认)；stage2=EnhancedRetriever+entity_path",
+    )
     args = parser.parse_args()
 
-    current = await run_eval(top_k=args.top_k)
+    baseline_path = _baseline_path_for_stage(args.stage)
+    current = await run_eval(top_k=args.top_k, stage=args.stage)
     print(json.dumps(current, ensure_ascii=False, indent=2))
 
     if args.update_baseline:
-        old = _load_baseline()
+        old = _load_baseline(baseline_path)
         ok, reason = _check_update_sanity(current, old, force=args.force)
         if not ok:
             print(f"[eval_gate] {reason}", file=sys.stderr)
@@ -214,26 +292,27 @@ async def _amain() -> int:
                       "mrr", "token_per_query")
             if k in current
         }
-        _BASELINE_PATH.write_text(
+        baseline_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         if args.force and old is not None:
             print(
-                f"[eval_gate] baseline 已强制更新（--force） → {_BASELINE_PATH}"
+                f"[eval_gate] baseline 已强制更新（--force） → {baseline_path}"
             )
         else:
-            print(f"[eval_gate] baseline 已更新 → {_BASELINE_PATH}")
+            print(f"[eval_gate] baseline 已更新 → {baseline_path}")
         return 0
 
     if args.json:
         return 0
 
-    baseline = _load_baseline()
+    baseline = _load_baseline(baseline_path)
     if baseline is None:
         print(
-            "[eval_gate] 无 baseline 文件 —— 先跑 "
-            "`python -m scripts.eval_gate --update-baseline` 钉一份。",
+            f"[eval_gate] 无 baseline 文件 ({baseline_path.name}) —— 先跑 "
+            f"`python -m scripts.eval_gate --stage={args.stage} "
+            f"--update-baseline` 钉一份。",
             file=sys.stderr,
         )
         return 2

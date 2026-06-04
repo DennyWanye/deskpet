@@ -225,6 +225,7 @@ def _register() -> None:
             _handle,
             permission_category="write_file",
             timeout_seconds=60.0,
+            concurrency_safe=False,  # G3: bulk filesystem mutation
         )
     except Exception:  # noqa: BLE001
         pass

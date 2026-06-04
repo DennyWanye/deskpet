@@ -42,6 +42,16 @@ _VALID_SERVICES = frozenset({
     "provider_registry",   # LLMProviderRegistry — owns [[llm.providers]] list
     # --- Stage 2 WI-S2.1a / E3 v2 — MemoryPanel facts view 桥接 ---------------
     "facts_store",         # FactsStore — list_active / mark_forgotten / restore_from_undo
+    # --- Companion+Code v1 — SessionGoal + GoalChecker (main.py:1068-1069) ---
+    # 2026-05-30 bug fix：之前缺这两项导致 register() 抛 ValueError → boot
+    # warning `p4_services_registration_failed` + production UI 弹出红色错误条
+    # "Unknown service 'session_goal_store'"。flag `features.goal_mode` 默认
+    # OFF 时仍 register(None) 占位（main.py:1068 没 try/except 包）→ 必须在
+    # whitelist 里。
+    "session_goal_store",  # SessionGoalStore — companion+code goal tracking
+    "goal_checker",        # GoalChecker — LLM-based goal completion check
+    # --- superpowers Layer 1B — 偏好记忆（计划/意图，BGE-M3 语义匹配）---------
+    "preference_memory",   # PreferenceMemory — plan-confirm 自动确认 + 意图记忆
 })
 
 @dataclass
@@ -78,6 +88,11 @@ class ServiceContext:
     provider_registry: Any | None = None
     # --- Stage 2 WI-S2.1a / E3 v2 -------------------------------------------
     facts_store: Any | None = None
+    # --- Companion+Code v1 --------------------------------------------------
+    session_goal_store: Any | None = None
+    goal_checker: Any | None = None
+    # --- superpowers Layer 1B ------------------------------------------------
+    preference_memory: Any | None = None
 
     def register(self, name: str, provider: Any) -> None:
         if name not in _VALID_SERVICES:

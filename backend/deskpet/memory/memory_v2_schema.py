@@ -144,6 +144,18 @@ CREATE TABLE IF NOT EXISTS skill_memory (
     last_used_at    REAL
 );
 CREATE INDEX IF NOT EXISTS idx_skill_name ON skill_memory(name);
+
+-- FEAT-A4 (superpowers): plan-confirm 硬门的 awaiting plan sidecar。
+-- 不走 messages 表（避免 _on_message_written → VectorWorker embed + FTS5
+-- 污染语义检索）。PK=session_id：plan 门 per-session 单 future，同时只一个
+-- awaiting plan，upsert 天然覆盖。F5/HMR rehydration 据此重建 [执行]/[取消] 栏。
+CREATE TABLE IF NOT EXISTS session_plans (
+    session_id  TEXT    PRIMARY KEY,
+    rationale   TEXT    NOT NULL DEFAULT '',
+    steps_json  TEXT    NOT NULL DEFAULT '[]',
+    awaiting    INTEGER NOT NULL DEFAULT 0,
+    ts          REAL    NOT NULL
+);
 """
 
 # Cache so we don't re-run executescript every call. Keyed by absolute db path.

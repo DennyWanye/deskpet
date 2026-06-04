@@ -181,7 +181,12 @@ def register_code_tools(
             toolset="control",
             schema=agent_parallel_schema,
             handler=agent_parallel_handler,
-            permission_category="execute_command",
+            # bug fix: "execute_command" 不在合法 PermissionCategory 集（同
+            # skill_tools.py P0 bug fix #8 的漏网者）→ gate.check 在 auto-mode
+            # 短路前 raise ValueError → agent_parallel 被 except 吞、100% 不执行。
+            # 对齐单 agent 工具用 "read_file"：agent_parallel 仅编排子代理，
+            # 子代理内部各 tool 仍各自按真实 category check。
+            permission_category="read_file",
             source="builtin",
             timeout_seconds=300.0,
             replace_allowed=False,

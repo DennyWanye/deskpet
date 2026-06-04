@@ -14,7 +14,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $repoRoot "backend"
-$pyExe = Join-Path $backendDir ".venv\Scripts\python.exe"
+$pyExe = if ($env:DESKPET_BUILD_PYEXE) { $env:DESKPET_BUILD_PYEXE } else { Join-Path $backendDir ".venv\Scripts\python.exe" }
 
 if (-not (Test-Path $pyExe)) {
     Write-Error "Python venv not found at $pyExe — run 'python -m venv backend/.venv' first."

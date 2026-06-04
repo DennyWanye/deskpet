@@ -78,6 +78,7 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
         ),
         handler=write_file,
         permission_category="write_file",
+        concurrency_safe=False,  # G3: filesystem write — must serialize
     )
 
     registry.register(
@@ -96,6 +97,7 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
         ),
         handler=edit_file,
         permission_category="write_file",
+        concurrency_safe=False,  # G3: in-place file mutation — must serialize
     )
 
     registry.register(
@@ -142,6 +144,7 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
         # watchdog still sits one level above this and will catch true
         # hangs at the 15-minute session-inactivity threshold.
         timeout_seconds=300.0,
+        concurrency_safe=False,  # G3: arbitrary shell side effects — serialize
     )
 
     # NOTE: ``web_fetch`` is intentionally NOT registered here — the
@@ -184,4 +187,5 @@ def register_os_tools(registry) -> None:  # type: ignore[no-untyped-def]
         ),
         handler=desktop_create_file,
         permission_category="desktop_write",
+        concurrency_safe=False,  # G3: filesystem write — must serialize
     )

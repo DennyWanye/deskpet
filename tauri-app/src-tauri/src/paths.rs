@@ -57,12 +57,57 @@ fn resolve_with(
     fallback
 }
 
+/// Portable-mode userdata dir: when running from a frozen install, data
+/// lives in `<install>/userdata/` next to the exe (mirrors Python
+/// `backend/paths.py::_portable_userdata_dir`). Returns None in dev mode
+/// (current_exe isn't in the install layout) or when no userdata/ exists.
+///
+/// Layout: `<install>/deskpet.exe` + `<install>/userdata/`; the backend
+/// exe sits at `<install>/backend/deskpet-backend.exe`, so we also check
+/// one level up when the exe's parent is named "backend".
+#[cfg(not(test))]
+fn portable_userdata_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let parent = exe.parent()?;
+    let mut anchors: Vec<PathBuf> = vec![parent.to_path_buf()];
+    if parent.file_name().and_then(|s| s.to_str()) == Some("backend") {
+        if let Some(up) = parent.parent() {
+            anchors.insert(0, up.to_path_buf());
+        }
+    }
+    for anchor in anchors {
+        let ud = anchor.join("userdata");
+        if ud.is_dir() {
+            return Some(ud);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+fn portable_userdata_dir() -> Option<PathBuf> {
+    // 测试下不探测真实 current_exe(避免 test runner 旁碰巧的 userdata 干扰
+    // 现有单测的 %AppData% 期望)。
+    None
+}
+
 pub fn user_data_dir_with(base: &BaseDirs, env_lookup: EnvLookup<'_>) -> Option<PathBuf> {
-    resolve_with(
-        "DESKPET_USER_DATA",
-        env_lookup,
-        base.app_data.as_ref().map(|p| p.join("deskpet")),
-    )
+    // 1. DESKPET_USER_DATA_DIR — 与 Python backend/paths.py 统一的 env 名
+    //    (历史 bug: Rust 读 DESKPET_USER_DATA、Python 读 DESKPET_USER_DATA_DIR,
+    //    名字不一致 → device_id/onboarding 和 config/db 落到不同目录)。
+    if let Some(v) = env_lookup("DESKPET_USER_DATA_DIR").filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(v));
+    }
+    // 2. 兼容旧 DESKPET_USER_DATA(无 _DIR) — 老用户可能设过,别破坏。
+    if let Some(v) = env_lookup("DESKPET_USER_DATA").filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(v));
+    }
+    // 3. portable: frozen 安装时 <install>/userdata(与 Python portable 一致)。
+    if let Some(p) = portable_userdata_dir() {
+        return Some(p);
+    }
+    // 4. classic: %AppData%\deskpet。
+    base.app_data.as_ref().map(|p| p.join("deskpet"))
 }
 
 pub fn user_log_dir_with(base: &BaseDirs, env_lookup: EnvLookup<'_>) -> Option<PathBuf> {
@@ -75,6 +120,10 @@ pub fn user_log_dir_with(base: &BaseDirs, env_lookup: EnvLookup<'_>) -> Option<P
 pub fn user_models_dir_with(base: &BaseDirs, env_lookup: EnvLookup<'_>) -> Option<PathBuf> {
     if let Some(v) = env_lookup("DESKPET_MODEL_ROOT").filter(|s| !s.is_empty()) {
         return Some(PathBuf::from(v));
+    }
+    // portable: <install>/userdata/models(与 Python paths.py 一致)。
+    if let Some(p) = portable_userdata_dir() {
+        return Some(p.join("models"));
     }
     base.local_app_data.as_ref().map(|p| p.join("deskpet").join("models"))
 }
@@ -145,6 +194,25 @@ mod tests {
         let env = env_map(&[("DESKPET_USER_DATA", "D:/custom/deskpet")]);
         let out = user_data_dir_with(&base_win(), &env).unwrap();
         assert_eq!(out, PathBuf::from("D:/custom/deskpet"));
+    }
+
+    #[test]
+    fn user_data_dir_prefers_dir_suffix_env() {
+        // 统一后: DESKPET_USER_DATA_DIR(与 Python 一致)优先于旧 DESKPET_USER_DATA。
+        let env = env_map(&[
+            ("DESKPET_USER_DATA_DIR", "D:/new/userdata"),
+            ("DESKPET_USER_DATA", "E:/old/deskpet"),
+        ]);
+        let out = user_data_dir_with(&base_win(), &env).unwrap();
+        assert_eq!(out, PathBuf::from("D:/new/userdata"));
+    }
+
+    #[test]
+    fn user_data_dir_falls_back_to_legacy_env() {
+        // 只设旧 DESKPET_USER_DATA 时仍兼容(不破坏老用户)。
+        let env = env_map(&[("DESKPET_USER_DATA", "E:/old/deskpet")]);
+        let out = user_data_dir_with(&base_win(), &env).unwrap();
+        assert_eq!(out, PathBuf::from("E:/old/deskpet"));
     }
 
     #[test]

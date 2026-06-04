@@ -100,7 +100,11 @@ export interface RelayAdapterOptions {
   bindings?: RelayBindings;
 }
 
-const DEFAULT_BASE_URL = "https://your-llm-relay.example.com";
+// 2026-05-31 restore — OSS-prep replace 误把 production default URL 改成
+// 占位符 (commit 3cd77e7 的保护规则只识别下划线前缀 _DEFAULT_BASE_URL，
+// 漏了 TS 这边无下划线的 DEFAULT_BASE_URL)。前端 login → fetch DNS 失败 →
+// "登录报错"。production 默认必须是真正的中转站域名。
+const DEFAULT_BASE_URL = "https://chinzy.com";
 
 /** Shape returned by the auth endpoints; subset of the full envelope. */
 interface AuthTokenResponse {

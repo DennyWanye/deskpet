@@ -417,9 +417,11 @@ class Retriever:
         try:
             rows = await self._db.search_fts(quoted, limit=top_k)
         except sqlite3.OperationalError as exc:
-            # 极端情况：query 经 quote 后仍不合法。降级为空结果，让
-            # 其它信号继续融合。
-            log.debug("fts search failed for %r: %s", query, exc)
+            # FTS 路失效（query quote 后仍不合法 / FTS5 表损坏 / 锁超时）→
+            # 降级为空结果让其它信号继续融合。warning 让"BM25/FTS 路静默掉"
+            # 可见 —— 这是 gen-1 活路径检索的一路，静默退化无人察觉正是
+            # 审计 FATAL-B 要堵的（business 不在 _safe_call 内捕获故需自己 warn）。
+            log.warning("fts search failed for %r: %s", query, exc)
             return []
         # rank 是 float（SQLite 返回 double），越小越相关。
         return [(int(r["id"]), float(r.get("rank") or 0.0)) for r in rows]

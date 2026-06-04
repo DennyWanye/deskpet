@@ -36,6 +36,9 @@ window.__deskpet_metrics_emit = (event: string, payload: Record<string, unknown>
 const isCodePanel = window.location.hash.startsWith('#/code-panel');
 // 2026-05-19: slim message panel is its own transparent docked window.
 const isMessagePanel = window.location.hash.startsWith('#/message-panel');
+// v2 WI-T2-B 真 UI 验证 route — `#/slashtest` 独立渲染 InputBar 让真浏览器
+// E2E 能真触发 / 命令 autocomplete 状态机（无需 Tauri invoke 创 session）.
+const isSlashTest = window.location.hash.startsWith('#/slashtest');
 
 if (isCodePanel) {
   // Code panel: opaque dark background, normal scrollbars.
@@ -56,7 +59,20 @@ if (isCodePanel) {
 // StrictMode offers isn't worth the resource duplication.
 const root = createRoot(document.getElementById('root')!);
 
-if (isCodePanel) {
+if (isSlashTest) {
+  // v2 真 UI 验证 — 独立渲染 InputBar 让浏览器 E2E 真触发 / 命令补全.
+  document.body.style.backgroundColor = '#0f1218';
+  import('./code-panel/SlashTestHarness')
+    .then(({ SlashTestHarness }) => root.render(<SlashTestHarness />))
+    .catch((e) => {
+      console.error('[main] slashtest load failed:', e);
+      root.render(
+        <div style={{ padding: 20, color: '#f87171' }}>
+          Failed to load slashtest: {String(e)}
+        </div>,
+      );
+    });
+} else if (isCodePanel) {
   // Lazy import keeps react-markdown / pretext / virtuoso out of the
   // pet shell bundle until the user actually opens the panel.
   import('./code-panel/CodePanelRoot')

@@ -41,6 +41,7 @@ Design notes
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -141,6 +142,15 @@ class ToolSpec:
     #   - 真实现注册（默认 replace_allowed=False）→ 不会被 stub 覆盖
     #   - mcp_call / 测试热替换等显式 replace_allowed=True 时合法覆盖
     replace_allowed: bool = False
+    # G3 (companion-code-v2): tool dispatch partition flag.
+    #   True  → handler is safe to run concurrently with other safe tools
+    #           in the same partition_dispatch batch (read-only / pure /
+    #           idempotent queries)。默认 True 兼容历史注册。
+    #   False → handler may mutate shared state (filesystem write, DB
+    #           write, shell exec) and MUST run serially within its batch.
+    # 用法：partition_dispatch() 把 safe 全 asyncio.gather 并发，unsafe 串行 await。
+    # 注册写工具时显式传 ``concurrency_safe=False``。
+    concurrency_safe: bool = True
 
     def env_satisfied(self) -> bool:
         """True iff every ``requires_env`` var is present AND non-empty."""
@@ -285,6 +295,7 @@ class ToolRegistry:
         dangerous: bool = False,
         timeout_seconds: float = 60.0,
         replace_allowed: bool = False,
+        concurrency_safe: bool = True,
     ) -> None:
         """Register a single tool.
 
@@ -359,6 +370,7 @@ class ToolRegistry:
             dangerous=dangerous,
             timeout_seconds=float(timeout_seconds),
             replace_allowed=replace_allowed,
+            concurrency_safe=bool(concurrency_safe),
         )
         # 后续 dict 查 / 冲突检测都用 qualified_name
         name = qualified_name
@@ -824,6 +836,117 @@ class ToolRegistry:
             outcome_ok = _envelope_indicates_success(result)
             await self._breaker.record_call(session_id, name, ok=outcome_ok)
         return envelope
+
+    # ------------------------------------------------------------------
+    # G3 (companion-code-v2): partition_dispatch — safe 并发 / unsafe 串行
+    # ------------------------------------------------------------------
+    def _is_concurrency_safe(self, name: str) -> bool:
+        """Read ``ToolSpec.concurrency_safe`` thread-safely.
+
+        Returns True for unknown tools — they'll fail loudly in
+        ``execute_tool`` anyway (``unknown tool: ...``), and treating
+        them as safe means a single bogus name doesn't drag the whole
+        batch into serial mode.
+        """
+        with self._lock:
+            spec = self._tools.get(name)
+        return bool(spec.concurrency_safe) if spec is not None else True
+
+    async def partition_dispatch(
+        self,
+        calls: list[Any],
+        session_id: str,
+    ) -> list[dict[str, Any]]:
+        """Dispatch a batch of tool calls split by ``concurrency_safe``.
+
+        Args:
+            calls: list of objects exposing ``.name`` (str), ``.args``
+                (dict | None), and optional ``.task_id`` (str). A
+                3-tuple ``(name, args, task_id)`` is also accepted for
+                convenience; dicts ``{"name": ..., "args": ..., "task_id": ...}``
+                work too. The point is duck-typed access — callers can
+                pass their own ToolCall namedtuple.
+            session_id: forwarded to ``execute_tool`` for breaker /
+                permission gate / per-session context lookup.
+
+        Returns:
+            ``list[envelope]`` in **input order** (so caller can pair
+            results back to ``calls[i]`` without bookkeeping). Each
+            envelope is whatever ``execute_tool`` returned —
+            ``{"ok": bool, "result": str | None, "error": str | None}``.
+
+        Strategy:
+            * All ``concurrency_safe=True`` calls run concurrently via
+              ``asyncio.gather`` (one big batch).
+            * All ``concurrency_safe=False`` calls run **serially** in
+              their relative input order (e.g. write_file → bash_run
+              executes write before bash to preserve causality).
+            * Empty ``calls`` → returns ``[]`` immediately.
+
+        Why not just run everything concurrently? Two writes to the
+        same path racing in different threads can corrupt files /
+        produce non-deterministic results. The partition is the cheapest
+        correctness guarantee — pay 10% latency for full safety.
+        """
+        if not calls:
+            return []
+
+        def _extract(c: Any) -> tuple[str, dict[str, Any], str]:
+            # Tuple / list: (name, args, task_id?)
+            if isinstance(c, (tuple, list)):
+                name = c[0]
+                args = c[1] if len(c) > 1 else {}
+                task_id = c[2] if len(c) > 2 else ""
+                return str(name), dict(args or {}), str(task_id or "")
+            # Dict: {"name": ..., "args": ..., "task_id": ...}
+            if isinstance(c, dict):
+                return (
+                    str(c.get("name", "")),
+                    dict(c.get("args") or {}),
+                    str(c.get("task_id") or ""),
+                )
+            # Object with attributes (namedtuple / dataclass)
+            name = getattr(c, "name", "")
+            args = getattr(c, "args", None) or {}
+            task_id = getattr(c, "task_id", "") or ""
+            return str(name), dict(args), str(task_id)
+
+        # Index so we can restore input order after merging.
+        indexed: list[tuple[int, str, dict[str, Any], str]] = []
+        for i, c in enumerate(calls):
+            name, args, task_id = _extract(c)
+            indexed.append((i, name, args, task_id))
+
+        safe_batch = [
+            (i, n, a, t) for (i, n, a, t) in indexed
+            if self._is_concurrency_safe(n)
+        ]
+        unsafe_batch = [
+            (i, n, a, t) for (i, n, a, t) in indexed
+            if not self._is_concurrency_safe(n)
+        ]
+
+        out: list[Optional[dict[str, Any]]] = [None] * len(calls)
+
+        # Concurrent — safe partition.
+        if safe_batch:
+            safe_results = await asyncio.gather(*[
+                self.execute_tool(n, a, session_id, t)
+                for (_, n, a, t) in safe_batch
+            ])
+            for (orig_i, _, _, _), res in zip(safe_batch, safe_results):
+                out[orig_i] = res
+
+        # Serial — unsafe partition (preserves input order within batch).
+        for orig_i, n, a, t in unsafe_batch:
+            out[orig_i] = await self.execute_tool(n, a, session_id, t)
+
+        # Sanity: every slot filled.
+        assert all(o is not None for o in out), (
+            "partition_dispatch left a hole in the result list — bug in "
+            "safe/unsafe routing logic"
+        )
+        return [o for o in out if o is not None]  # type: ignore[misc]
 
     async def _build_circuit_open_envelope(
         self, name: str, session_id: str, spec: ToolSpec

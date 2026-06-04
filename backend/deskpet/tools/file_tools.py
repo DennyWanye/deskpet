@@ -486,7 +486,10 @@ async def _handle_workspace_recall(args: dict[str, Any], task_id: str) -> str:
 # Registration
 # ---------------------------------------------------------------------
 registry.register("file_read", "file", _SCHEMA_READ, _handle_file_read)
-registry.register("file_write", "file", _SCHEMA_WRITE, _handle_file_write)
+registry.register(
+    "file_write", "file", _SCHEMA_WRITE, _handle_file_write,
+    concurrency_safe=False,  # G3: filesystem write — must serialize
+)
 registry.register("file_glob", "file", _SCHEMA_GLOB, _handle_file_glob)
 registry.register("file_grep", "file", _SCHEMA_GREP, _handle_file_grep)
 registry.register(

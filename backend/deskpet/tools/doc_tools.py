@@ -69,6 +69,30 @@ def _coerce(obj: Any) -> Optional[Any]:
 # doc_create
 # ---------------------------------------------------------------------------
 def _add_element(document, el: dict[str, Any]) -> None:
+    # 兼容 LLM 常用的简写格式：element 无 "type" 字段，而是直接用
+    # {heading:"...",level:N} / {paragraph:"..."} / {table:[...]} 作 key。
+    # 归一到标准 {type,text} 后再走下面的渲染分支（否则 type 缺省 paragraph、
+    # text 取不到 → 渲染出空段落，整篇 docx 正文为空）。
+    if "type" not in el:
+        for _k in ("heading", "paragraph", "table", "page_break"):
+            if _k in el:
+                el = dict(el)
+                inner = el[_k]
+                el["type"] = _k
+                # LLM 实际常发**嵌套** dict 格式 {"heading":{"text":..,"level":..}}
+                # / {"paragraph":{"text":..}} / {"table":{"rows":..,"header":..}}。
+                # 此前把整个内层 dict 直接赋给 el["text"]，渲染出 str(dict)
+                # 字面量（如 "{'text': '团队周报', 'level': 1}"）→ 正文全是 dict
+                # 文本。修复：内层是 dict → 平铺其字段到 el；是标量 → 按旧简写
+                # ({"heading":"文字"} / {"paragraph":"文字"} / {"table":[[...]]}) 取值。
+                if isinstance(inner, dict):
+                    for _ik, _iv in inner.items():
+                        el.setdefault(_ik, _iv)
+                elif _k in ("heading", "paragraph") and "text" not in el:
+                    el["text"] = inner
+                elif _k == "table" and "rows" not in el:
+                    el["rows"] = inner
+                break
     etype = (el.get("type") or "paragraph").lower()
     if etype == "heading":
         level = int(el.get("level", 1))
@@ -456,11 +480,13 @@ def _register() -> None:
         from .registry import registry
 
         registry.register("doc_create", "office", _CREATE_SCHEMA, _handle_create,
-                           permission_category="write_file", timeout_seconds=30.0)
+                           permission_category="write_file", timeout_seconds=30.0,
+                           concurrency_safe=False)  # G3: writes .docx to disk
         registry.register("doc_read", "office", _READ_SCHEMA, _handle_read,
                            permission_category="read_file", timeout_seconds=20.0)
         registry.register("doc_edit", "office", _EDIT_SCHEMA, _handle_edit,
-                           permission_category="write_file", timeout_seconds=30.0)
+                           permission_category="write_file", timeout_seconds=30.0,
+                           concurrency_safe=False)  # G3: mutates .docx on disk
     except Exception:  # noqa: BLE001
         pass
 

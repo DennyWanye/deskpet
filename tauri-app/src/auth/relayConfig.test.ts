@@ -14,13 +14,13 @@ import { RECHARGE_URL, DEVICE_CONSOLE_URL, PREFERRED_MODEL } from "./relayConfig
 describe("T5-3 · RECHARGE_URL", () => {
   it("is an https URL pointing at the relay domain", () => {
     expect(RECHARGE_URL).toMatch(/^https:\/\//);
-    expect(RECHARGE_URL).toContain("your-llm-relay.example.com");
+    expect(RECHARGE_URL).toContain("chinzy.com");
   });
 });
 
 describe("relayConfig constants", () => {
   it("DEVICE_CONSOLE_URL is https + relay domain", () => {
-    expect(DEVICE_CONSOLE_URL).toMatch(/^https:\/\/.*the relay\.com/);
+    expect(DEVICE_CONSOLE_URL).toMatch(/^https:\/\/chinzy\.com/);
   });
 
   it("PREFERRED_MODEL is the beta default model", () => {

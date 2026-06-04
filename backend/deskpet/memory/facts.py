@@ -251,7 +251,10 @@ class FactsStore:
                 return None
             arr = await emb.encode([f"{key}: {value}"])
         except Exception as exc:  # noqa: BLE001
-            log.debug("FactsStore embed failed: %s", exc)
+            # embedding 算不出 → 该 fact embedding 列留 NULL，向量召回永远
+            # 跳过它（facts 无 backfill，比 messages 更糟）。warning 让"fact
+            # 静默退化成只能 LIKE 召回"可见（审计 FATAL-B / hunter FATAL-3）。
+            log.warning("FactsStore embed failed (embedding left NULL): %s", exc)
             return None
         try:
             import numpy as _np
@@ -260,7 +263,10 @@ class FactsStore:
                 return None
             return _np.asarray(arr[0], dtype=_np.float32).tobytes()
         except Exception as exc:  # noqa: BLE001
-            log.debug("FactsStore embed serialize failed: %s", exc)
+            log.warning(
+                "FactsStore embed serialize failed (embedding left NULL): %s",
+                exc,
+            )
             return None
 
     async def _ensure_schema(self) -> None:
@@ -421,27 +427,63 @@ class FactsStore:
     async def search(
         self, query: str, *, limit: int = 10
     ) -> list[dict[str, Any]]:
-        """Plain LIKE-based search — used by :meth:`Retriever._facts_recall`.
+        """Tokenized LIKE search — used by :meth:`Retriever._facts_recall`.
 
-        FTS on facts is overkill (table is tiny). Score = exact-substring
-        match weight, ties broken by recency.
+        F5 修复（2026-06-01）：旧实现 `LIKE '%{整个 query}%'` 要求字段含整个
+        query 串，自然语言 query 几乎永远 0 命中。改为 query 分词后逐词
+        OR LIKE（value / evidence / key），按**命中词数**降序、recency 次之。
+
+        FTS on facts is overkill (table is tiny)。分词 LIKE 只修"词在但整串
+        不匹配"；纯语义 / 跨语言（"宠物"↔"橘猫"）仍须走 vector_search，
+        调用方在 embedder 可用时应优先向量路、LIKE 仅兜底。
+
+        分词为空（如 query 全是停用词/单字）→ 退回整串 LIKE 作保底。
         """
         if not query or not query.strip():
             return []
         await self._ensure_schema()
-        q = f"%{query.strip()}%"
+        from deskpet.memory.text_tokenize import tokenize_query
+
+        tokens = tokenize_query(query)
+        if not tokens:
+            tokens = [query.strip()]  # 分词空 → 整串保底
+
+        # 每个 token 一组 (value/evidence/key) LIKE；命中任一 token 即入选，
+        # 命中词数 = sum(各 token 是否在三字段任一出现)，越多越相关。
+        # SQL 里用 CASE 累加每个 token 的命中标志当 match_score。
+        score_terms = []
+        where_terms = []
+        params: list[Any] = []
+        for t in tokens:
+            pat = f"%{t}%"
+            # match flag: 该 token 命中三字段任一 → +1
+            score_terms.append(
+                "(CASE WHEN (value LIKE ? OR evidence LIKE ? OR key LIKE ?) "
+                "THEN 1 ELSE 0 END)"
+            )
+            params.extend([pat, pat, pat])
+            where_terms.append("(value LIKE ? OR evidence LIKE ? OR key LIKE ?)")
+            params.extend([pat, pat, pat])
+        match_score = " + ".join(score_terms)
+        where_or = " OR ".join(where_terms)
+        sql = (
+            f"SELECT *, ({match_score}) AS _match_score FROM facts "
+            f"WHERE is_active = 1 AND ({where_or}) "
+            "ORDER BY _match_score DESC, updated_at DESC LIMIT ?"
+        )
+        params.append(int(limit))
         async with aiosqlite.connect(self._db_path) as conn:
             conn.row_factory = aiosqlite.Row
-            cur = await conn.execute(
-                "SELECT * FROM facts "
-                "WHERE is_active = 1 "
-                "  AND (value LIKE ? OR evidence LIKE ? OR key LIKE ?) "
-                "ORDER BY updated_at DESC LIMIT ?",
-                (q, q, q, int(limit)),
-            )
+            cur = await conn.execute(sql, tuple(params))
             rows = await cur.fetchall()
             await cur.close()
-        return [dict(r) for r in rows]
+        # 去掉内部 _match_score 字段再返回（保持原契约）
+        out = []
+        for r in rows:
+            d = dict(r)
+            d.pop("_match_score", None)
+            out.append(d)
+        return out
 
     async def find_by_entities(
         self,

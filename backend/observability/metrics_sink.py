@@ -69,6 +69,12 @@ VALID_EVENTS = frozenset({
     # WI-C1 Companion+Code v1 Stage C — agent_parallel subagent lifecycle
     # (starting / completed / failed)；脱敏：task_id 由 caller 自管。
     "subagent_progress",
+    # WI-G1 Companion+Code v2 — Multi-Agent Team workflow task lifecycle
+    # (team_task_created / team_task_claimed / team_task_done)；脱敏：
+    # task_id + team_id 都是 caller 自管的 uuid，无敏感内容。
+    "team_task_created",
+    "team_task_claimed",
+    "team_task_done",
 })
 
 # Whitelisted ``detail`` keys. A caller can ONLY write these fields —
@@ -106,6 +112,9 @@ _ALLOWED_DETAIL_KEYS = frozenset({
     # detail keys.
     "task_id",         # subagent_progress: caller-supplied short id
     "status",          # subagent_progress: starting / completed / failed
+    # WI-G1 Companion+Code v2 Multi-Agent Team — team_task_* detail keys.
+    "team_id",         # team_task_*: caller-supplied short id (uuid hex)
+    "teammate_id",     # team_task_claimed/done: who did the work
 })
 
 # Max length of any *surviving* string value — defence-in-depth second

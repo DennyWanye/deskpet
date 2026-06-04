@@ -289,14 +289,21 @@ salience_weight = 0.05
 # （Strangler-Fig：关 flag 即回退第一代）。详见
 # plans/2026-05-22-memory-system-upgrade/00-PRD.md。
 [memory.v2]
+# 2026-06-02 记忆审计 #4：点亮核心语义事实记忆栈（facts_extract +
+# enhanced_retriever + cross_key_merge）。此前全暗装 → 用户拿到的"长期记忆"
+# 只有 message 级召回 + 会话摘要，没有结构化语义事实。冲突消解机制（mem0 式
+# merge/supersede + Zep 式软失效 + 跨键治理 + 时序链）早已建好且 37 测试全绿，
+# 只差出厂开关。dataclass 默认仍全 False（保字节级契约，G4 测试仍绿）；这里是
+# 出厂运行配置。代价：每条用户消息后台 LLM 抽取（asyncio.create_task 不阻塞回复）。
 feedback_loop      = false   # WI-M1.1 用户 thumbs-up 回路
-facts_extract      = false   # WI-M1.2 写入端事实抽取
-rerank             = false   # WI-M1.3 cross-encoder 重排
-enhanced_retriever = false   # WI-M1.4 facts 进 RRF（依赖 facts_extract）
+facts_extract      = true    # WI-M1.2 写入端事实抽取（审计 #4 出厂开）
+rerank             = false   # WI-M1.3 cross-encoder 重排（无 GPU，审计建议保持关）
+enhanced_retriever = true    # WI-M1.4 facts 进 RRF（审计 #4 出厂开，依赖 facts_extract）
 chunking           = false   # WI-M1.5 长消息切块
 query_rewrite      = false   # WI-M1.5 短查询改写
-workspace_memory   = false   # WI-M1.6 code 工作记忆
+workspace_memory   = true    # WI-M1.6 code 工作记忆（F4 2026-05-31: 出厂默认开，code 模式读文件进 workspace_state 供跨轮召回。dataclass 默认仍 False 保字节级契约）
 reflection         = false   # WI-M1.7 反思 / skill memory
+cross_key_merge    = true    # WI-S2.1a 跨 key 矛盾治理（审计 #4 出厂开，需 superseded_by 列；ALTER 失败时 main.py 自动降级关闭）
 
 [memory.v2.facts]
 min_user_chars = 8           # 字数采样门（取代 facts.py 硬编码 <8）

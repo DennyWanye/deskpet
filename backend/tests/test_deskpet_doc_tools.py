@@ -169,3 +169,44 @@ def test_t2_13_failing_op_skipped_rest_apply(tmp_path: Path):
     assert r["ok"] and r["applied"] == 1
     assert r["ops"][0]["status"] == "skipped"
     assert r["ops"][1]["status"] == "ok"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 回归 (2026-06-04 工具层严测 TC-11)：LLM 实发**嵌套** element 格式
+#   {"heading":{"text":..,"level":..}} / {"paragraph":{"text":..}}
+# 旧 _add_element 归一化只认简写字符串({"heading":"文字"})，把整个内层
+# dict 当 text → 正文渲染成字面量 "{'text': '标题', 'level': 1}"。
+# 修复后内层 dict 应平铺其字段 → 正确提取 text/level。
+# ─────────────────────────────────────────────────────────────────────
+def test_t2_regression_nested_element_dict_format(tmp_path: Path):
+    """嵌套 dict 格式 {heading:{text,level}} 必须提取 text，不能 str(dict)。"""
+    path = _make_doc(tmp_path, [
+        {"heading": {"text": "团队周报", "level": 1}},
+        {"paragraph": {"text": "本周完成了核心开发。"}},
+    ])
+    from docx import Document
+
+    doc = Document(path)
+    texts = [p.text for p in doc.paragraphs if p.text.strip()]
+    # 必须是干净文本，绝不能出现字面 dict（旧 bug 现象）
+    assert "团队周报" in texts, texts
+    assert any("本周完成了核心开发" in t for t in texts), texts
+    assert not any("{'text'" in t or '{"text"' in t for t in texts), \
+        f"BUG 回归：dict 被 str() 进正文 → {texts}"
+    # heading 仍应用 Heading 样式、level 生效
+    h = next(p for p in doc.paragraphs if p.text.strip() == "团队周报")
+    assert "Heading" in h.style.name, h.style.name
+
+
+def test_t2_regression_shorthand_string_still_works(tmp_path: Path):
+    """旧简写格式 {heading:"文字"} / {paragraph:"文字"} 向后兼容不破。"""
+    path = _make_doc(tmp_path, [
+        {"heading": "简写标题"},
+        {"paragraph": "简写正文"},
+    ])
+    from docx import Document
+
+    doc = Document(path)
+    texts = [p.text for p in doc.paragraphs if p.text.strip()]
+    assert "简写标题" in texts and "简写正文" in texts, texts
+    assert not any("{" in t for t in texts), texts

@@ -68,6 +68,24 @@ export function relayProviderToDisplay(rp: RelayProvider): Provider {
   };
 }
 
+/** 把中转站下发的多条 relay provider 合并成**单个** "chinzy" 虚拟项显示。
+ *
+ * 中转站登录后会下发两条同源 provider —— OpenAI 协议入口（/v1）和 Anthropic
+ * 原生协议入口（/anthropic/v1）。但 OpenAI /v1 入口的模型目录已经**包含全部
+ * 模型（含 Claude 系）**，Anthropic /anthropic/v1 只是冗余的原生协议入口，
+ * deskpet 默认走 /v1。为减少"两个一样的中转站"的困惑，列表里只显示一条
+ * 合并后的 "chinzy"（优先用 /v1 入口，模型最全）。 */
+export function relayListToChinzy(list: RelayProvider[]): Provider[] {
+  if (!list || list.length === 0) return [];
+  // 优先 OpenAI /v1 入口（含全部模型）；找不到则退第一个。
+  const primary =
+    list.find(
+      (p) => p.base_url.includes("/v1") && !p.base_url.includes("/anthropic"),
+    ) ?? list[0];
+  const disp = relayProviderToDisplay(primary);
+  return [{ ...disp, name: "chinzy · 中转站" }];
+}
+
 /** 判断某个 Provider 是不是 relay 虚拟项。 */
 export function isRelayProvider(p: Pick<Provider, "id">): boolean {
   return p.id.startsWith(RELAY_PROVIDER_ID_PREFIX);
@@ -441,7 +459,8 @@ export function SettingsProviders({
       return;
     }
     const apply = (list: RelayProvider[]) => {
-      setRelayProviders(list.map(relayProviderToDisplay));
+      // 多条同源 relay（OpenAI /v1 + Anthropic /anthropic/v1）合并成单个 "chinzy"。
+      setRelayProviders(relayListToChinzy(list));
     };
     // 退订器先订阅事件流，再用 cached 拉一次（避免 listProviders 异步期间
     // 错过事件）

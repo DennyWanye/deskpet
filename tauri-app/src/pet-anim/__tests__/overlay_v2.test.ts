@@ -18,11 +18,24 @@
  * AC-3.3 partial spot-check (full snapshot suite is in S3): v2_all=off path
  * is asserted in TC-OV2-10 — no v2 writes leak when the master flag is off.
  */
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AnimationOverlay } from '../index'
 import { FLAG_KEYS } from '../featureFlags'
 import { fakeRng } from './_helpers'
 import { makeStubCoreModel } from './_stubModel'
+
+// 2026-05-31: pin the wall clock to 12:00 (`normal` mood) so the new
+// time-of-day funInteractions path (eye_open_mul=0.7 sleepy / 1.0 perky)
+// doesn't multiply ParamEyeLOpen/ROpen and ParamBrow assertions. Without
+// this, CI runs at UTC 22:xx hit the "sleepy" branch and every v2 test
+// that reads eye-open values trips by × 0.7.
+beforeAll(() => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0))
+})
+afterAll(() => {
+  vi.useRealTimers()
+})
 
 const HIYORI_V2_PARAMS = [
   // v1 core

@@ -14,8 +14,10 @@ import { useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
 import type { Message } from "../stores/sessionsStore";
+import { useSessionsStore } from "../stores/sessionsStore";
 import { CodeBlock, InlineCode } from "./CodeBlock";
 import { ArtifactCard, extractArtifactsFromResult } from "./ArtifactCard";
+import { codePanelWS } from "./ws";
 
 interface Props {
   msg: Message;
@@ -49,6 +51,9 @@ export function MessageBubble({ msg }: Props) {
         <PlanCard
           rationale={msg.plan_rationale ?? ""}
           steps={msg.plan_steps ?? []}
+          awaiting={!!msg.plan_awaiting_confirm}
+          msgId={msg.id}
+          planSid={msg.plan_sid}
         />
       );
     case "tool_call":
@@ -66,6 +71,9 @@ export function MessageBubble({ msg }: Props) {
           result={msg.tool_result ?? ""}
         />
       );
+    case "slash_result":
+      // FEAT-A2: /help /goal /prefs /skill 结果（ws.ts 已格式化成纯文本）。
+      return <SlashResultBubble text={msg.text ?? ""} />;
     case "error":
       return <ErrorBanner text={msg.text ?? "(unknown error)"} />;
     default:
@@ -301,6 +309,25 @@ export function splitToolError(raw: string): SplitToolErrorResult {
   if (Array.isArray(obj.examples)) {
     examples = obj.examples;
   }
+  // last-mile envelope 包装后，工具自身的 {ok:false, hint, examples} 被套进
+  // envelope.result（JSON 字符串）→ 顶层取不到 hint，金黄修复建议卡不触发。
+  // 兜底：当顶层无 hint 时，解包 envelope.result 再取 hint/examples（与
+  // ArtifactCard.extractArtifactsFromResult 的嵌套兜底同一模式）。
+  if (hint === null && typeof obj.result === "string") {
+    try {
+      const inner = JSON.parse(obj.result) as Record<string, unknown>;
+      if (inner && typeof inner === "object") {
+        if (typeof inner.hint === "string" && inner.hint.trim().length > 0) {
+          hint = inner.hint;
+        }
+        if (examples === null && Array.isArray(inner.examples)) {
+          examples = inner.examples;
+        }
+      }
+    } catch {
+      /* envelope.result 不是 JSON → 忽略，保持 hint=null */
+    }
+  }
   return {
     body: JSON.stringify(parsed, null, 2),
     hint,
@@ -407,10 +434,27 @@ function ToolResultCard({
 function PlanCard({
   rationale,
   steps,
+  awaiting = false,
+  msgId,
+  planSid,
 }: {
   rationale: string;
   steps: { title: string; detail: string }[];
+  // superpowers 决策2 plan-confirm 硬门
+  awaiting?: boolean;
+  msgId?: string;
+  planSid?: string;
 }) {
+  const resolve_plan = useSessionsStore((s) => s.resolve_plan);
+  const decide = (decision: "go" | "cancel") => {
+    if (planSid) {
+      codePanelWS.send({
+        type: "plan_confirm",
+        payload: { session_id: planSid, decision },
+      });
+      resolve_plan(planSid, msgId);
+    }
+  };
   return (
     <div
       data-bp-selectable=""
@@ -449,6 +493,47 @@ function PlanCard({
           </li>
         ))}
       </ol>
+      {awaiting && (
+        <div
+          data-testid="plan-confirm-bar"
+          style={{ display: "flex", gap: 8, marginTop: 10 }}
+        >
+          <button
+            type="button"
+            data-testid="plan-confirm-go"
+            onClick={() => decide("go")}
+            style={{
+              flex: 1,
+              background: "#2563eb",
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              padding: "6px 12px",
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            ▶ 执行
+          </button>
+          <button
+            type="button"
+            data-testid="plan-confirm-cancel"
+            onClick={() => decide("cancel")}
+            style={{
+              background: "rgba(148, 163, 184, 0.2)",
+              color: "#e2e8f0",
+              border: "1px solid rgba(148, 163, 184, 0.3)",
+              borderRadius: 6,
+              padding: "6px 14px",
+              fontSize: 12.5,
+              cursor: "pointer",
+            }}
+          >
+            取消
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -473,6 +558,33 @@ function ReasoningBubble({ text }: { text: string }) {
         }}
       >
         💭 {text}
+      </div>
+    </div>
+  );
+}
+
+function SlashResultBubble({ text }: { text: string }) {
+  return (
+    <div style={{ display: "flex", margin: "8px 0" }}>
+      <div
+        data-bp-selectable=""
+        data-testid="slash-result-bubble"
+        style={{
+          maxWidth: "92%",
+          background: "rgba(15, 23, 42, 0.85)",
+          color: "#cbd5e1",
+          padding: "8px 12px",
+          borderRadius: "12px 12px 12px 2px",
+          fontSize: 12.5,
+          lineHeight: 1.55,
+          border: "1px solid rgba(99, 102, 241, 0.35)",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          fontFamily:
+            'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+        }}
+      >
+        {text}
       </div>
     </div>
   );

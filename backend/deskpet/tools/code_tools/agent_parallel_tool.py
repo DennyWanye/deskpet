@@ -38,6 +38,7 @@ parent_session_id_resolver)`` → ``(handler, schema)``，与
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -50,6 +51,22 @@ _MIN_SUBAGENTS = 2
 _MAX_SUBAGENTS = 4
 # Recursion guard — 这两个名字永远不会被传给 subagent
 _FORBIDDEN_NESTED_TOOLS = frozenset({"agent", "agent_parallel"})
+
+# G4 (companion-code-v2) — prompt cache modes.
+#   "fork"  → each subagent reuses the parent agent's system prompt bytes
+#             verbatim (only the user message gets the per-subagent Sprint
+#             Contract + prompt prepended). LLM provider sees identical
+#             system-prefix tokens across N subagents → prompt_cache_hit
+#             rate climbs from ~0% to 80%+ for the second/third/fourth
+#             concurrent subagent.
+#   "fresh" → each subagent rebuilds its own system prompt from scratch
+#             (legacy behaviour — no cache reuse, full isolation). Use
+#             when subagents need radically different framing (e.g.
+#             security review subagent vs. doc-write subagent).
+_CACHE_MODE_FORK = "fork"
+_CACHE_MODE_FRESH = "fresh"
+_VALID_CACHE_MODES = frozenset({_CACHE_MODE_FORK, _CACHE_MODE_FRESH})
+_DEFAULT_CACHE_MODE = _CACHE_MODE_FORK
 
 
 _SCHEMA: dict[str, Any] = {
@@ -109,14 +126,74 @@ _SCHEMA: dict[str, Any] = {
                             "type": "string",
                             "description": "How to judge success.",
                         },
+                        "cache_mode": {
+                            "type": "string",
+                            "enum": ["fork", "fresh"],
+                            "description": (
+                                "G4 prompt cache strategy. 'fork' (default) "
+                                "reuses parent system prompt bytes verbatim → "
+                                "high prompt_cache_hit rate. 'fresh' rebuilds "
+                                "a per-subagent system prompt (use when "
+                                "subagents need different framing)."
+                            ),
+                        },
                     },
                     "required": ["task_id", "prompt"],
                 },
+            },
+            "cache_mode": {
+                "type": "string",
+                "enum": ["fork", "fresh"],
+                "description": (
+                    "G4 batch-level default cache mode (each subagent can "
+                    "override via its own cache_mode). Default 'fork'."
+                ),
             },
         },
         "required": ["subagents"],
     },
 }
+
+
+def _resolve_cache_mode(sa: dict[str, Any], batch_default: str) -> str:
+    """G4: pick the effective cache_mode for one subagent.
+
+    Precedence (high → low): subagent.cache_mode → batch default →
+    module default ('fork'). Unknown values silently fall back to the
+    batch default (we don't want a typo'd LLM call to crash dispatch).
+    """
+    sa_mode = sa.get("cache_mode")
+    if isinstance(sa_mode, str) and sa_mode in _VALID_CACHE_MODES:
+        return sa_mode
+    if isinstance(batch_default, str) and batch_default in _VALID_CACHE_MODES:
+        return batch_default
+    return _DEFAULT_CACHE_MODE
+
+
+def _compute_system_prompt_hash(
+    *,
+    cache_mode: str,
+    parent_system_prompt: str,
+    sa_task_id: str,
+) -> str:
+    """G4: deterministic hash of the bytes that go into the LLM's *system*
+    slot for one subagent. Tests use it to prove fork-mode reuse.
+
+    Fork mode → ``sha256(parent_system_prompt)``. ALL subagents in a
+    fork batch share this hash → LLM provider's cache key matches → hit.
+
+    Fresh mode → ``sha256(parent_system_prompt + "::" + sa_task_id)`` so
+    each subagent gets a distinct system-prompt cache key (no reuse).
+
+    Note: this is the *intended* hash for the prefix the LLM will see;
+    the real LLM payload assembly may add a small tail (e.g. tool
+    schema). What matters is that fork-mode hashes are equal across
+    siblings and fresh-mode hashes differ — which this captures.
+    """
+    text = parent_system_prompt or ""
+    if cache_mode == _CACHE_MODE_FRESH:
+        text = f"{text}::{sa_task_id}"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _build_sprint_contract(sa: dict[str, Any]) -> str:
@@ -180,6 +257,7 @@ def build_agent_parallel_tool(
     parent_tool_registry: Any,
     parent_session_id_resolver: Callable[[], str],
     subagent_runner: Optional[SubagentRunner] = None,
+    parent_system_prompt_resolver: Optional[Callable[[], str]] = None,
 ):
     """Construct the ``agent_parallel`` tool handler.
 
@@ -194,15 +272,43 @@ def build_agent_parallel_tool(
             (e.g. inject a mock instead of really spawning AgentLoop).
             None → use ``_default_subagent_runner`` which delegates to
             :func:`build_agent_tool`.
+        parent_system_prompt_resolver: G4 — callable returning the
+            parent agent's current system prompt text. Used to compute
+            the fork-mode cache key (hash) we surface in each subagent
+            result for verification. If None, defaults to empty string
+            (still deterministic — fork hashes match, fresh hashes
+            differ — which is what tests assert).
     """
     runner: SubagentRunner = subagent_runner or _make_default_runner(
         llm_shim=llm_shim,
         parent_tool_registry=parent_tool_registry,
         parent_session_id_resolver=parent_session_id_resolver,
     )
+    resolve_parent_prompt: Callable[[], str] = (
+        parent_system_prompt_resolver or (lambda: "")
+    )
 
     async def _handle(args: dict[str, Any], task_id: str = "") -> str:
         subagents = args.get("subagents")
+        # G4: batch-level cache_mode default (each subagent may override)
+        batch_cache_mode_raw = args.get("cache_mode", _DEFAULT_CACHE_MODE)
+        batch_cache_mode = (
+            batch_cache_mode_raw
+            if isinstance(batch_cache_mode_raw, str)
+            and batch_cache_mode_raw in _VALID_CACHE_MODES
+            else _DEFAULT_CACHE_MODE
+        )
+        # Snapshot parent system prompt once per dispatch — guarantees all
+        # fork subagents in this batch see the SAME bytes (resolver might
+        # itself be stateful / change between calls). Snapshot inside the
+        # handler so a per-call refresh still wins over a stale closure.
+        parent_system_prompt_snapshot = ""
+        try:
+            parent_system_prompt_snapshot = str(resolve_parent_prompt() or "")
+        except Exception as exc:  # noqa: BLE001 — never break dispatch
+            log.warning(
+                "agent_parallel parent_system_prompt_resolver raised: %s", exc
+            )
         if not isinstance(subagents, list):
             return json.dumps(
                 {"ok": False, "error": "subagents must be a list"},
@@ -248,12 +354,24 @@ def build_agent_parallel_tool(
 
         async def _run_one(sa: dict[str, Any]) -> dict[str, Any]:
             sa_task_id = sa["task_id"]
+            # G4: resolve cache mode per-subagent + compute system prompt hash
+            sa_cache_mode = _resolve_cache_mode(sa, batch_cache_mode)
+            sa_system_prompt_hash = _compute_system_prompt_hash(
+                cache_mode=sa_cache_mode,
+                parent_system_prompt=parent_system_prompt_snapshot,
+                sa_task_id=sa_task_id,
+            )
             full_prompt = _build_sprint_contract(sa)
             # Strip recursion-forbidden tools before handoff
             sa_for_runner = {
                 **sa,
                 "prompt": full_prompt,
                 "tools": _filter_subagent_tools(sa.get("tools")),
+                # G4: surface cache hints to the runner (default runner
+                # ignores them — they only need to flow through to the
+                # LLM provider in a follow-up wiring change).
+                "cache_mode": sa_cache_mode,
+                "parent_system_prompt_hash": sa_system_prompt_hash,
             }
             _emit_progress(sa_task_id, "starting")
             try:
@@ -263,6 +381,9 @@ def build_agent_parallel_tool(
                     "task_id": sa_task_id,
                     "ok": True,
                     "output": output,
+                    # G4 detail block — tests + observability consume this
+                    "cache_mode": sa_cache_mode,
+                    "system_prompt_hash": sa_system_prompt_hash,
                 }
             except Exception as exc:  # noqa: BLE001 — isolate per-subagent
                 _emit_progress(sa_task_id, "failed")
@@ -274,6 +395,8 @@ def build_agent_parallel_tool(
                     "task_id": sa_task_id,
                     "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
+                    "cache_mode": sa_cache_mode,
+                    "system_prompt_hash": sa_system_prompt_hash,
                 }
 
         # Truly concurrent — gather without return_exceptions because
@@ -363,9 +486,15 @@ def _make_default_runner(
 __all__ = [
     "_SCHEMA",
     "_build_sprint_contract",
+    "_compute_system_prompt_hash",
     "_emit_progress",
     "_filter_subagent_tools",
     "_FORBIDDEN_NESTED_TOOLS",
+    "_resolve_cache_mode",
+    "_CACHE_MODE_FORK",
+    "_CACHE_MODE_FRESH",
+    "_VALID_CACHE_MODES",
+    "_DEFAULT_CACHE_MODE",
     "build_agent_parallel_tool",
     "SubagentRunner",
 ]

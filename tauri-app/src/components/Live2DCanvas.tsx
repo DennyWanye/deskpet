@@ -112,6 +112,18 @@ export interface Live2DHandle {
   ) => void;
   /** v2 PRD §6.1: full v2 debug surface. */
   getV2Debug: () => ReturnType<AnimationOverlay["getV2Debug"]>;
+  /** 2026-05-31 fun: pointer down on the pet (begins drag/longPress/burst). */
+  funPointerDown: (clientX: number, clientY: number, now_t: number) => void;
+  /** 2026-05-31 fun: pointer move during hold (drag kinematics). */
+  funPointerMove: (clientX: number, clientY: number, now_t: number) => void;
+  /** 2026-05-31 fun: pointer up — ends drag, returns burst classification. */
+  funPointerUp: (now_t: number) => {
+    burst_count: number;
+    burst_intensity: import("../pet-anim/funInteractions").TapBurstIntensity;
+    double_tap: boolean;
+  };
+  /** 2026-05-31 fun: any user activity (chat input / app focus / etc.). */
+  funMarkInteraction: (now_t: number) => void;
 }
 
 interface FaceFrame {
@@ -136,18 +148,24 @@ function computeFaceFrame(
   innerWidth: number,
   modelScaleFactor = 1,
 ): FaceFrame {
-  const left = innerWidth - petWidth + petWidth * 0.25;
-  const width = Math.max(40, petWidth * 0.5 * modelScaleFactor);
-  const top = innerHeight * 0.2;
-  const height = Math.max(40, innerHeight * 0.6 * modelScaleFactor);
+  // 2026-05-31 fun-ux: 扩大 hit-zone 覆盖整个角色可见区（头顶→脚），
+  // 之前只覆盖脸+躯干中间 50%×60% 的窄带，用户点裙子/腿/头发/手臂都没
+  // 反应。现在覆盖角色整列宽 × 几乎全高，点哪都能触发交互。
+  // face_center 仍锁在脸部（用于 gaze 凝视 + proximity/shy/dizzy 计算）。
+  const left = innerWidth - petWidth;
+  const width = Math.max(40, petWidth * modelScaleFactor);
+  const top = innerHeight * 0.05;
+  const height = Math.max(40, innerHeight * 0.9 * modelScaleFactor);
   return {
     left,
     top,
     width,
     height,
+    // 脸约在角色立绘的上部 ~22% 处（Hiyori 全身站姿）。
     face_center_x: left + width / 2,
-    face_center_y: top + height * 0.3,
-    face_radius_css: Math.min(width, height) * 0.5,
+    face_center_y: top + height * 0.22,
+    // face_radius 用角色宽的一半（脸 + 周边的合理凝视/害羞判定半径）。
+    face_radius_css: Math.max(60, width * 0.5),
   };
 }
 
@@ -183,9 +201,19 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
   // bound function so the threshold-trigger call is synchronous.
   const startDraggingRef = useRef<(() => Promise<unknown>) | null>(null);
   const [size, setSize] = useState(() => ({
-    w: petWidth ?? window.innerWidth,
+    // 跨 DPI 裁切修复：列宽 cap 在视口内（详见下方 apply 注释）。
+    w: Math.min(petWidth ?? window.innerWidth, window.innerWidth),
     h: window.innerHeight,
+    // 2026-06-03 跨 DPI 修复：把 devicePixelRatio 纳入 size 状态，使画布 resize
+    // effect 能在「拖到不同缩放显示器(逻辑尺寸不变但 dpr 变)」时重跑。
+    dpr: window.devicePixelRatio || 1,
   }));
+  // 2026-06-03 跨 DPI 裁切修复：模型异步加载完成的信号。Live2D 模型 load 是
+  // 异步的，加载完时 size 往往没变 → 画布 resize effect（依赖 size.*）不会重跑
+  // → 画布停在 init() 摆放的尺寸/位置，没按当前 size.w(已 cap)+dpr 校正 →
+  // 直接 boot 在某显示器时角色被裁。把它纳入 resize effect 的 deps，模型 ready
+  // 后必触发一次正确的 renderer.resize + 模型 scale/centering。
+  const [modelReady, setModelReady] = useState(false);
   // Use ref for mode to avoid re-render killing the render loop. We don't
   // expose this as React state because the render loop captures it once and
   // toggling it would otherwise tear down + re-init the whole pipeline.
@@ -197,6 +225,17 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
   // imperative methods can reach it without blowing up the render loop via
   // re-renders.
   const modelRef = useRef<any>(null);
+  // 2026-06-03 跨 DPI 裁切修复：模型的**基础(未缩放)**宽高。pixi 的 model.width
+  // 返回的是「当前 scale × localBounds」即**已缩放**宽，且渲染后才更新；resize
+  // effect 若用它算 scale 会把已缩放宽当基础宽 → scale≈1 → 模型爆炸放大(只剩
+  // 胸口)。故加载时存一次基础宽高，scale 计算一律用它。
+  const modelBaseRef = useRef<{ w: number; h: number } | null>(null);
+  // 2026-05-31: PixiJS Application instance ref. Needed so the size-change
+  // effect (line ~390) can call pixiApp.renderer.resize() + recompute model
+  // scale/position when the user resizes the host window. Without this the
+  // PixiJS canvas stays at its mount-time physical size and the <img>
+  // CSS-stretches the snapshot → character looks distorted ("人物被拉伸").
+  const pixiAppRef = useRef<any>(null);
   // v3: AnimationOverlay instance — per Live2DCanvas mount. dispose()
   // called from cleanupRef so HMR / StrictMode double-mount can't leak.
   const overlayRef = useRef<AnimationOverlay | null>(null);
@@ -351,6 +390,25 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           }
         );
       },
+      // 2026-05-31 fun interactions
+      funPointerDown(clientX, clientY, now_t) {
+        overlayRef.current?.funPointerDown(clientX, clientY, now_t);
+      },
+      funPointerMove(clientX, clientY, now_t) {
+        overlayRef.current?.funPointerMove(clientX, clientY, now_t);
+      },
+      funPointerUp(now_t) {
+        return (
+          overlayRef.current?.funPointerUp(now_t) ?? {
+            burst_count: 0,
+            burst_intensity: "look_up" as const,
+            double_tap: false,
+          }
+        );
+      },
+      funMarkInteraction(now_t) {
+        overlayRef.current?.funMarkInteraction(now_t);
+      },
     }),
     [],
   );
@@ -358,9 +416,18 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
   // Track viewport. Also keep face frame current.
   useEffect(() => {
     const apply = (): void => {
-      const w = petWidth ?? window.innerWidth;
+      // 2026-06-03 跨 DPI 裁切修复：petWidth 是固定角色列宽(282)，但某些机器的
+      // webview devicePixelRatio 高于显示器缩放（实测 dpr 2.13/1.42，可能叠加了
+      // Windows 文本缩放 142%）→ 视口 innerWidth 仅 ~253 CSS < 282 → 角色 <img>
+      // 比视口宽 → 右侧被裁、显示不全。把列宽 cap 在视口内：innerWidth≥petWidth 时
+      // 仍用 petWidth(解耦不变)，否则收敛到 innerWidth → 角色完整可见(代价：略小)。
+      const w = Math.min(petWidth ?? window.innerWidth, window.innerWidth);
       const h = window.innerHeight;
-      setSize({ w, h });
+      const dpr = window.devicePixelRatio || 1;
+      // 2026-06-03 跨 DPI 诊断：每次 viewport/dpr 变化都记一行，便于真机拖动时
+      // 观察 innerWidth/dpr 随显示器切换的实际值（排查角色裁切）。
+      console.warn(`[Pet] viewport: ${window.innerWidth} x ${window.innerHeight} dpr: ${dpr} petWidth: ${petWidth} size.w: ${w}`);
+      setSize({ w, h, dpr });
       const ff = computeFaceFrame(w, h, window.innerWidth);
       faceFrameRef.current = ff;
       overlayRef.current?.setFaceCenter(ff.face_center_x, ff.face_center_y, ff.face_radius_css);
@@ -375,19 +442,71 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
       }, 100);
     };
     window.addEventListener("resize", throttled);
-    console.warn("[Pet] viewport:", window.innerWidth, "x", window.innerHeight, "dpr:", window.devicePixelRatio);
     let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined" && containerRef.current) {
       ro = new ResizeObserver(throttled);
       ro.observe(containerRef.current);
     }
+    // 2026-06-03 跨 DPI 修复：拖到不同缩放显示器时 devicePixelRatio 变化，但窗口
+    // 逻辑尺寸不变 → resize 事件不一定触发 → 画布 renderer 卡在旧 DPR → 角色被裁。
+    // matchMedia(resolution) 是 DPR 变化的可靠信号；每次变化后用新 DPR 重新 arm。
+    let mql: MediaQueryList | null = null;
+    const onDprChange = (): void => {
+      throttled();
+      armDpr();
+    };
+    const armDpr = (): void => {
+      if (typeof window.matchMedia !== "function") return;
+      mql?.removeEventListener("change", onDprChange);
+      mql = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      mql.addEventListener("change", onDprChange);
+    };
+    armDpr();
     return () => {
       window.removeEventListener("resize", throttled);
       if (timeout) window.clearTimeout(timeout);
       ro?.disconnect();
+      mql?.removeEventListener("change", onDprChange);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [petWidth]);
+
+  // 2026-05-31 restore — react to size changes: resize the Pixi renderer's
+  // backing buffer AND recompute the model's scale + centering so the
+  // character doesn't get squashed when the window aspect ratio shifts.
+  // Without this, init() picks one renderW/renderH and sticks with it;
+  // any later resize just stretches the same backing texture via CSS,
+  // producing the left/right pinch the user reported after dragging the
+  // window wider.
+  useEffect(() => {
+    const app = pixiAppRef.current;
+    const model = modelRef.current;
+    if (!app || !model) return;
+    // 2026-06-03 跨 DPI 修复：用 size.dpr（随显示器切换更新）而非裸读
+    // window.devicePixelRatio；deps 含 size.dpr → DPR 变化即重算 renderer 尺寸 +
+    // 模型 scale/position，否则画布卡在旧 DPR 物理尺寸 → 角色被裁/拉伸。
+    const dpr = size.dpr || window.devicePixelRatio || 1;
+    const renderW = Math.round(size.w * dpr);
+    const renderH = Math.round(size.h * dpr);
+    console.warn(`[Live2D] renderer resize -> ${renderW}x${renderH} (size ${size.w}x${size.h} dpr ${dpr})`);
+    try {
+      app.renderer?.resize?.(renderW, renderH);
+    } catch (e) {
+      console.warn("[Live2D] renderer.resize failed:", e);
+    }
+    // Equal-aspect rescale: Math.min keeps the model proportionally
+    // sized — wider window → more breathing room, never horizontal
+    // stretch. 用**基础**宽高(modelBaseRef)算 scale + 居中，绝不能用
+    // model.width/height（那是已缩放宽 → scale≈1 → 模型爆炸放大）。
+    const baseW = modelBaseRef.current?.w ?? model.width;
+    const baseH = modelBaseRef.current?.h ?? model.height;
+    const scaleX = (renderW * 0.85) / baseW;
+    const scaleY = (renderH * 0.7) / baseH;
+    const scale = Math.min(scaleX, scaleY);
+    model.scale.set(scale);
+    model.x = (renderW - baseW * scale) / 2;
+    model.y = (renderH - baseH * scale) * 0.25;
+  }, [size.w, size.h, size.dpr, modelReady]);
 
   // FIX-R3: pre-load Tauri window startDragging so the manual drag
   // handler can call it synchronously during the gesture.
@@ -420,6 +539,8 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
     if (!overlay) return;
     const onMove = (e: PointerEvent): void => {
       overlay.setGazeTarget(e.clientX, e.clientY, e.timeStamp);
+      // 2026-05-31 fun: feed shy-away + circle-dizzy observers.
+      overlay.funCursorMove?.(e.clientX, e.clientY, e.timeStamp);
     };
     const onBlur = (): void => {
       overlay.clearGazeTarget(performance.now());
@@ -478,6 +599,12 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
     };
   }, []);
 
+  // 2026-06-03: 此处原有**第二个**「resize PixiJS renderer + reposition」effect，
+  // 与上方(~460)那个职责完全重复，但用 window.devicePixelRatio + model.width
+  // (已缩放宽)→ 拖动时它后跑、覆盖上方修好的结果 → 模型 scale≈1 爆炸放大
+  // (用户实测：拖动后角色只剩胸口)。已删除，统一由上方那个(size.dpr + 基础
+  // 宽高 modelBaseRef + modelReady)负责，单一权威路径，杜绝双 effect 竞争。
+
   // Main init — runs once
   useEffect(() => {
     if (modeRef.current !== "loading") return;
@@ -508,6 +635,8 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
         });
 
         if (destroyed) { pixiApp.destroy(true); return; }
+        // Expose for the resize-rescale effect.
+        pixiAppRef.current = pixiApp;
 
         try {
           pixiApp.stage.eventMode = "none";
@@ -536,6 +665,9 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
 
         if (destroyed) return;
         console.warn("[Live2D] model loaded:", model.width, "x", model.height);
+        // 此刻 model.width/height 尚未被下方 scale.set 改动 = 基础尺寸，存下来供
+        // resize effect 复用（避免它读到已缩放宽 → 误算 scale）。
+        modelBaseRef.current = { w: model.width, h: model.height };
 
         model.autoInteract = false;
 
@@ -548,6 +680,9 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
 
         pixiApp.stage.addChild(model);
         modelRef.current = model;
+        // 模型就绪 → 触发 resize effect 跑一次，用当前 size.w(已 cap)+dpr
+        // 正确设定画布尺寸与模型 scale/居中（init 的初值可能不匹配实际视口）。
+        setModelReady(true);
 
         // Inject motion player into the overlay so motionPool/FR-5 can
         // drive real Idle/TapBody groups.
@@ -768,6 +903,8 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
       destroyed = true;
       cancelAnimationFrame(rafId);
       modelRef.current = null;
+      pixiAppRef.current = null;
+      setModelReady(false);
       // v3: dispose the overlay so HMR + StrictMode unmounts don't leak.
       overlayRef.current?.dispose();
       overlayRef.current = null;
@@ -844,8 +981,14 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           // mousedown+up without movement falls through to onClick
           // (preserving the click pulse).
           dragStartRef.current = { x: e.clientX, y: e.clientY };
+          // 2026-05-31 fun: kick off drag/longPress/burst observer.
+          overlayRef.current?.funPointerDown(e.clientX, e.clientY, e.timeStamp);
         }}
         onPointerMove={(e) => {
+          // 2026-05-31 fun: feed pointermove into drag kinematics (only when
+          // pressed — funPointerDown sets ctx.active true; sample is no-op
+          // when inactive).
+          overlayRef.current?.funPointerMove(e.clientX, e.clientY, e.timeStamp);
           const start = dragStartRef.current;
           if (!start) return;
           const dx = e.clientX - start.x;
@@ -872,10 +1015,13 @@ export const Live2DCanvas = forwardRef<Live2DHandle, Live2DCanvasProps>(function
           dragStartRef.current = null;
           // v2 A1: tell overlay drag ended → spring_back begins.
           overlayRef.current?.setDragState("idle", e.timeStamp);
+          // 2026-05-31 fun: ends drag + classify tap burst.
+          overlayRef.current?.funPointerUp(e.timeStamp);
         }}
         onPointerCancel={(e) => {
           dragStartRef.current = null;
           overlayRef.current?.setDragState("idle", e.timeStamp);
+          overlayRef.current?.funPointerUp(e.timeStamp);
         }}
         onClick={(e) => {
           const ts = e.timeStamp;

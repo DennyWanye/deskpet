@@ -1025,6 +1025,7 @@ def _register_ppt_tool() -> None:
             _handle_ppt_create,
             permission_category="write_file",
             timeout_seconds=30.0,
+            concurrency_safe=False,  # G3: writes .pptx to disk
         )
     except Exception as exc:  # noqa: BLE001
         log.debug("ppt tool registration skipped: %s", exc)

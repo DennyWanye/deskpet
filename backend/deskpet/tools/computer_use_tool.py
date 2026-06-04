@@ -580,7 +580,9 @@ def _handle_screen_scroll(args: dict[str, Any], task_id: str) -> str:
 # ---------------------------------------------------------------------
 # Registration — toolset gated by ContextAssembler's enabled_toolsets,
 # AND at runtime by the [code_e2e] computer_use_enabled flag.
-# permission_category "shell_exec" treats these as the high-risk class.
+# permission_category "shell"（高危系统控制类）—— 注意："shell_exec" 不在合法
+# PermissionCategory 集（read_file/.../shell/...），gate.check 会 raise ValueError
+# 致工具被吞不执行（同 agent_parallel/skill_invoke 的 P0 bug），故用合法的 "shell"。
 # ---------------------------------------------------------------------
 _TOOLSET = "computer_use"
 
@@ -596,7 +598,7 @@ registry.register(
     _TOOLSET,
     _SCHEMA_CLICK,
     _handle_screen_click,
-    permission_category="shell_exec",
+    permission_category="shell",
     dangerous=True,
 )
 registry.register(
@@ -604,14 +606,14 @@ registry.register(
     _TOOLSET,
     _SCHEMA_MOVE,
     _handle_screen_move,
-    permission_category="shell_exec",
+    permission_category="shell",
 )
 registry.register(
     "screen_type",
     _TOOLSET,
     _SCHEMA_TYPE,
     _handle_screen_type,
-    permission_category="shell_exec",
+    permission_category="shell",
     dangerous=True,
 )
 registry.register(
@@ -619,7 +621,7 @@ registry.register(
     _TOOLSET,
     _SCHEMA_KEY,
     _handle_screen_key,
-    permission_category="shell_exec",
+    permission_category="shell",
     dangerous=True,
 )
 registry.register(
@@ -627,5 +629,5 @@ registry.register(
     _TOOLSET,
     _SCHEMA_SCROLL,
     _handle_screen_scroll,
-    permission_category="shell_exec",
+    permission_category="shell",
 )

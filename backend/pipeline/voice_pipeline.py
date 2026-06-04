@@ -58,6 +58,7 @@ class VoicePipeline:
         tool_registry_v2: object | None = None,
         permission_gate_v2: object | None = None,
         local_llm: object | None = None,
+        broadcast: object | None = None,
     ):
         self.vad = vad
         self.asr = asr
@@ -77,6 +78,10 @@ class VoicePipeline:
         self._tool_registry_v2 = tool_registry_v2
         self._permission_gate_v2 = permission_gate_v2
         self._local_llm = local_llm
+        # VOICE-MSGPANEL-SYNC: 多窗口广播器（None == legacy / 单测，跳过 fan-out）。
+        # 由 main.py audio_channel 注入 _broadcast_default_chat_peers，让语音对话
+        # 也能像文字 chat_v2 一样同步到「消息·主线程」消息框窗口。
+        self._broadcast = broadcast
         # P2-2-M3: stash the "normal" threshold at init time (from [vad])
         # so we can restore it after TTS / interrupt. The during_tts value
         # is the raised threshold we swap in while TTS is playing — keeps
@@ -108,6 +113,33 @@ class VoicePipeline:
             })
         except Exception:
             pass  # control channel may have disconnected
+
+    async def _broadcast_chat_v2(self, msg_type: str, text: str) -> None:
+        """VOICE-MSGPANEL-SYNC: 把一轮语音对话 fan-out 给**其它** control 通道。
+
+        桌宠主窗口和「消息·主线程」消息框是两个独立 Tauri 窗口、各自独立的
+        ws。语音原本只经 audio_ws point-to-point 回发起窗口，消息框看不到。
+        这里复用文字同款的 broadcaster（_broadcast_default_chat_peers），把
+        语音轮次包成 chat_v2_user_echo / chat_v2_final 广播出去。
+
+        originator = self.control_ws（发起语音的主窗口的 control 通道）会被
+        broadcaster skip —— 主窗口已通过自己的 audio_ws transcript 显示这轮，
+        不重复；消息框窗口的 control 通道则收到 → 补上。
+
+        守卫：未注入 broadcast / 无 control_ws / 非 default 会话时跳过。
+        best-effort：广播失败只告警，绝不影响 TTS 主链路。
+        """
+        # 注：不再依赖 self.control_ws（audio 连接时的快照，backend respawn 后可能
+        # None/失效）。originator 由注入的 _voice_broadcast 闭包在广播时实时解析。
+        if not (self._broadcast and self.session_id == "default"):
+            return
+        try:
+            await self._broadcast(self.control_ws, {
+                "type": msg_type,
+                "payload": {"session_id": "default", "text": text},
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("voice_broadcast_failed", msg_type=msg_type, error=str(exc))
 
     async def process_audio_chunk(self, pcm_bytes: bytes, audio_ws: WebSocket) -> None:
         """
@@ -222,6 +254,9 @@ class VoicePipeline:
                 "type": "transcript",
                 "payload": {"text": text, "role": "user"},
             })
+            # VOICE-MSGPANEL-SYNC: user 这句同步给其它窗口（消息框），与文字
+            # chat_v2_user_echo 同构。
+            await self._broadcast_chat_v2("chat_v2_user_echo", text)
 
             # Step 2: Agent — two paths.
             #
@@ -280,6 +315,8 @@ class VoicePipeline:
                 "type": "transcript",
                 "payload": transcript_payload,
             })
+            # VOICE-MSGPANEL-SYNC: assistant 回复同步给其它窗口（chat_v2_final）。
+            await self._broadcast_chat_v2("chat_v2_final", response_text)
 
             # Step 3: TTS (PCM16 24kHz stream via ffmpeg pipe — P2-2-M2)
             # Binary frame layout: 1-byte type header + audio data.

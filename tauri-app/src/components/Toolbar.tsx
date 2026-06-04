@@ -17,6 +17,8 @@ import React from "react";
 
 import { tokens } from "../theme/tokens";
 import { Icon, type IconName } from "./Icon";
+import { ContextRing } from "./ContextRing";
+import type { ContextUsageSnapshot } from "../stores/sessionsStore";
 
 interface Props {
   /** @deprecated chat path is unified now; kept to avoid prop-drilling churn */
@@ -49,6 +51,10 @@ interface Props {
   /** Push the toolbar down (px) when a top error banner is shown above
    * it, so the banner sits ABOVE the toolbar instead of overlapping. */
   topOffset?: number;
+  /** 2026-05-31 restore — context-usage ring snapshot + click handler.
+   * Undefined = ring hidden; null = ring rendered dim (no LLM call yet). */
+  contextUsage?: ContextUsageSnapshot | null;
+  onContextRingClick?: () => void;
 }
 
 export const Toolbar: React.FC<Props> = ({
@@ -71,6 +77,8 @@ export const Toolbar: React.FC<Props> = ({
   connectionState,
   routeKind,
   topOffset,
+  contextUsage,
+  onContextRingClick,
 }) => {
   return (
     <div
@@ -162,6 +170,16 @@ export const Toolbar: React.FC<Props> = ({
       <StatusBadge color={getConnColor(connectionState, routeKind)}>
         {getConnLabel(connectionState, routeKind)}
       </StatusBadge>
+      {/* 2026-05-31 restore — Claude-Code-style context ring */}
+      {contextUsage !== undefined && (
+        <ContextRing
+          snapshot={contextUsage}
+          size={20}
+          showLabel
+          onClick={onContextRingClick}
+          style={{ marginLeft: 2 }}
+        />
+      )}
     </div>
   );
 };

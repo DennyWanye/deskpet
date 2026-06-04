@@ -859,6 +859,114 @@ class SessionDB:
 
         await self._with_retry(_do)
 
+    # ── FEAT-A4 (superpowers): plan-confirm 硬门 awaiting plan sidecar ──
+    # F5/HMR rehydration 从 SessionDB 重载会丢前端临时的 awaiting plan
+    # 消息（[执行]/[取消] 按钮消失）。这三个方法把 awaiting plan 持久化到
+    # session_plans sidecar 表，使面板重载后可恢复。不走 append_message →
+    # 不触发 VectorWorker embed / FTS5，plan JSON 不污染语义检索。
+
+    async def upsert_session_plan(
+        self,
+        session_id: str,
+        rationale: str,
+        steps: list[dict[str, Any]],
+        awaiting: bool,
+    ) -> None:
+        """记一条 awaiting plan（同 session 覆盖）。
+
+        关键（SW-1）：先确保 DB 初始化 + session_plans 表就绪，使得在
+        「从未调过 ensure 的全新 DB」上 upsert 也能自带建表，而不是静默
+        被「no such table」吞掉。
+        """
+        if not self._initialized:
+            await self.initialize()
+        # 自带建表（幂等）— 全新 DB 上保证 session_plans 存在。
+        from deskpet.memory.memory_v2_schema import ensure_memory_v2_tables
+        await ensure_memory_v2_tables(self._db_path)
+
+        steps_json = json.dumps(steps or [], ensure_ascii=False)
+        now = time.time()
+
+        async def _do() -> None:
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    await db.execute(
+                        """
+                        INSERT INTO session_plans(
+                            session_id, rationale, steps_json, awaiting, ts
+                        ) VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(session_id) DO UPDATE SET
+                            rationale  = excluded.rationale,
+                            steps_json = excluded.steps_json,
+                            awaiting   = excluded.awaiting,
+                            ts         = excluded.ts
+                        """,
+                        (
+                            session_id,
+                            rationale or "",
+                            steps_json,
+                            1 if awaiting else 0,
+                            now,
+                        ),
+                    )
+                    await db.commit()
+
+        await self._with_retry(_do)
+
+    async def get_session_plan(self, session_id: str) -> Optional[dict[str, Any]]:
+        """读 awaiting plan；无行返 None。steps 已 json.loads，awaiting 已 bool。"""
+        if not self._initialized:
+            await self.initialize()
+        from deskpet.memory.memory_v2_schema import ensure_memory_v2_tables
+        await ensure_memory_v2_tables(self._db_path)
+
+        async def _do() -> Optional[dict[str, Any]]:
+            async with aiosqlite.connect(self._db_path) as db:
+                cursor = await db.execute(
+                    """
+                    SELECT session_id, rationale, steps_json, awaiting, ts
+                    FROM session_plans WHERE session_id = ?
+                    """,
+                    (session_id,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    return None
+                try:
+                    steps = json.loads(row[2]) if row[2] else []
+                except (ValueError, TypeError):
+                    steps = []
+                return {
+                    "session_id": row[0],
+                    "rationale": row[1] or "",
+                    "steps": steps,
+                    "awaiting": bool(row[3]),
+                    "ts": row[4],
+                }
+
+        return await self._with_retry(_do)
+
+    async def clear_session_plan_awaiting(self, session_id: str) -> None:
+        """清 awaiting 标记（UPDATE awaiting=0）。幂等，可重复调（无行也安全）。"""
+        if not self._initialized:
+            await self.initialize()
+        from deskpet.memory.memory_v2_schema import ensure_memory_v2_tables
+        await ensure_memory_v2_tables(self._db_path)
+
+        async def _do() -> None:
+            async with self._write_lock:
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=5000")
+                    await db.execute(
+                        "UPDATE session_plans SET awaiting = 0 WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    await db.commit()
+
+        await self._with_retry(_do)
+
     async def list_code_sessions(self) -> list[dict[str, Any]]:
         """P4-S25 B4: read the persisted project list, newest first.
 

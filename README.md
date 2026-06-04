@@ -2,6 +2,9 @@
 
 本地部署的桌面语音宠物：Live2D 桌宠 + 全本地语音交互管线（VAD → ASR → LLM → TTS）。
 
+> 📊 **项目整体状态一页看清**: [`STATUS/status.md`](./STATUS/status.md) —
+> 所有并行 worktree / 功能模块完成度 / 最近里程碑 / 已知问题。
+
 ---
 
 > ## 🔑 开发期登录测试凭据
@@ -407,6 +410,10 @@ Schema 版本从 v9 升级到 v10。
 项目的设计文档、调研报告、内测就绪材料的速查表。代码改动遵循
 spec-first：3+ 文件的改动先有 plan/spec，再有实现。
 
+> 🧪 **手工测试用例索引**: [`testcase/index.md`](./testcase/index.md) —
+> 登记所有需人工一步步执行（带预期结果）的 testcase；每份用例写清测试范围、
+> 目的、步骤与判定。新增手工测试请在该索引登记。
+
 ### Companion + Code 模式升级 v1（2026-05-25）
 
 给 DeskPet 加 3 个 **superpowers 级**能力：`/<skill_name>` 命令触发 skill、
@@ -464,6 +471,61 @@ Code 多 agent 工作流的思想搬进桌宠产品。
 - UI 反馈层 GoalBar / SubagentProgressCard 组件（后端 wiring 完成，前端组件待加）
 - SessionGoalStore SQLite persistence（v1 in-memory）
 - Tauri 真 GUI E2E 手测（需启 Tauri + 真 LLM + 登录账号）
+
+### Code 模式工作流纪律 (superpowers)（2026-06-02）
+
+把 superpowers 的**结构化工作流**搬进 Code 模式，治用户反馈的 5 个痛点：
+问个问题就埋头改代码、不先澄清、不按计划、做完不验证就说完成。核心是给纯
+ReAct 循环补上一条 **意图门 → 澄清 → 计划 → 执行 → 验证** 的纪律骨架。
+
+> 📖 用户/开发者详解（偏好记忆机制、`/prefs` 用法、plan 硬门交互、verify strict
+> 行为）见 [`docs/CODE-WORKFLOW.md`](./docs/CODE-WORKFLOW.md)。
+
+| 文档 | 作用 |
+|------|------|
+| [`plans/2026-06-02-superpowers-code-workflow/proposal.md`](./plans/2026-06-02-superpowers-code-workflow/proposal.md) | 方案 — 5 痛点诊断 + 渐进三层集成方案 + 4 项决策（已拍板） |
+| [`plans/2026-06-02-superpowers-code-workflow/05-LOCKED-spec.md`](./plans/2026-06-02-superpowers-code-workflow/05-LOCKED-spec.md) | 锁定实现 spec — 11 功能项（A1-A5 / B1-B3 / C1-C3） |
+| [`plans/2026-06-02-superpowers-code-workflow/evidence/E2E-report-layer1a.md`](./plans/2026-06-02-superpowers-code-workflow/evidence/E2E-report-layer1a.md) | Layer 1A 真机 E2E — 意图门 / 先澄清 / 读回验证 3/3 PASS |
+| [`plans/2026-06-02-superpowers-code-workflow/evidence/E2E-report-plan-confirm-gate.md`](./plans/2026-06-02-superpowers-code-workflow/evidence/E2E-report-plan-confirm-gate.md) | plan-confirm 硬门 真机 E2E — GO/CANCEL 2/2 PASS |
+| [`plans/2026-06-02-superpowers-code-workflow/evidence/E2E-report-layer1b-preference-memory.md`](./plans/2026-06-02-superpowers-code-workflow/evidence/E2E-report-layer1b-preference-memory.md) | Layer 1B 偏好记忆 真机 E2E — BGE-M3 cosine 0.936 自动确认 PASS |
+| [`plans/2026-06-02-superpowers-code-workflow/evidence/E2E-report-verify-strict.md`](./plans/2026-06-02-superpowers-code-workflow/evidence/E2E-report-verify-strict.md) | verify strict + code patterns — 31/31 单测 + 真机不误杀 PASS |
+
+**五阶段工作流纪律**（写进 Code persona，治"自觉"层）：
+
+1. **意图门** — 收到消息先分清是**提问/闲聊**还是**派活**：问"你用什么模型"
+   这类元信息提问 → 直接答，不动手改东西；派活才进工作流。
+2. **澄清** — 需求模糊（"帮我优化一下代码"）先问目标 / 范围 / 成功标准 / 重点文件，
+   不埋头猜着改。
+3. **计划** — 非平凡任务先 `todo_write` 列计划；开启 `plan_confirm_gate` 后还会
+   **暂停等用户点 [执行] 再跑**（硬门）。
+4. **执行** — 按计划做；独立子任务可用 `agent_parallel` 多子代理并行。
+5. **验证** — 完成前必自检（写完读回 / 跑测试）；开启 `verify_gate_mode=strict`
+   后，裸声明"已创建 X / 测试通过"但 ledger 无对应工具 receipt → **拦截不算完成**。
+
+**三个 flag（出厂默认全关，行为字节级不变）**：
+
+| flag | TOML 位置 | 出厂默认 | 作用 |
+|------|-----------|----------|------|
+| `features.plan_confirm_gate` | `[features]` | `false` | 计划硬门 — 非平凡任务出 plan 后**暂停等用户点 [执行]/[取消]** 再跑 ReAct。OFF 时 plan 仍展示但 auto-confirm（即现状）。 |
+| `features.preference_memory` | `[features]` | `false` | BGE-M3 语义偏好记忆 — 记下用户批准过的计划/澄清过的意图，**语义相似（cosine ≥ 0.86）的后续请求自动确认/免澄清**（决策1/2 的"第一次问、后续直接做"）。OFF 时不构造，门每次都等确认。 |
+| `tools.verifier.verify_gate_mode` | `[tools.verifier]` | `"off"` | fake-completion 防护 — `off` 不校验；`shadow` 只记 WARN 永不拦；`strict` 真硬卡（声明做完但无工具 receipt → 拦截）。**非 `off` 时 invariant 要求同时 `emit_receipts=true`**。 |
+
+**如何在 `config.toml` 开启**（dev / 高级用户）：
+
+```toml
+[features]
+plan_confirm_gate = true     # 非平凡任务先出 plan 等确认
+preference_memory = true      # 相似任务自动确认（依赖 BGE-M3 embedder）
+
+[tools.verifier]
+verify_gate_mode = "strict"  # 或 "shadow" 先观察；strict/shadow 必须配 emit_receipts
+emit_receipts = true         # verify_gate_mode != off 的硬前提（invariant）
+```
+
+> ⚠️ **出厂默认不动**：以上三 flag 在 `backend/config.py` 出厂默认分别是
+> `false` / `false` / `"off"`，未开启时 Code 模式行为与现状完全一致（仅 persona
+> 措辞含工作流纪律）。是否把 `verify_gate_mode` 出厂默认翻成 `shadow` 留待拍板，
+> 利弊见 [`05-LOCKED-spec.md`](./plans/2026-06-02-superpowers-code-workflow/05-LOCKED-spec.md) §6。
 
 ### 工具层优化 v3（2026-05-24）
 

@@ -312,6 +312,7 @@ registry.register(
     permission_category="write_file",
     dangerous=True,
     source="builtin",
+    concurrency_safe=False,  # G3: mutates FactsStore — serialize
 )
 
 
@@ -492,13 +493,36 @@ async def _memory_search_handle(args: dict, task_id: str) -> str:  # noqa: ARG00
     except (TypeError, ValueError):
         top_k = 5
     top_k = max(1, min(20, top_k))
-    try:
-        rows = await _facts_store.search(query, limit=top_k)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({
-            "ok": False,
-            "error": f"facts.search failed: {exc}",
-        }, ensure_ascii=False)
+
+    # F5 ② 层修复（2026-06-01）：向量优先。embedder 可用且非 mock 时先走
+    # facts.vector_search（纯语义 / 跨语言，如"宠物"↔"橘猫"），向量路空/失败
+    # 再降级分词 facts.search（F5 ① 层，词面命中）。
+    # mock embedder 无语义（md5 hash）→ facts 行也没写 embedding → 跳过向量，
+    # 直接走分词 LIKE，行为与 Step1 一致。
+    rows: list[dict] | None = None
+    used = "like"
+    embedder_ok = (
+        _embedder is not None
+        and not (hasattr(_embedder, "is_mock") and _embedder.is_mock())
+    )
+    if embedder_ok:
+        try:
+            qvec = await _embedder.encode([query])
+            if qvec is not None and len(qvec) > 0:
+                vhits = await _facts_store.vector_search(qvec[0], limit=top_k)
+                if vhits:
+                    rows = vhits
+                    used = "vector"
+        except Exception:  # noqa: BLE001 — 向量路失败静默降级 LIKE
+            rows = None
+    if rows is None:
+        try:
+            rows = await _facts_store.search(query, limit=top_k)
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({
+                "ok": False,
+                "error": f"facts.search failed: {exc}",
+            }, ensure_ascii=False)
     safe_rows = [
         {k: v for k, v in r.items() if k not in ("embedding",)}
         for r in (rows or [])
@@ -507,6 +531,7 @@ async def _memory_search_handle(args: dict, task_id: str) -> str:  # noqa: ARG00
         "ok": True,
         "results": safe_rows,
         "count": len(safe_rows),
+        "retrieval": used,
     }, ensure_ascii=False, default=str)
 
 
@@ -518,6 +543,7 @@ registry.register(
     handler=_memory_write_handle,
     permission_category="write_file",
     source="builtin",
+    concurrency_safe=False,  # G3: mutates FactsStore — serialize
 )
 registry.register(
     name="memory_read",

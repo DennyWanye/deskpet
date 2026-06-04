@@ -46,7 +46,8 @@ interface AccountSettingsPanelProps {
   onLoggedOut?(): void;
 }
 
-const DEFAULT_CONSOLE_URL = "https://your-llm-relay.example.com/console/devices";
+// 2026-05-31 restore — production default 必须是真域名。
+const DEFAULT_CONSOLE_URL = "https://chinzy.com/console/devices";
 
 // ── Pure helpers (exported for vitest) ──────────────────────────
 

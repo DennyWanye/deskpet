@@ -101,14 +101,7 @@ function pinyinToViseme(pinyin: string): VisemeCode {
 const CN_PUNCT_OR_SPACE = /^[\s,.。，！？：；、…—"'""()（）【】《》·\-]+$/
 const HAN_CHAR = /^[一-鿿]$/
 
-function safeNum(v: number | undefined, fallback: number, mustBePositive = false): number {
-  if (v === undefined || !Number.isFinite(v)) return fallback
-  if (mustBePositive && v <= 0) return fallback
-  return v
-}
-
 export function createPhonemeEstimator(rawOpts: PhonemeEstimatorOpts = {}): PhonemeEstimator {
-  const ms_per_char_default = safeNum(rawOpts.ms_per_char, 200, true)
   const user_dict = rawOpts.pinyin_dict ?? {}
 
   function lookupPinyin(ch: string): string | null {

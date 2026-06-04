@@ -314,6 +314,7 @@ def _register() -> None:
             _handle,
             permission_category="write_file",
             timeout_seconds=30.0,
+            concurrency_safe=False,  # G3: writes .xlsx to disk
         )
     except Exception:  # noqa: BLE001
         pass

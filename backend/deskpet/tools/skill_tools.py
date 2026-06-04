@@ -104,11 +104,20 @@ async def _handle(args: dict, task_id: str) -> str:  # noqa: ARG001
 
 
 # 模块顶层 register — pkgutil discovery 触发
+# 2026-05-30 P0 bug fix #8: permission_category="execute_command" 不在
+# PermissionCategory Literal 白名单（8 个合法值：read_file/read_file_sensitive
+# /write_file/desktop_write/shell/network/mcp_call/skill_install），导致
+# skill_invoke 触发时 PermissionGate.check() 抛 ValueError → skill 全部
+# fail，LLM stream 已经说"已生成"但 0 文件生成（fake completion）。
+# 改用 'shell' — skill_invoke 性质等同 spawn 子进程/调任意工具，shell
+# category 走 prompt 流，permission_auto_mode 启用时 auto-allow。
+# 内部 tool 各自的 permission_category 仍各自 check（write_file 等），
+# 这个改动不削弱沙箱。
 registry.register(
     name="skill_invoke",
     toolset="control",
     schema=_SCHEMA,
     handler=_handle,
-    permission_category="execute_command",
+    permission_category="shell",
     source="builtin",
 )

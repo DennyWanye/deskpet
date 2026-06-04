@@ -617,6 +617,15 @@ def _make_str_llm_call(provider, *, max_tokens: int = 512):
     return _call
 
 
+# ─── superpowers Layer 1A/1B 决策2：plan-confirm 硬门 ────────────────
+# code 模式非平凡任务出 plan 后，_run_chat（后台任务）在此 Future 上 await，
+# 等前端点 [执行]/[取消] → plan_confirm WS handler set_result → 继续/取消。
+# 后台任务 await 不阻塞 WS recv loop，所以无需抽取 ReAct 块（最小改动）。
+# 单用户桌宠：按 session_id key 足够（code session id 唯一；门只在 code 模式触发）。
+# value = {"fut": Future[str], "text": 原始任务文本}（text 供 Layer 1B 计划记忆记录）。
+_PLAN_CONFIRM_WAITERS: dict[str, dict] = {}
+
+
 # ─── WI-T2.1 v3 build_agent 工厂（接电 VerifyGate）─────────────────
 #
 # Testability refactor: AgentLoop 构造逻辑从 chat handler inline 抽出，
@@ -799,8 +808,11 @@ try:
 
     # P4-S15: SessionDB at <data>/state.db, side-by-side with the legacy
     # memory.db. on_message_written hook will be wired to VectorWorker.enqueue
-    # in lifespan once the worker has started, so embeddings backfill
-    # automatically as new turns hit the DB.
+    # in lifespan once the worker has started, so **new** turns auto-embed as
+    # they hit the DB. NOTE: live enqueue only covers new turns — it does NOT
+    # backfill gaps (worker drop / encode failure / historical NULL rows). The
+    # lifespan fires an explicit backfill_missing() task after worker start to
+    # close those gaps (2026-06-02 audit FATAL-A); see _vector_backfill_bg.
     _state_db_path = _l1_dir / "state.db"
     _session_db = _SessionDB(db_path=_state_db_path)
 
@@ -1115,44 +1127,54 @@ try:
     if _facts_store is not None:
         service_context.register("facts_store", _facts_store)
 
-    # Stage 2 WI-S2.1a / D6 v2：memory_forget 工具 bind。模块在 tools
-    # discovery 时已 register 到 registry，这里注入实例依赖。
-    # R8 v2：forgotten_at 列 ALTER 失败时强制关 memory_forget flag。
-    if config.memory.v2.memory_forget and _facts_store is not None:
-        _forget_avail = True
+    # F3 (2026-05-31)：memory_tools.bind() 注入的 _facts_store 是
+    # memory_search / memory_write / memory_read / memory_forget **四个工具
+    # 共用**的（都在 tools/memory_tools.py 模块级共享同一 _facts_store）。
+    # 旧实现把整段 bind 包在 `if config.memory.v2.memory_forget` 里 →
+    # forget flag 默认 False 时，连只读的 memory_search（WI-T3.1 基础工具，
+    # 与 forget 无关）也 not bound。这是 flag 误连坐 bug。
+    #
+    # 修法：facts_store 在就 bind（让 4 个工具都可用）；forget 的**危险性**
+    # 单独由两道闸控制，不靠这个 flag：
+    #   1. enable_natural_language —— 仅 memory_forget flag 开 + forget 配置
+    #      开时才允许自然语言模式（query=...）；否则 _forget_by_query 返 skipped。
+    #   2. forget 工具 register 时的 dangerous=True + 用户显式确认。
+    #   fact_id 模式（最直接、最少歧义）本就永远开放（见 memory_tools._forget_by_id）。
+    # R8 v2：forgotten_at 列 ALTER 失败 → 关掉自然语言 forget（fact_id 仍可用）。
+    if _facts_store is not None:
+        _forget_nl = bool(
+            config.memory.v2.memory_forget
+            and config.memory.v2.forget.enable_natural_language
+        )
         try:
             from deskpet.memory.schema_v2_migrator import (
                 alter_failures as _alter_failures2,
             )
             if _alter_failures2().get("forgotten_at"):
-                _forget_avail = False
+                _forget_nl = False
                 logger.warning(
-                    "p4_memory_forget_force_disabled",
+                    "p4_memory_forget_nl_force_disabled",
                     reason="forgotten_at column unavailable",
                 )
         except Exception:  # noqa: BLE001
             pass
-        if _forget_avail:
-            try:
-                from deskpet.tools import memory_tools as _memory_tools
-                _memory_tools.bind(
-                    facts_store=_facts_store,
-                    embedder=_embedder,
-                    llm_call=_make_str_llm_call(local_llm),
-                    enable_natural_language=(
-                        config.memory.v2.forget.enable_natural_language
-                    ),
-                )
-                logger.info(
-                    "p4_memory_forget_tool_bound",
-                    enable_natural_language=(
-                        config.memory.v2.forget.enable_natural_language
-                    ),
-                )
-            except Exception as _mf_exc:  # noqa: BLE001
-                logger.warning(
-                    "p4_memory_forget_bind_failed", error=str(_mf_exc),
-                )
+        try:
+            from deskpet.tools import memory_tools as _memory_tools
+            _memory_tools.bind(
+                facts_store=_facts_store,
+                embedder=_embedder,
+                llm_call=_make_str_llm_call(local_llm),
+                enable_natural_language=_forget_nl,
+            )
+            logger.info(
+                "p4_memory_tools_bound",
+                forget_natural_language=_forget_nl,
+                memory_forget_flag=config.memory.v2.memory_forget,
+            )
+        except Exception as _mf_exc:  # noqa: BLE001
+            logger.warning(
+                "p4_memory_tools_bind_failed", error=str(_mf_exc),
+            )
 
     # OpenSpec 2026-05-16-async-image-gen: ImageGenerationWorker —
     # generate_image submits a job and returns instantly; this worker
@@ -1474,6 +1496,23 @@ async def lifespan(app: FastAPI):
                 logger.warning("p4_embedder_warmup_failed", error=str(exc))
         # fire-and-forget; we deliberately don't await
         asyncio.create_task(_embedder_warmup_bg())
+    # superpowers Layer 1B — PreferenceMemory（BGE-M3 语义偏好记忆）。
+    # flag OFF（默认）→ 不构造 → plan-confirm 门每次都等确认（现状）。
+    # 需要真 embedder（embed 接口）；mock 也能跑（向量稳定可匹配）。
+    if bool(getattr(config.features, "preference_memory", False)) and _emb is not None:
+        try:
+            from deskpet.agent.preference_memory import PreferenceMemory
+            _pref_mem = PreferenceMemory(
+                _paths.user_data_dir() / "preference_memory.json",
+                _emb.embed,
+            )
+            service_context.register("preference_memory", _pref_mem)
+            logger.info(
+                "preference_memory_ready entries=%d",
+                len(_pref_mem.list_entries()),
+            )
+        except Exception as _pm_exc:  # noqa: BLE001
+            logger.warning("preference_memory_init_failed error=%s", _pm_exc)
     # P4-S15: VectorWorker — starts after SessionDB is initialised so the
     # vec0 schema is in place. After start, wire its enqueue() onto the
     # SessionDB write-hook so new chat turns auto-embed.
@@ -1526,6 +1565,26 @@ async def lifespan(app: FastAPI):
                 "p4_vector_worker_ready",
                 facts_extract=config.memory.v2.facts_extract,
             )
+            # 2026-06-02 记忆审计 FATAL-A 修复：自动 backfill 安全网。
+            # 在此之前 backfill_missing() 只在手动脚本（scripts/backfill_vectors）
+            # 里调，lifespan 从不调用 —— 任何 embedding 缺口（worker 关机丢最后
+            # 一批 / encode 失败 / 子进程崩）都会让 messages.embedding 永久 IS
+            # NULL 且无声，向量召回永远漏掉这些消息（"刚说的话下次不记得"）。
+            # 桌宠用户永远不会手动跑脚本。这里在 worker 起来后 fire-and-forget
+            # 跑一次回填：backfill_missing 内部自带 embedder warmup + 分批 sleep
+            # 礼让实时 enqueue（vector_worker.py:198-208），不阻塞冷启动。
+            async def _vector_backfill_bg() -> None:
+                try:
+                    # 等 embedder 暖机 + 冷启动峰值过去再回填，别和首轮抢资源。
+                    await asyncio.sleep(60.0)
+                    _n = await _vw.backfill_missing()
+                    if _n:
+                        logger.info("p4_vector_backfill_done", processed=_n)
+                except Exception as _bf_exc:  # noqa: BLE001
+                    logger.warning(
+                        "p4_vector_backfill_failed", error=str(_bf_exc)
+                    )
+            asyncio.create_task(_vector_backfill_bg())
         except Exception as exc:
             logger.warning("p4_vector_worker_start_failed", error=str(exc))
     # 记忆系统升级 WI-M1.7: reflection 低频定时任务。flag reflection 开 →
@@ -2158,15 +2217,13 @@ app = FastAPI(title="Desktop Pet Backend", version="0.2.0", lifespan=lifespan)
 # fetch() to http://127.0.0.1:8100 is cross-origin and blocked without this.
 # WebSocket connections are NOT subject to CORS, only HTTP (POST /config/cloud).
 from fastapi.middleware.cors import CORSMiddleware
+# v2 fix: regex 模式支持任意 vite dev port (worktree-aware 隔离场景).
+# 默认 5173；v2 worktree 用 5473；其他 worktree 用 5273/5373/5573 等.
+# allow_origin_regex 覆盖所有 localhost / 127.0.0.1 + 任意端口 + Tauri.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "tauri://localhost",
-        "https://tauri.localhost",
-        "http://localhost:5173",   # Vite dev server (browser E2E testing)
-        "http://127.0.0.1:5173",
-    ],
-    allow_methods=["POST", "GET"],
+    allow_origin_regex=r"^(tauri://localhost|https://tauri\.localhost|http://(localhost|127\.0\.0\.1):\d+)$",
+    allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["Content-Type", "X-Shared-Secret"],
 )
 
@@ -2282,6 +2339,38 @@ async def _emit_context_usage(
         await _broadcast_default_chat_peers(originator_ws, msg)
     except Exception as exc:  # noqa: BLE001
         logger.debug("context_usage_emit_failed sid=%s err=%s", session_id, exc)
+
+
+# superpowers Layer 1B WI-A1 — 意图记忆纯函数（module 顶层，便于单测直接 import）。
+# 注入侧 hint 文案 + record 侧 label 判定从主循环抽出，使得行为可被
+# ``from main import _build_intent_hint, _intent_label_from_turn`` 单测。
+_INTENT_HINT_ASK = (
+    "[偏好记忆] 用户以往把这类消息当纯提问处理——"
+    "直接回答，不要调用工具修改任何东西。"
+)
+_INTENT_HINT_TASK = (
+    "[偏好记忆] 用户以往把这类消息当派活——"
+    "按工作流先澄清/计划再执行。"
+)
+
+
+def _build_intent_hint(label: str) -> str | None:
+    """意图记忆注入侧：把匹配到的意图 label 映射成 system hint 文案。
+
+    - ``"ask"`` → 纯提问 hint（直接回答别动手）。
+    - ``"task"`` → 派活 hint（进工作流先澄清/计划）。
+    - 其它（含 None/未知）→ None（不注入，守"出厂字节级不变"）。
+    """
+    if label == "ask":
+        return _INTENT_HINT_ASK
+    if label == "task":
+        return _INTENT_HINT_TASK
+    return None
+
+
+def _intent_label_from_turn(had_tool_call: bool) -> str:
+    """意图记忆 record 侧：本轮真调过工具 → "task"，否则纯回答 → "ask"。"""
+    return "task" if had_tool_call else "ask"
 
 
 def _approx_tokens(text: str | None) -> int:
@@ -2684,6 +2773,147 @@ async def api_skills_list():
     }
 
 
+@app.get("/api/commands/help")
+async def api_commands_help():
+    """WI-T2-B5 v2 — InputBar autocomplete 拉所有可用 slash command 列表.
+
+    Returns:
+        {
+          "feature_enabled": bool,
+          "commands": [
+            {name, description, args_schema: [{name, type, description, required}]},
+            ...
+          ]
+        }
+    """
+    enabled = bool(getattr(
+        getattr(config, "features", None), "slash_commands", False,
+    ))
+    if not enabled:
+        return {"feature_enabled": False, "commands": []}
+
+    # Builtin commands (hardcoded args schema)
+    commands: list[dict[str, Any]] = [
+        {
+            "name": "help",
+            "description": "列出所有可用命令 + skill",
+            "args_schema": [],
+        },
+        {
+            "name": "goal",
+            "description": "设置 session 级长期目标 (空参或 clear 清除/显状态)",
+            "args_schema": [
+                {"name": "text", "type": "string",
+                 "description": "目标描述; 'clear' 清除", "required": False},
+            ],
+        },
+        {
+            # superpowers A2 — 让 /prefs 出现在 InputBar 的 `/` 自动补全下拉里
+            # (此前只在 dispatcher + /help 文本里，下拉候选漏了它 → 不可发现)。
+            "name": "prefs",
+            "description": "查看/清除偏好记忆 (空参列出; clear [intent|plan] 清除)",
+            "args_schema": [
+                {"name": "subcommand", "type": "string",
+                 "description": "'clear' 或 'clear intent' / 'clear plan'", "required": False},
+            ],
+        },
+    ]
+
+    # Skills — list_skills 返回 SkillMeta 的 dict 形式；args_schema 从
+    # frontmatter 解析（如果有），否则给空 list（用户自由输入参数）
+    _sl = service_context.get("skill_loader")
+    if _sl is not None:
+        try:
+            for s in _sl.list_skills():
+                meta_args = s.get("args") or s.get("arguments") or []
+                arg_schema: list[dict[str, Any]] = []
+                if isinstance(meta_args, list):
+                    for a in meta_args:
+                        if isinstance(a, str):
+                            arg_schema.append({
+                                "name": a, "type": "string",
+                                "description": "", "required": False,
+                            })
+                        elif isinstance(a, dict):
+                            arg_schema.append({
+                                "name": str(a.get("name", "")),
+                                "type": str(a.get("type", "string")),
+                                "description": str(a.get("description", ""))[:120],
+                                "required": bool(a.get("required", False)),
+                            })
+                commands.append({
+                    "name": s.get("name") or "",
+                    "description": (s.get("description") or "")[:120],
+                    "args_schema": arg_schema,
+                })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("/api/commands/help failed: %s", exc)
+
+    return {"feature_enabled": True, "commands": commands}
+
+
+@app.get("/api/commands/{name}/schema")
+async def api_command_schema(name: str):
+    """WI-T2-B5 v2 — 单命令 arg schema 详情（autocomplete arg-hint 用）.
+
+    Returns:
+        {name, description, args_schema} 或 404
+    """
+    enabled = bool(getattr(
+        getattr(config, "features", None), "slash_commands", False,
+    ))
+    if not enabled:
+        return Response(status_code=403, content="feature disabled")
+
+    # Builtin lookup
+    name_lower = name.strip("/ ").lower()
+    builtin_map = {
+        "help": {"description": "列出所有可用命令", "args_schema": []},
+        "goal": {
+            "description": "设置 session 级长期目标",
+            "args_schema": [
+                {"name": "text", "type": "string", "description": "目标描述",
+                 "required": False},
+            ],
+        },
+    }
+    if name_lower in builtin_map:
+        b = builtin_map[name_lower]
+        return {"name": name_lower, **b}
+
+    # Skill lookup
+    _sl = service_context.get("skill_loader")
+    if _sl is not None:
+        try:
+            for s in _sl.list_skills():
+                if (s.get("name") or "").lower() == name_lower:
+                    meta_args = s.get("args") or s.get("arguments") or []
+                    arg_schema = []
+                    if isinstance(meta_args, list):
+                        for a in meta_args:
+                            if isinstance(a, str):
+                                arg_schema.append({
+                                    "name": a, "type": "string",
+                                    "description": "", "required": False,
+                                })
+                            elif isinstance(a, dict):
+                                arg_schema.append({
+                                    "name": str(a.get("name", "")),
+                                    "type": str(a.get("type", "string")),
+                                    "description": str(a.get("description", ""))[:120],
+                                    "required": bool(a.get("required", False)),
+                                })
+                    return {
+                        "name": name_lower,
+                        "description": (s.get("description") or "")[:120],
+                        "args_schema": arg_schema,
+                    }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("/api/commands/%s/schema failed: %s", name_lower, exc)
+
+    return Response(status_code=404, content=f"unknown command: {name_lower}")
+
+
 @app.get("/health")
 async def health():
     # P3-S2: surface startup failures (esp. CUDA unavailable / model dir
@@ -2694,7 +2924,17 @@ async def health():
         "status": "degraded" if errors else "ok",
         "secret_hint": SHARED_SECRET[:4] + "...",
         "strategy": llm._strategy.value,
-        "cloud_configured": llm._cloud is not None,
+        # P4-S20-LLM-Unified 修: 旧 `llm._cloud` 是 HybridRouter 的废弃字段,
+        # unified schema 重构后恒为 None → /health 永远误报 cloud_configured=false
+        # (即便 backend 实际有云端 key)。改为读真实生效的 local_llm: base_url
+        # 非本地 + 有真 key(非 ollama 占位) = 已配云端。
+        "cloud_configured": bool(
+            local_llm is not None
+            and "localhost" not in str(getattr(local_llm, "base_url", ""))
+            and "127.0.0.1" not in str(getattr(local_llm, "base_url", ""))
+            and getattr(local_llm, "api_key", None)
+            and getattr(local_llm, "api_key", "") != "ollama"
+        ),
         "startup_errors": errors,
     }
 
@@ -3584,9 +3824,32 @@ async def control_channel(ws: WebSocket):
                             "session_messages_load_failed",
                             error=str(exc), session_id=target_sid,
                         )
+                # FEAT-A4: 带回 awaiting plan（不塞进被白名单 3659 过滤的 messages
+                # 流，单独挂 payload.plan）。前端 rehydration 据此重建 plan card +
+                # [执行]/[取消] 栏。只在 awaiting 时附；否则字段缺省 → 旧行为不变。
+                _plan_payload: dict[str, Any] | None = None
+                if sdb is not None:
+                    try:
+                        _sp = await sdb.get_session_plan(target_sid)
+                        if _sp is not None and _sp.get("awaiting"):
+                            _plan_payload = {
+                                "rationale": _sp.get("rationale") or "",
+                                "steps": _sp.get("steps") or [],
+                                "awaiting": True,
+                            }
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "session_plan_load_failed sid=%s err=%s",
+                            target_sid, exc,
+                        )
+                _msgs_payload: dict[str, Any] = {
+                    "session_id": target_sid, "messages": msgs,
+                }
+                if _plan_payload is not None:
+                    _msgs_payload["plan"] = _plan_payload
                 await ws.send_json({
                     "type": "session_messages_response",
-                    "payload": {"session_id": target_sid, "messages": msgs},
+                    "payload": _msgs_payload,
                 })
 
             elif msg_type == "slash_command":
@@ -3620,10 +3883,12 @@ async def control_channel(ws: WebSocket):
                         from deskpet.commands import dispatch_slash_command
                         _slash_skill_loader = service_context.get("skill_loader")
                         _slash_goal_store = service_context.get("session_goal_store")
+                        _slash_pref_mem = service_context.get("preference_memory")
                         _slash_result = await dispatch_slash_command(
                             cmd_name, cmd_args, target_sid,
                             skill_loader=_slash_skill_loader,
                             session_goal_store=_slash_goal_store,
+                            session_pref_memory=_slash_pref_mem,
                         )
                     except Exception as _slash_exc:  # noqa: BLE001
                         logger.warning(
@@ -3668,6 +3933,45 @@ async def control_channel(ws: WebSocket):
                 }
                 await ws.send_json(_interrupt_evt)
                 await _broadcast_default_chat_peers(ws, _interrupt_evt)
+
+            elif msg_type == "plan_confirm":
+                # superpowers 决策2 — plan-confirm 硬门的用户裁决。
+                # 前端 PlanCard 的 [执行]/[取消] 按钮发来 {session_id, decision}。
+                # set_result 唤醒挂在 _PLAN_CONFIRM_WAITERS 上的 _run_chat 协程。
+                payload = raw.get("payload", {}) or {}
+                _csid = payload.get("session_id") or session_id
+                _decision = payload.get("decision") or "go"
+                _waiter = _PLAN_CONFIRM_WAITERS.get(_csid)
+                _fut = _waiter.get("fut") if _waiter else None
+                if _fut is not None and not _fut.done():
+                    _fut.set_result("go" if _decision == "go" else "cancel")
+                    logger.info(
+                        "plan_confirm_received sid=%s decision=%s", _csid, _decision
+                    )
+                    # Layer 1B: 用户批准 → 记计划记忆,下次相似任务自动确认。
+                    if _decision == "go":
+                        _pref = service_context.get("preference_memory")
+                        _task_text = (_waiter or {}).get("text")
+                        if _pref is not None and _task_text:
+                            asyncio.create_task(
+                                _pref.record(_task_text, "approved", "plan")
+                            )
+                else:
+                    logger.info(
+                        "plan_confirm_no_waiter sid=%s (timed out / already resolved)",
+                        _csid,
+                    )
+                # FEAT-A4: 不论 go/cancel（含无 waiter 的 already-resolved），用户
+                # 已对 plan 做出裁决 → 清 sidecar awaiting 标记。与 _run_chat
+                # finally 重复但幂等，覆盖"finally 尚未跑到"的竞态窗口。
+                _sdb_pc = service_context.get("session_db")
+                if _sdb_pc is not None:
+                    try:
+                        await _sdb_pc.clear_session_plan_awaiting(_csid)
+                    except Exception as _pc_e:  # noqa: BLE001
+                        logger.debug(
+                            "plan_confirm_clear_failed sid=%s err=%s", _csid, _pc_e
+                        )
 
             elif msg_type == "code_session_delete":
                 # P4-S24 followup: user clicked 🗑️ on a project tile / sidebar
@@ -3819,6 +4123,27 @@ async def control_channel(ws: WebSocket):
                             elif _cfg_models:
                                 _model_ids = _cfg_models
                                 _source = "config"
+                # Fallback: provider_registry chain 为空时（典型场景：用户登录
+                # 中转站后，relay provider 只是前端"虚拟项"、不走 settings_providers_add
+                # 注册进 backend registry，见 SettingsProviders.tsx），用当前
+                # local_llm（登录后经 update_cloud_config 已切到中转站 base_url+key）
+                # 拉中转站 /models。这样登录中转站即可在 code 模式换模型，无需手动
+                # 再"添加 Provider"。
+                if not _model_ids and local_llm is not None:
+                    _ll_base = str(getattr(local_llm, "base_url", "") or "")
+                    _ll_key = getattr(local_llm, "api_key", None)
+                    # 跳过本地 ollama（localhost）—— 它的 /models 是本地小模型，
+                    # 不是中转站目录，且 key 通常是占位 "ollama"。
+                    if _ll_base and "localhost" not in _ll_base and "127.0.0.1" not in _ll_base:
+                        try:
+                            from llm.model_catalog import fetch_models as _fm2
+                            _live_ll = await _fm2(_ll_base, _ll_key, timeout=8.0)
+                        except Exception:
+                            _live_ll = []
+                        if _live_ll:
+                            _model_ids = _live_ll
+                            _source = "live-local_llm"
+                            _base_url = _ll_base
                 from llm.model_catalog import build_catalog as _bc
                 await ws.send_json({
                     "type": "code_models_list_response",
@@ -4689,6 +5014,33 @@ async def control_channel(ws: WebSocket):
                                 _sid, str(_p6_exc)[:200],
                             )
 
+                        # superpowers Layer 1B WI-A1 — 意图记忆 hint 注入。
+                        # 匹配以往同类消息的意图(ask/task)，注入 system hint 引导
+                        # persona：纯提问别动手 / 派活进工作流。决策1"记下来后续直接做"。
+                        # 仅 code 模式 + pref_mem 存在 + 非 sentinel；命中才注入。
+                        if _in_code_mode and not _is_sentinel:
+                            _pref_im = service_context.get("preference_memory")
+                            if _pref_im is not None:
+                                try:
+                                    _im = await _pref_im.match(_text, "intent")
+                                    _im_hint = _build_intent_hint(
+                                        _im.get("label") if _im is not None else ""
+                                    )
+                                    if _im_hint:
+                                        _ins = 0
+                                        while (_ins < len(_msgs)
+                                               and _msgs[_ins].get("role") == "system"):
+                                            _ins += 1
+                                        _msgs.insert(_ins, {"role": "system",
+                                                            "content": _im_hint})
+                                        logger.info(
+                                            "intent_memory_hint sid=%s label=%s score=%.3f",
+                                            _sid, _im.get("label"),
+                                            float(_im.get("score", 0.0)),
+                                        )
+                                except Exception as _im_e:  # noqa: BLE001
+                                    logger.debug("intent_memory_match_failed: %s", _im_e)
+
                         # Inject project root into per-session tool-arg
                         # context so glob/grep can run without the LLM
                         # restating the path every call. Cleared when
@@ -4752,9 +5104,17 @@ async def control_channel(ws: WebSocket):
                         # requests, do a structured-output plan call BEFORE
                         # the ReAct loop. The plan is sent to the frontend
                         # for visibility and injected into the message stack
-                        # so the LLM stays anchored. Auto-confirm (no user
-                        # gate) for now — the 停止 button is the escape
-                        # hatch if the plan looks wrong.
+                        # so the LLM stays anchored.
+                        #
+                        # superpowers Layer 1A/1B 决策2 — plan-confirm 硬门:
+                        # features.plan_confirm_gate ON 时,出 plan 后 emit
+                        # awaiting_confirm + await 用户点 [执行]/[取消] 再跑 ReAct。
+                        # OFF（默认）= 旧 auto-confirm 行为（停止 按钮是逃生口）。
+                        _gate_on = bool(
+                            getattr(config.features, "plan_confirm_gate", False)
+                        ) and _in_code_mode
+                        _awaiting_confirm = False
+                        _auto_confirmed = False
                         try:
                             from agent.plan import (
                                 maybe_extract_plan as _maybe_plan,
@@ -4767,6 +5127,21 @@ async def control_channel(ws: WebSocket):
                                 in_code_mode=_in_code_mode,
                             )
                             if _plan is not None:
+                                # Layer 1B 计划记忆: 语义相似且以往批准过 → 自动确认,
+                                # 跳过等待(决策2 "记下来后续直接做")。
+                                if _gate_on:
+                                    _pref = service_context.get("preference_memory")
+                                    if _pref is not None:
+                                        try:
+                                            _pm_hit = await _pref.match(_text, "plan")
+                                            if _pm_hit is not None:
+                                                _auto_confirmed = True
+                                                logger.info(
+                                                    "plan_confirm_auto_approved sid=%s score=%.3f",
+                                                    _sid, float(_pm_hit.get("score", 0.0)),
+                                                )
+                                        except Exception as _pm_e:  # noqa: BLE001
+                                            logger.debug("pref_match_failed error=%s", _pm_e)
                                 _plan_evt = {
                                     "type": "chat_v2_plan",
                                     "payload": {
@@ -4776,6 +5151,9 @@ async def control_channel(ws: WebSocket):
                                             {"title": s.title, "detail": s.detail}
                                             for s in _plan.steps
                                         ],
+                                        # 决策2: 硬门开且未自动确认时前端渲染 [执行]/[取消]
+                                        "awaiting_confirm": _gate_on and not _auto_confirmed,
+                                        "auto_confirmed": _auto_confirmed,
                                     },
                                 }
                                 await _ws.send_json(_plan_evt)
@@ -4788,8 +5166,87 @@ async def control_channel(ws: WebSocket):
                                 while _insert_at < len(_msgs) and _msgs[_insert_at].get("role") == "system":
                                     _insert_at += 1
                                 _msgs.insert(_insert_at, _plan_msg)
+                                _awaiting_confirm = _gate_on and not _auto_confirmed
+                                # FEAT-A4: awaiting plan 持久化到 session_plans
+                                # sidecar，使 F5/HMR rehydration 后 [执行]/[取消]
+                                # 栏能恢复。try/except 只 log 不阻断 plan 门。
+                                if _awaiting_confirm:
+                                    _sdb_plan = service_context.get("session_db")
+                                    if _sdb_plan is not None:
+                                        try:
+                                            await _sdb_plan.upsert_session_plan(
+                                                _sid,
+                                                _plan.rationale,
+                                                [
+                                                    {"title": s.title,
+                                                     "detail": s.detail}
+                                                    for s in _plan.steps
+                                                ],
+                                                True,
+                                            )
+                                        except Exception as _sp_e:  # noqa: BLE001
+                                            logger.warning(
+                                                "session_plan_upsert_failed sid=%s err=%s",
+                                                _sid, str(_sp_e)[:200],
+                                            )
                         except Exception as _exc:  # noqa: BLE001
                             logger.debug("p4s25_plan_skipped error=%s", _exc)
+
+                        # 决策2 plan-confirm 硬门：在 plan 展示后挂起，等前端确认。
+                        # _run_chat 是后台 task → 此 await 不阻塞 WS recv loop，
+                        # plan_confirm handler 会 set_result 唤醒本协程。
+                        if _awaiting_confirm:
+                            _confirm_fut: "asyncio.Future[str]" = (
+                                asyncio.get_event_loop().create_future()
+                            )
+                            # 存 {fut, text}: plan_confirm handler 用 text 记 Layer 1B
+                            # 计划记忆（用户点[执行]→record approved）。
+                            _PLAN_CONFIRM_WAITERS[_sid] = {
+                                "fut": _confirm_fut, "text": _text,
+                            }
+                            logger.info("plan_confirm_gate_awaiting sid=%s", _sid)
+                            try:
+                                _decision = await asyncio.wait_for(
+                                    _confirm_fut, timeout=900
+                                )
+                            except asyncio.TimeoutError:
+                                _decision = "cancel"
+                                logger.info("plan_confirm_gate_timeout sid=%s", _sid)
+                            finally:
+                                _PLAN_CONFIRM_WAITERS.pop(_sid, None)
+                                # FEAT-A4: 不论 go / cancel / timeout，plan 都不再
+                                # awaiting → 清 sidecar 标记（幂等，重复无害）。
+                                # 统一收口在 finally，确保三条出路都覆盖。
+                                _sdb_clr = service_context.get("session_db")
+                                if _sdb_clr is not None:
+                                    try:
+                                        await _sdb_clr.clear_session_plan_awaiting(_sid)
+                                    except Exception as _clr_e:  # noqa: BLE001
+                                        logger.debug(
+                                            "session_plan_clear_failed sid=%s err=%s",
+                                            _sid, _clr_e,
+                                        )
+                            if _decision != "go":
+                                _cancel_evt = {
+                                    "type": "chat_v2_plan_cancelled",
+                                    "payload": {"session_id": _sid},
+                                }
+                                await _ws.send_json(_cancel_evt)
+                                await _broadcast_default_chat_peers(_ws, _cancel_evt)
+                                _sa_cancel = (
+                                    service_context.get("session_activity")
+                                    if _in_code_mode else None
+                                )
+                                if _sa_cancel is not None:
+                                    try:
+                                        await _sa_cancel.set_status(_sid, "idle")
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                logger.info(
+                                    "plan_confirm_gate_cancelled sid=%s", _sid
+                                )
+                                return
+                            logger.info("plan_confirm_gate_go sid=%s", _sid)
 
                         # P5-S2 Hook A: completion guard probe.
                         #
@@ -4873,12 +5330,17 @@ async def control_channel(ws: WebSocket):
                             except Exception:
                                 pass
 
+                        # WI-A1: 本轮是否真调过工具 — 决定意图记忆记 task/ask。
+                        _had_tool_call = False
                         async for ev in _agent.run(
                             _msgs,
                             session_id=_sid,
                             stream=True,
                             provider_chain=_provider_chain,
                         ):
+                            # WI-A1: track tool usage for intent memory.
+                            if isinstance(ev, _TCEv) and getattr(ev, "tool_call", None):
+                                _had_tool_call = True
                             # P5-S1: bump activity BEFORE forwarding so the
                             # watchdog sees the latest event even if the
                             # WS send fails. Best-effort — never let a
@@ -5102,6 +5564,17 @@ async def control_channel(ws: WebSocket):
                                 }
                                 await _ws.send_json(_final_msg)
                                 await _broadcast_default_chat_peers(_ws, _final_msg)
+                                # WI-A1: 记意图记忆 — 本轮真调过工具→"task"，纯回答
+                                # →"ask"。仅 code 模式 + pref_mem + 非 sentinel。
+                                # fire-and-forget，不阻塞 final。record 内部去重。
+                                if _in_code_mode and not _is_sentinel:
+                                    _pref_rec = service_context.get("preference_memory")
+                                    if _pref_rec is not None and _text:
+                                        asyncio.create_task(_pref_rec.record(
+                                            _text,
+                                            _intent_label_from_turn(_had_tool_call),
+                                            "intent",
+                                        ))
                                 # 2026-05-28 context-usage ring: snapshot
                                 # actual LLM prompt_tokens + model window
                                 # and push to all peers.
@@ -5632,6 +6105,13 @@ async def audio_channel(ws: WebSocket):
     )
     await session_vad.load()
 
+    # VOICE-MSGPANEL-SYNC fix: 语音广播用「实时」解析的发起窗口 control_ws 作
+    # originator，而非 audio 连接建立时的快照 —— backend respawn 后 audio_ws 常
+    # 先于 control_ws 重连，快照会是 None/失效，导致守卫挡掉广播、或不能正确 skip
+    # 主窗口（重复显示）。这里对齐文字路径（main.py chat handler 用实时 _ws）。
+    async def _voice_broadcast(_orig_ignored, _msg: dict) -> None:
+        await _broadcast_default_chat_peers(_control_connections.get(session_id), _msg)
+
     # V5 §2.3 + S1: voice pipeline routes through agent_engine (not llm directly)
     # so that S2 memory / S3 tools flow uniformly through voice and text paths.
     # P4-S21 #13: also pass the v2 tool stack (registry + permission gate +
@@ -5651,6 +6131,9 @@ async def audio_channel(ws: WebSocket):
         tool_registry_v2=deskpet_tool_registry_v2,
         permission_gate_v2=permission_gate_v2,
         local_llm=local_llm,
+        # VOICE-MSGPANEL-SYNC: 注入实时解析 originator 的语音广播器（_voice_broadcast
+        # 在上面定义，闭包捕获 session_id，广播时实时取发起窗口 control_ws 作 skip 目标）。
+        broadcast=_voice_broadcast,
     )
     # Register so control-channel `interrupt` messages can reach us.
     _pipelines[session_id] = pipeline

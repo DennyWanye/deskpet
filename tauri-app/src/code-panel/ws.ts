@@ -135,6 +135,13 @@ async function open_socket() {
         type: "session_messages_load",
         payload: { session_id: target, limit: 200 },
       }));
+      // 2026-05-31 restore — pull cached context-usage so ring gauge
+      // hydrates immediately on (re)connect instead of waiting for the
+      // next LLM turn.
+      ws?.send(JSON.stringify({
+        type: "context_usage_request",
+        payload: { session_id: target },
+      }));
     }
   };
   ws.onmessage = (ev) => {
@@ -171,6 +178,59 @@ function schedule_reconnect() {
     reconnect_timer = null;
     void open_socket();
   }, delay) as unknown as number;
+}
+
+/**
+ * FEAT-A2 — 把 slash_command_result 的 result 对象格式化成一条可读文本。
+ * 8 种 result.type 全覆盖（help / goal_set / goal_status / goal_cleared /
+ * skill_result / prefs_list / prefs_cleared / error）+ default 兜底（raw JSON），
+ * 禁止任何 type 落空被静默丢弃。
+ */
+export function format_slash_result(result: any): string {
+  const r = result || {};
+  switch (r.type) {
+    case "help": {
+      const builtins = (r.builtins || [])
+        .map((b: any) => `  /${b.name} — ${b.description || ""}`)
+        .join("\n");
+      const skills = (r.skills || [])
+        .map((s: any) => `  /${s.name} — ${s.description || ""}`)
+        .join("\n");
+      const parts = ["可用命令:"];
+      if (builtins) parts.push(builtins);
+      if (skills) parts.push("可用 skill:", skills);
+      return parts.join("\n");
+    }
+    case "goal_set":
+      return `已设置目标: ${r.text || ""}（上限 ${r.max_iterations ?? "?"} 轮）`;
+    case "goal_status":
+      return r.active
+        ? `当前目标: ${r.text || ""}（已用 ${r.iterations_used ?? 0}/${r.max_iterations ?? "?"} 轮${r.done ? "，已完成" : ""}）`
+        : "当前无活动目标";
+    case "goal_cleared":
+      return r.ok ? "已清除当前目标" : "无目标可清除";
+    case "skill_result":
+      return `skill /${r.skill || ""} 输出:\n${
+        typeof r.output === "string" ? r.output : JSON.stringify(r.output, null, 2)
+      }`;
+    case "prefs_list": {
+      const entries = r.entries || [];
+      if (!entries.length) return "偏好记忆为空（暂无意图/计划记录）";
+      const lines = entries.map(
+        (e: any) => `  ${e.kind}/${e.label}: ${e.text}`,
+      );
+      return [`偏好记忆（共 ${r.count ?? entries.length} 条）:`, ...lines].join("\n");
+    }
+    case "prefs_cleared":
+      return `已清除 ${r.removed ?? 0} 条偏好记忆${
+        r.kind ? `（kind=${r.kind}）` : ""
+      }`;
+    case "error":
+      return `命令出错: ${r.message || "unknown"}${r.hint ? `\n提示: ${r.hint}` : ""}`;
+    default:
+      // 兜底：未知 type 也要展示，禁止静默丢。
+      return `[slash 结果] ${JSON.stringify(r)}`;
+  }
 }
 
 /**
@@ -215,6 +275,21 @@ function dispatch(msg: any) {
       }
       break;
     }
+    case "context_usage": {
+      // 2026-05-31 restore — Claude-Code-style ring gauge update.
+      const p = msg.payload || {};
+      const target_sid = p.session_id || sid;
+      store.upsert(target_sid, { context_usage: p });
+      break;
+    }
+    case "chat_v2_user_echo": {
+      // 2026-05-31 restore — multi-window sync: a peer window typed a user
+      // message. Backend skips originator, so receiving means peer-origin
+      // → directly push to local store.
+      const text = msg.payload?.text;
+      if (text) store.push_message(sid, { role: "user", text });
+      break;
+    }
     case "chat_v2_final": {
       const text = msg.payload?.text;
       // P4-S25 A1: final text replaces any partial deltas. Drop trailing
@@ -249,13 +324,30 @@ function dispatch(msg: any) {
         role: "plan" as any,
         plan_rationale: p.rationale,
         plan_steps: p.steps,
+        // superpowers 决策2: 硬门开 → 渲染 [执行]/[取消] 按钮等确认
+        plan_awaiting_confirm: !!p.awaiting_confirm,
+        plan_sid: sid,
       } as any);
+      break;
+    }
+    case "chat_v2_plan_cancelled": {
+      // superpowers 决策2: 用户点[取消] 或 后端超时 → 清按钮 + 回 idle
+      store.resolve_plan(sid);
+      store.upsert(sid, { status: "idle", inflight: false });
       break;
     }
     case "chat_v2_interrupted": {
       // P4-S25 B3: backend cancelled in-flight task. Clear status so
       // the button reverts to "发送" and user can type again.
       store.upsert(sid, { status: "idle", inflight: false });
+      break;
+    }
+    case "slash_command_result": {
+      // FEAT-A2: /help /goal /prefs /skill 结果。此前 ws.ts 无此 case →
+      // 所有 slash 结果被静默丢弃。现在格式化成一条 slash_result bubble。
+      const p = msg.payload || {};
+      const text = format_slash_result(p.result);
+      store.push_message(sid, { role: "slash_result" as any, text });
       break;
     }
     case "tool_call": {
@@ -498,6 +590,19 @@ function dispatch(msg: any) {
         });
       }
       store.set_messages(target, restored);
+      // FEAT-A4: rehydration 重建 awaiting plan card。后端在 payload.plan
+      // 单独带回（不混进被白名单过滤的 messages），awaiting 时重建 plan
+      // bubble + [执行]/[取消] 栏（对齐 chat_v2_plan handler 的字段）。
+      const _plan = msg.payload?.plan;
+      if (_plan && _plan.awaiting) {
+        store.push_message(target, {
+          role: "plan" as any,
+          plan_rationale: _plan.rationale,
+          plan_steps: _plan.steps,
+          plan_awaiting_confirm: true,
+          plan_sid: target,
+        } as any);
+      }
       break;
     }
     case "permission_request": {

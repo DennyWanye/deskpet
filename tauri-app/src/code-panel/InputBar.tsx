@@ -2,17 +2,78 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * P4-S23 — bottom input bar for the code panel.
+ * P4-S23 / WI-T2-B1 v2 — bottom input bar for the code panel.
  *
- * - Multi-line textarea with Enter-to-send (Shift+Enter newline).
- * - Sends `chat_v2` with the active session_id stamped in payload.
- * - Concurrency-limited via `chatLimiter` so 5 tiles all sending at
- *   once won't smash the relay with parallel requests.
+ * Multi-line textarea with Enter-to-send (Shift+Enter newline).
+ *
+ * v2 升级（plans/2026-05-25-companion-code-skill-upgrade/10-tool-layer-...）:
+ *  - 输入 `/` → fetch /api/commands/help → 显示 filterable SlashDropdown
+ *  - ↑/↓ 在 dropdown 移动；Tab/Enter 接受；ESC 关闭
+ *  - 接受后显示 ArgHintBar 显参数 inline
+ *  - 输入历史：空输入 + ↑ → 浏览 last /命令 (max 50)
+ *  - 普通聊天 (不以 / 开头) 行为不变 — backward compatible
+ *
+ * Concurrency-limited via `chatLimiter` so 5 tiles all sending at once
+ * won't smash the relay with parallel requests.
  */
 import { useState, useCallback, useRef, useEffect } from "react";
 
 import { useSessionsStore, chatLimiter } from "../stores/sessionsStore";
+import { BACKEND_PORT } from "../backendPort";
 import { codePanelWS } from "./ws";
+import { SlashDropdown, type SlashCommand } from "./SlashDropdown";
+import { ArgHintBar, type ArgSchema } from "./ArgHintBar";
+
+// 输入历史 — module-scope，跨 InputBar 实例共享 (max 50 entries)
+const _slashInputHistory: string[] = [];
+const HISTORY_MAX = 50;
+
+function pushHistory(entry: string) {
+  if (!entry.startsWith("/")) return;
+  if (_slashInputHistory[_slashInputHistory.length - 1] === entry) return;
+  _slashInputHistory.push(entry);
+  while (_slashInputHistory.length > HISTORY_MAX) _slashInputHistory.shift();
+}
+
+// commands 缓存 (页面级；后端可 reload skill 触发刷新)
+let _cachedCommands: SlashCommand[] | null = null;
+let _cachedCommandsPromise: Promise<SlashCommand[]> | null = null;
+
+async function fetchCommands(): Promise<SlashCommand[]> {
+  if (_cachedCommands !== null) return _cachedCommands;
+  if (_cachedCommandsPromise !== null) return _cachedCommandsPromise;
+  _cachedCommandsPromise = (async () => {
+    try {
+      // WI-T2-B fix v2.1: backend 绝对 URL，复用 backendPort.ts 单一源.
+      // 相对路径在 Tauri WebView2 (tauri://) 或 vite dev 跨 5473→8400 都失效；
+      // 必须显式 http://127.0.0.1:${BACKEND_PORT}/api/... 走 CORS.
+      const resp = await fetch(
+        `http://127.0.0.1:${BACKEND_PORT}/api/commands/help`,
+      );
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      const out: SlashCommand[] = Array.isArray(data.commands) ? data.commands : [];
+      _cachedCommands = out;
+      return out;
+    } catch {
+      return [];
+    }
+  })();
+  return _cachedCommandsPromise;
+}
+
+function filterCommands(all: SlashCommand[], q: string): SlashCommand[] {
+  if (!q) return all;
+  const lower = q.toLowerCase();
+  // 排序：prefix-match 优先，substring-match 次之
+  const prefix = all.filter((c) => c.name.toLowerCase().startsWith(lower));
+  const substr = all.filter(
+    (c) =>
+      !c.name.toLowerCase().startsWith(lower) &&
+      c.name.toLowerCase().includes(lower),
+  );
+  return [...prefix, ...substr];
+}
 
 export function InputBar({
   placeholder,
@@ -21,44 +82,77 @@ export function InputBar({
 }: {
   placeholder?: string;
   sessionId?: string;
-  /** Optional control rendered at the start of the input row (e.g. the
-   *  message panel's mic button). code-panel passes none → unchanged. */
   leftAccessory?: React.ReactNode;
 } = {}) {
   const [text, set_text] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
 
+  // v2 slash state
+  const [allCommands, setAllCommands] = useState<SlashCommand[]>([]);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [selectedIdx, setSelectedIdx] = useState(0);
+  const [argHintCmd, setArgHintCmd] = useState<SlashCommand | null>(null);
+  const [historyIdx, setHistoryIdx] = useState<number | null>(null);
+
   const active_sid = useSessionsStore((s) => s.active_sid);
-  // When `sessionId` is passed (message-panel → "default"), this bar
-  // sends/echoes/stops on THAT session — exactly the one the pet's
-  // main thread uses. Unset (code-panel) → falls back to active_sid =
-  // zero behavior change for code-panel.
   const sid = sessionId ?? active_sid;
   const session = useSessionsStore((s) => s.sessions[sessionId ?? s.active_sid]);
   const inflight_count = useSessionsStore((s) => s.inflight_count);
   const inflight_max = useSessionsStore((s) => s.inflight_max);
 
-  // Auto-grow textarea up to ~120px, then scroll inside.
+  // 挂载时 fetch commands (一次性；缓存命中即返)
+  useEffect(() => {
+    fetchCommands().then(setAllCommands).catch(() => setAllCommands([]));
+  }, []);
+
+  // Auto-grow textarea
   useEffect(() => {
     if (!taRef.current) return;
     taRef.current.style.height = "auto";
     taRef.current.style.height = Math.min(taRef.current.scrollHeight, 120) + "px";
   }, [text]);
 
+  // 计算当前 filter + candidates
+  const candidates: SlashCommand[] = (() => {
+    if (!dropdownOpen) return [];
+    if (!text.startsWith("/")) return [];
+    const q = text.slice(1).split(/\s+/)[0] ?? "";
+    return filterCommands(allCommands, q);
+  })();
+
+  // 计算 current arg index (空格数)
+  const currentArgIndex = (() => {
+    if (!argHintCmd) return 0;
+    // text 形如 "/cmd arg1 arg2 ..."
+    const parts = text.split(/\s+/);
+    return Math.max(0, parts.length - 2);
+  })();
+
+  const acceptCandidate = useCallback(
+    (idx: number) => {
+      const cmd = candidates[idx];
+      if (!cmd) return;
+      set_text(`/${cmd.name} `);
+      setDropdownOpen(false);
+      setSelectedIdx(0);
+      const hasArgs = cmd.args_schema && cmd.args_schema.length > 0;
+      setArgHintCmd(hasArgs ? cmd : null);
+      // 重新 focus 让 textarea 接收后续键入
+      taRef.current?.focus();
+    },
+    [candidates],
+  );
+
   const send = useCallback(async () => {
     const t = text.trim();
     if (!t) return;
     if (!sid) return;
+    pushHistory(t);
+    setHistoryIdx(null);
     set_text("");
-    useSessionsStore.getState().push_message(sid, {
-      role: "user",
-      text: t,
-    });
-    // WI-A3 v1: slash command 前端解析 (plans/2026-05-25-...).
-    // `/<cmd> [args]` → 发 slash_command WS（绕过 chat_v2 → AgentLoop 路径），
-    // 后端直接调 SkillLoader / goal_store / builtin handlers。结果通过
-    // slash_command_result event 异步回包（见 ws.ts dispatch）。inflight 仍
-    // 临时标记防 race，但 slash 一般 <2s 返回，不影响主聊天感受。
+    setDropdownOpen(false);
+    setArgHintCmd(null);
+    useSessionsStore.getState().push_message(sid, { role: "user", text: t });
     if (t.startsWith("/")) {
       const m = t.slice(1).match(/^(\S+)\s*(.*)$/);
       const cmd = m ? m[1] : "";
@@ -77,11 +171,6 @@ export function InputBar({
       status: "thinking",
       inflight: true,
     });
-    // P4-S25 B3: inflight is cleared by ws dispatch on chat_v2_final
-    // / chat_v2_error / chat_v2_interrupted (NOT here right after the
-    // send returns, which used to clear it within ms while the LLM
-    // was still computing — that meant the button never visibly
-    // toggled). Concurrency-limit the actual send though.
     void chatLimiter.run(async () => {
       codePanelWS.send({
         type: "chat_v2",
@@ -90,26 +179,105 @@ export function InputBar({
     });
   }, [text, sid]);
 
-  // P4-S25 B3: stop the in-flight chat for the active session.
   const stop = useCallback(() => {
     if (!sid) return;
     codePanelWS.send({
       type: "chat_v2_interrupt",
       payload: { session_id: sid },
     });
-    // Optimistic clear; ws dispatch's chat_v2_interrupted echo will
-    // confirm. If the cancel raced and the task already finished
-    // emitting final, inflight already cleared — no harm.
     useSessionsStore.getState().upsert(sid, { inflight: false, status: "idle" });
   }, [sid]);
 
+  const onChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const v = e.target.value;
+    set_text(v);
+    setHistoryIdx(null);
+    // 状态机：开/关 dropdown + arg hint
+    if (v.startsWith("/")) {
+      const firstWord = v.slice(1).split(/\s+/)[0] ?? "";
+      const hasSpace = v.length > firstWord.length + 1;
+      if (!hasSpace) {
+        // 还在打命令名 → 显 dropdown
+        setDropdownOpen(true);
+        setArgHintCmd(null);
+        setSelectedIdx(0);
+      } else {
+        // 已输空格 → 关 dropdown，看是否需 arg hint
+        setDropdownOpen(false);
+        const cmdMatch = allCommands.find(
+          (c) => c.name.toLowerCase() === firstWord.toLowerCase(),
+        );
+        if (cmdMatch && cmdMatch.args_schema && cmdMatch.args_schema.length > 0) {
+          setArgHintCmd(cmdMatch);
+        } else {
+          setArgHintCmd(null);
+        }
+      }
+    } else {
+      setDropdownOpen(false);
+      setArgHintCmd(null);
+    }
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // `isComposing` lives on the underlying KeyboardEvent (IME state)
-    // — React's wrapper exposes it via nativeEvent.
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    // IME composition — never interfere
+    if (e.nativeEvent.isComposing) return;
+
+    // dropdown 打开时拦截 ↑↓ Tab Enter ESC
+    if (dropdownOpen && candidates.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedIdx((i) => (i + 1) % candidates.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedIdx((i) => (i - 1 + candidates.length) % candidates.length);
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        acceptCandidate(selectedIdx);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDropdownOpen(false);
+        return;
+      }
+    }
+
+    // 历史浏览 — 空输入 + ↑ → 上一条 history
+    if (!dropdownOpen && e.key === "ArrowUp" && _slashInputHistory.length > 0) {
+      const ta = e.currentTarget;
+      const atTop = ta.selectionStart === 0 && ta.selectionEnd === 0;
+      // 仅在空输入 或 光标在最顶且无 selection 时启 history
+      if (text === "" || atTop) {
+        e.preventDefault();
+        const nextIdx =
+          historyIdx === null
+            ? _slashInputHistory.length - 1
+            : Math.max(0, historyIdx - 1);
+        set_text(_slashInputHistory[nextIdx]);
+        setHistoryIdx(nextIdx);
+        return;
+      }
+    }
+    if (!dropdownOpen && e.key === "ArrowDown" && historyIdx !== null) {
       e.preventDefault();
-      // While inflight, Enter triggers stop instead of send (matches
-      // the visible button label).
+      const nextIdx = historyIdx + 1;
+      if (nextIdx >= _slashInputHistory.length) {
+        set_text("");
+        setHistoryIdx(null);
+      } else {
+        set_text(_slashInputHistory[nextIdx]);
+        setHistoryIdx(nextIdx);
+      }
+      return;
+    }
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
       if (session?.inflight) {
         stop();
       } else {
@@ -125,6 +293,7 @@ export function InputBar({
   return (
     <div
       style={{
+        position: "relative",  // for absolute SlashDropdown
         borderTop: "1px solid rgba(148, 163, 184, 0.18)",
         background: "rgba(15, 18, 28, 0.95)",
         padding: "10px 14px",
@@ -133,18 +302,30 @@ export function InputBar({
         gap: 6,
       }}
     >
-      <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+      {argHintCmd && (
+        <ArgHintBar
+          commandName={argHintCmd.name}
+          argSchema={(argHintCmd.args_schema ?? []) as ArgSchema[]}
+          currentArgIndex={currentArgIndex}
+        />
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", position: "relative" }}>
+        <SlashDropdown
+          candidates={candidates}
+          selectedIdx={selectedIdx}
+          onAccept={acceptCandidate}
+        />
         {leftAccessory}
         <textarea
           ref={taRef}
           value={text}
-          onChange={(e) => set_text(e.target.value)}
+          onChange={onChange}
           onKeyDown={onKeyDown}
           placeholder={
             placeholder ??
             (session?.project_root
-              ? `跟 LLM 说点什么 — 当前项目: ${session.project_name}`
-              : "输入消息开始 Code 模式聊天...")
+              ? `跟 LLM 说点什么 — 当前项目: ${session.project_name}（输 / 命令）`
+              : "输入消息开始 Code 模式聊天... (输 / 弹命令补全)")
           }
           rows={1}
           style={{
@@ -201,7 +382,7 @@ export function InputBar({
           </span>
         )}
         <span style={{ marginLeft: "auto", opacity: 0.6 }}>
-          Enter 发送 · Shift+Enter 换行
+          Enter 发送 · Shift+Enter 换行 · / 弹命令 · ↑ 历史
         </span>
       </div>
     </div>
@@ -219,3 +400,18 @@ function StatusPill({ status }: { status: string }) {
   const m = map[status] ?? { label: status, color: "#94a3b8" };
   return <span style={{ color: m.color }}>{m.label}</span>;
 }
+
+// Exports for test (history + cache reset)
+export const _testing = {
+  pushHistory,
+  getHistory: () => [..._slashInputHistory],
+  clearHistory: () => {
+    _slashInputHistory.length = 0;
+  },
+  resetCache: () => {
+    _cachedCommands = null;
+    _cachedCommandsPromise = null;
+  },
+  filterCommands,
+  HISTORY_MAX,
+};

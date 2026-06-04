@@ -124,54 +124,11 @@ export function MessageStreamPanel({
       data-testid="msgstream-panel"
       style={embedded ? embeddedWrapperStyle : wrapperStyle}
     >
-      <header style={headerStyle}>
-        <FilterChip
-          label="全部"
-          active={filter === "all"}
-          onClick={() => onSetFilter("all")}
-          testId="msgstream-filter-all"
-        />
-        <FilterChip
-          label="对话"
-          active={filter === "chat"}
-          onClick={() => onSetFilter("chat")}
-          testId="msgstream-filter-chat"
-        />
-        <FilterChip
-          label={`⚠ ${warnings.length || ""}`.trim()}
-          active={filter === "warn"}
-          tone="warn"
-          onClick={() => onSetFilter("warn")}
-          testId="msgstream-filter-warn"
-        />
-        <FilterChip
-          label={`🚨 ${errors.length || ""}`.trim()}
-          active={filter === "err"}
-          tone="err"
-          onClick={() => onSetFilter("err")}
-          testId="msgstream-filter-err"
-        />
-      </header>
-
-      {/* Sweep buttons only show in alert-only filters. */}
-      {(filter === "warn" || filter === "err") &&
-        (filter === "warn" ? warnings.length > 1 : errors.length > 1) && (
-          <div style={sweepBarStyle}>
-            <button
-              type="button"
-              onClick={() =>
-                onDismissAll(filter === "warn" ? "yellow" : "red")
-              }
-              data-testid="msgstream-dismiss-all"
-              style={pillButton(
-                filter === "warn" ? PALETTE.warn.accent : PALETTE.err.accent,
-                filter === "warn" ? PALETTE.warn.border : PALETTE.err.border,
-              )}
-            >
-              全部已读
-            </button>
-          </div>
-        )}
+      {/* 2026-05-31 restore — 用户要求删掉 4 个 filter tab（全部/对话/⚠/🚨）。
+          filter prop 保留为 "all"（caller 默认值），所有内容混排。sweep bar
+          (filter==warn|err 才显示) 在 filter 锁定 "all" 后自然不再渲染。
+          对应 onSetFilter / onDismissAll / FilterChip / sweepBarStyle / pillButton
+          变成未使用，但 prop 接口保留以兼容 caller。 */}
 
       <div ref={listRef} style={listStyle}>
         {rows.length === 0 ? (

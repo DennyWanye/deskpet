@@ -119,13 +119,47 @@ class ComponentRegistry:
         if timeout_ms is not None and ctx.deadline_wall_time is None:
             ctx.deadline_wall_time = time.monotonic() + timeout_ms / 1000.0
 
+        # F1 (memory-stage2-followup): per-component 计时 + per-component
+        # 软超时。旧实现只有一个整体 wait_for —— 任何一个组件慢（e.g.
+        # MemoryComponent 向量召回碰 BGE-M3 冷加载）会让整批 fanout 超时，
+        # 所有组件（连 trivial 的 time/persona）一起变空 slice，且 log 只打
+        # pending=[全部]，无法定位真凶。现在每个组件独立计时 + 独立软
+        # 超时：慢的单独降级，快的照常返回，并把 duration_ms/status 记进
+        # meta，使 round-3 那种 `pending=[workspace,...]` 能精确到组件。
+        per_component_timeout_s: Optional[float] = None
+        if timeout_ms is not None:
+            per_component_timeout_s = max(0.05, timeout_ms / 1000.0)
+
         async def _safe_provide(
             name: str, comp: Component
         ) -> Slice:
-            try:
+            start = time.monotonic()
+
+            def _stamp(slice_obj: Slice, *, status: str) -> Slice:
+                dur_ms = (time.monotonic() - start) * 1000.0
+                try:
+                    meta = dict(getattr(slice_obj, "meta", None) or {})
+                    meta.setdefault("duration_ms", round(dur_ms, 1))
+                    meta.setdefault("status", status)
+                    slice_obj.meta = meta
+                except Exception:  # noqa: BLE001 — meta 不可写不阻断
+                    pass
+                slow = (
+                    per_component_timeout_s is not None
+                    and dur_ms > per_component_timeout_s * 1000.0 * 0.6
+                )
+                if status != "ok" or slow:
+                    logger.info(
+                        "assembler.component_done",
+                        component=name,
+                        duration_ms=round(dur_ms, 1),
+                        status=status,
+                    )
+                return slice_obj
+
+            async def _run() -> Slice:
                 result = await comp.provide(ctx)
                 if not isinstance(result, Slice):
-                    # Component contract violation — treat as empty.
                     logger.warning(
                         "assembler.component_returned_non_slice",
                         component=name,
@@ -133,6 +167,29 @@ class ComponentRegistry:
                     )
                     return Slice(component_name=name, meta={"error": "non_slice"})
                 return result
+
+            try:
+                if per_component_timeout_s is None:
+                    return _stamp(await _run(), status="ok")
+                return _stamp(
+                    await asyncio.wait_for(_run(), timeout=per_component_timeout_s),
+                    status="ok",
+                )
+            except asyncio.TimeoutError:
+                # 单组件超时 —— 只降级它，不影响别的组件（F1 核心修复）。
+                logger.warning(
+                    "assembler.component_timed_out",
+                    component=name,
+                    timeout_ms=(
+                        per_component_timeout_s * 1000.0
+                        if per_component_timeout_s is not None
+                        else None
+                    ),
+                )
+                return _stamp(
+                    Slice(component_name=name, meta={"error": "timeout"}),
+                    status="timeout",
+                )
             except Exception as exc:  # defence-in-depth
                 logger.warning(
                     "assembler.component_raised",
@@ -140,28 +197,36 @@ class ComponentRegistry:
                     error=str(exc),
                     error_type=type(exc).__name__,
                 )
-                return Slice(
-                    component_name=name,
-                    meta={"error": str(exc), "error_type": type(exc).__name__},
+                return _stamp(
+                    Slice(
+                        component_name=name,
+                        meta={"error": str(exc), "error_type": type(exc).__name__},
+                    ),
+                    status="error",
                 )
 
+        # 每个 _safe_provide 自带 per-component 超时 + 异常兜底，永不抛，
+        # 慢组件不会再拖垮快组件。外层留一个宽松兜底（整体预算 + 0.5s
+        # overhead）防极端调度饥饿 / 同步阻塞 loop。
         coros = [_safe_provide(name, comp) for name, comp in to_run]
         if timeout_ms is None:
             results = await asyncio.gather(*coros, return_exceptions=False)
         else:
+            outer_timeout_s = timeout_ms / 1000.0 + 0.5
             try:
                 results = await asyncio.wait_for(
                     asyncio.gather(*coros, return_exceptions=False),
-                    timeout=timeout_ms / 1000.0,
+                    timeout=outer_timeout_s,
                 )
             except asyncio.TimeoutError:
+                # per-component 已兜底，走到这里说明事件循环被同步阻塞
+                # （某组件内有 blocking call）—— 仍降级而非崩。
                 logger.warning(
                     "assembler.fanout_timed_out",
                     timeout_ms=timeout_ms,
+                    outer_timeout_ms=outer_timeout_s * 1000.0,
                     pending=[n for n, _ in to_run],
                 )
-                # Return empty slices for all components — caller logs
-                # the timeout and moves on with an empty bundle.
                 results = [
                     Slice(component_name=n, meta={"error": "timeout"})
                     for n, _ in to_run

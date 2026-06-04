@@ -92,7 +92,10 @@ docs/EVIDENCE/screenshot_*.png
 # Per-distribution installer payloads built ad-hoc for friends/testers.
 # Regeneratable from the bundle scripts; not source.
 codex-installer-for-friend.zip
-.dev-userdata/
+# dev 运行时用户数据目录（state.db / billing.db / metrics / receipts 等运行时
+# 产物，含本地数据，永不入库）。通配覆盖 .dev-userdata/ 及 .dev-userdata-f3f4verify/
+# 这类带后缀的临时验证副本（2026-06-02）。
+.dev-userdata*/
 
 # WI-T1.7 last-mile dev 端到端 metrics validation 临时目录 (2026-05-23)
 .dev-metrics-validation/
@@ -173,3 +176,18 @@ plans/*.docx
 
 # Phase 7.5: local-only review of leaked credential history (delete after verify)
 .leaked-creds-review.tmp
+
+# v2 worktree — userdata 临时配置（windows-mcp 实机验证用，不入库）
+backend/userdata_v2/
+
+# ─── 2026-06-04 一次性调试脚本 / 测试产物（用户指定忽略）───
+# pet-anim round-2 CDP 调试手稿（diag/diag2-6/reload/verify-visual/highlight 等
+# 迭代一次性脚本；区别于 evidence 里要入库的真实工具/报告 .mjs）
+plans/2026-05-24-pet-animation-ux/evidence/round-2/*.mjs
+# fun-interactions 一次性诊断目录
+plans/fun-diag/
+# 合并时产生的 .premerge 备份文件（throwaway）
+*.premerge-bak
+# 工具层手测 CDP 截图产物（二进制、每次跑新生成）；testcase/ 的 helper .py
+# 入库（_cdp/_send/_approve），截图不入。
+testcase/screenshots/

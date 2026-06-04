@@ -61,11 +61,19 @@ export function buildAdapter(edition: AuthEdition): AuthAdapter {
       return new NullAuthAdapter();
     case "manual":
       return new ManualAuthAdapter();
-    case "relay":
+    case "relay": {
       // W2: Relay 实现已并入主线（Week 2 of relay integration plan）。
       // 后续分仓时这一行会从 paid 仓库的 monkey-patch 接管；目前
       // OSS 仓也带，方便在主仓里写测试 + 联调。
-      return new RelayAuthAdapter();
+      //
+      // 2026-05-30 bug fix：RelayAuthAdapter 的 DEFAULT_BASE_URL 是 OSS
+      // placeholder ("https://your-llm-relay.example.com")，dev/prod 必须
+      // 用 VITE_RELAY_BASE_URL env 注入真实 URL。后端用 chinzy.com 但前端
+      // 直接 new 拿到 placeholder → 登录直接 DNS 失败显示"网络连接失败"。
+      const baseUrl = (import.meta as { env?: Record<string, string | undefined> })
+        .env?.VITE_RELAY_BASE_URL;
+      return baseUrl ? new RelayAuthAdapter({ baseUrl }) : new RelayAuthAdapter();
+    }
     default: {
       const _exhaust: never = edition;
       throw new Error(`Unknown AuthEdition: ${String(_exhaust)}`);

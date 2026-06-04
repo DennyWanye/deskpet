@@ -45,16 +45,29 @@ dependencies = [
     # 2026-05-15 ABI pinning（踩坑记录）：FlagEmbedding 1.4 + transformers 5.x
     # + peft 0.19 + pandas 3.0 在 Windows + Python 3.11 上 import 链直接
     # ACCESS_VIOLATION（segfault）。1.3.5 + transformers 4.57 + peft 0.14
-    # 这组合 verified 稳定（cu124 torch / RTX 4090 / fp16 / 1396ms 加载）。
+    # 这组合在 cu124 torch / RTX 4090 上 verified 稳定（fp16 / 1396ms 加载）。
     # 解除 pin 之前先在 dev venv 上 `python -c "from FlagEmbedding import BGEM3FlagModel"`
     # 跑通再放行——否则 backend 会静默降级 mock 模式。
+    #
+    # 2026-06-02 Blackwell GPU 踩坑（RTX 5070 Ti = sm_120）★：cu124 torch 只编到
+    # sm_90，5070 Ti 跑 BGE-M3 GPU forward 抛 RuntimeError「no kernel image」→ 被
+    # FlagEmbedding m3.py 的 batch 自适应循环吞掉、batch_size *3//4 触底归零 →
+    # tokenizer.pad 收到空 batch → IndexError（伪装的次生错，CPU/CUDA 都现）。
+    # **修法：torch 升 cu128（含 sm_120 kernel），其它依赖一律不动**（FlagEmbedding/
+    # transformers/sentence-transformers/peft 对 torch 都是纯 Python 下限依赖，ABI
+    # 自洽，不段错误；切忌反向降 transformers——那才破 transformers↔tokenizers ABI）。
+    # 验证组合：torch 2.7.1+cu128 / torchvision 0.22.1 / torchaudio 2.7.1 /
+    # transformers 4.57.6 / RTX 5070 Ti，arch_list 含 sm_120，encode (N,1024) 通过。
     "FlagEmbedding>=1.2,<1.4",
     "transformers>=4.45,<5",
     "peft<0.15",
     # torch CUDA wheel：默认 PyPI 是 CPU-only，部署时需要显式选择 CUDA
-    # channel。在 dev venv 中执行：
-    #   pip install --index-url https://download.pytorch.org/whl/cu124 \
-    #       torch torchvision torchaudio
+    # channel。2026-06-02 起推荐 cu128（覆盖 sm_50..sm_120，含 Blackwell
+    # RTX 50 系；老卡也兼容）。在 dev venv 中执行：
+    #   pip install --index-url https://download.pytorch.org/whl/cu128 \
+    #       torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1
+    # 三者必须同源 cu128 + 严格配对（torchvision 0.22↔torch 2.7）。老 GPU（sm≤90）
+    # 用 cu124 亦可，但 Blackwell（sm_120）必须 cu128 / torch≥2.7（见上方踩坑注释）。
     # 然后 `pip install -e .[dev]` 不会覆盖（torch 版本号匹配即可）。
     # CI / frozen build 通过 build-msi.ps1 控制 CUDA channel。
     "torch>=2.6,<3",
@@ -179,6 +192,11 @@ packages = [
 # 默认跳过（CI / 新装用户没模型）。手动 `pytest -m model_required` 触发。
 # P4-S5: perf 覆盖 tool-framework web_fetch p95 / memory FTS5 10K 行 throughput；
 # 允许 CI runner 偶发波动，优先发布前本地跑。
+#
+# 2026-06-01: 限定 testpaths=tests，否则 pytest 从 rootdir 全仓扫，撞
+# dist-portable/（PyInstaller 打包产物）+ temp/ 的 PermissionError（15 errors
+# during collection）。只扫 tests/ 即干净。
+testpaths = ["tests"]
 markers = [
     "perf: performance regression test (p95 / throughput, 10K+ rows / localhost probes). Skipped by default; allowed to be flaky on CI; run locally before release.",
     "model_required: tests that need real BGE-M3 weights on disk (skipped by default)",

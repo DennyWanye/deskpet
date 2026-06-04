@@ -145,9 +145,9 @@ pub fn run() {
                 if let Err(e) = webview_permissions::grant_media_permissions(&win) {
                     eprintln!("[setup] grant_media_permissions failed: {e:?}");
                 }
-                // 2026-05-26: 应用上次拉的尺寸。读不到（首启 / 损坏）就走
-                // tauri.conf.json 默认的 360x600，无副作用。
-                window_geometry::apply_saved_size(&win);
+                // 2026-05-26: 应用上次拉的尺寸；2026-06-02 起也恢复位置 + 显示器。
+                // 读不到（首启 / 损坏）就走 tauri.conf.json 默认，无副作用。
+                window_geometry::apply_saved_geometry(&win);
             }
 
             // P4-S22+ portable mode: pre-create `<install>/userdata/`
@@ -225,6 +225,15 @@ pub fn run() {
                         deb.on_resize(window, *size);
                     } else {
                         eprintln!("[window_geometry] ResizeDebouncer state NOT FOUND");
+                    }
+                }
+            }
+            // 2026-06-02: 桌宠主窗 move（用户拖动）→ 防抖落盘位置，
+            // 让桌宠记住所在显示器，下次启动恢复（多屏副屏放置）。
+            if let tauri::WindowEvent::Moved(_pos) = event {
+                if window.label() == "main" {
+                    if let Some(deb) = window.try_state::<window_geometry::ResizeDebouncer>() {
+                        deb.on_move(window);
                     }
                 }
             }

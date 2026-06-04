@@ -15,6 +15,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSessionsStore } from "../stores/sessionsStore";
 import { codePanelWS } from "./ws";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ContextRing } from "../components/ContextRing";
+import { ContextBreakdownModal } from "../components/ContextBreakdownModal";
 
 export function SessionSidebar({
   onShowDashboard,
@@ -38,6 +40,8 @@ export function SessionSidebar({
     sid: string;
     name: string;
   } | null>(null);
+  // 2026-05-31 restore — context breakdown modal for active session.
+  const [ctxModalOpen, setCtxModalOpen] = useState(false);
 
   const sidList = Object.values(sessions).filter(
     (s) => s.code_session_id || s.base_session_id !== "default",
@@ -186,11 +190,27 @@ export function SessionSidebar({
       <div style={{ marginTop: "auto", padding: 12, borderTop: "1px solid rgba(148, 163, 184, 0.18)", fontSize: 10.5, color: "#94a3b8" }}>
         <div>并发: {inflight}/{inflight_max}{inflight > inflight_max ? ` (排队 ${inflight - inflight_max})` : ""}</div>
         {active && (
-          <div title="累积本会话 prompt+completion tokens">
-            tokens: {active.token_usage.prompt + active.token_usage.completion}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+            {/* 2026-05-31 restore — context-usage ring + click → modal */}
+            <ContextRing
+              snapshot={active.context_usage}
+              size={16}
+              showLabel
+              onClick={() => setCtxModalOpen(true)}
+            />
+            <span style={{ fontSize: 10, color: "#64748b" }}>context</span>
           </div>
         )}
       </div>
+
+      <ContextBreakdownModal
+        open={ctxModalOpen}
+        onClose={() => setCtxModalOpen(false)}
+        sessionId={active_sid}
+        snapshot={active?.context_usage ?? null}
+        send={(m) => codePanelWS.send(m)}
+        onMessage={(fn) => codePanelWS.on_message(fn)}
+      />
 
       {/* P4-S24 followup: delete confirmation. Modal is portaled to
           document body via fixed positioning; rendering it here keeps

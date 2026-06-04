@@ -102,6 +102,20 @@ def test_t1_7_strict_requires_receipts(tmp_path):
             'emit_receipts = false\n'))
 
 
+def test_t1_7b_shadow_requires_receipts(tmp_path):
+    """VG-INVARIANT-1 补：shadow 同样 != off，shadow + emit_receipts=false 必须报错。
+
+    FEAT-A3：t1_7 只覆盖 strict 分支；shadow 分支（出厂默认翻 shadow 的候选）
+    此前无显式断言。shadow != "off" 故落入 VG-INVARIANT-1 同一拦截，须确认报错
+    而非静默放行（否则 ledger 永空、end_turn 永被阻塞）。
+    """
+    with pytest.raises(ConfigError, match=r"VG-INVARIANT-1"):
+        load_config(_write(tmp_path,
+            '[tools.verifier]\n'
+            'verify_gate_mode = "shadow"\n'
+            'emit_receipts = false\n'))
+
+
 def test_t1_8_run_build_with_off_auto_promotes_to_shadow(tmp_path, caplog):
     """run_build=true + verify_gate_mode=off → warn + 自动转 shadow。"""
     import logging

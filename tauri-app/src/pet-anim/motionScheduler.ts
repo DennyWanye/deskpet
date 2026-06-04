@@ -52,10 +52,10 @@ export function createMotionScheduler(opts: MotionSchedulerOpts): MotionSchedule
     shouldSwitch(state, now_t) {
       return now_t >= state.next_switch_t
     },
-    scheduleNext(state, now_t) {
+    scheduleNext(_state, now_t) {
       return { state: { next_switch_t: computeNext(now_t) } }
     },
-    forceSwitchNow(state, now_t) {
+    forceSwitchNow(_state, now_t) {
       // Force shouldSwitch === true on the very next tick.
       return { state: { next_switch_t: now_t } }
     },

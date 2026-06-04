@@ -21,6 +21,8 @@ import { useMemo, useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { Icon } from "../components/Icon";
+import { ContextRing } from "../components/ContextRing";
+import { ContextBreakdownModal } from "../components/ContextBreakdownModal";
 
 import {
   useSessionsStore,
@@ -45,6 +47,9 @@ const SID = "default"; // the pet's companion main thread
 export function MessagePanelRoot() {
   const [filter, setFilter] = useState<StreamFilter>("all");
   const [showModelModal, setShowModelModal] = useState(false);
+  // 2026-05-31 restore — context breakdown modal state + snapshot subscriber.
+  const [contextModalOpen, setContextModalOpen] = useState(false);
+  const contextUsage = useSessionsStore((s) => s.sessions[SID]?.context_usage ?? null);
 
   const sessions = useSessionsStore((s) => s.sessions);
   const messages = useSessionsStore((s) => s.sessions[SID]?.messages ?? []);
@@ -257,6 +262,18 @@ export function MessagePanelRoot() {
             </span>
             <Icon name="edit" size={11} style={{ flexShrink: 0 }} />
           </button>
+          {/* 2026-05-31 restore — context ring in header */}
+          <span
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{ display: "inline-flex", alignItems: "center" }}
+          >
+            <ContextRing
+              snapshot={contextUsage}
+              size={18}
+              showLabel
+              onClick={() => setContextModalOpen(true)}
+            />
+          </span>
           <button
             type="button"
             onMouseDown={(e) => e.stopPropagation()}
@@ -349,6 +366,16 @@ export function MessagePanelRoot() {
           onClose={() => setShowModelModal(false)}
         />
       )}
+
+      {/* 2026-05-31 restore — context-usage breakdown modal */}
+      <ContextBreakdownModal
+        open={contextModalOpen}
+        onClose={() => setContextModalOpen(false)}
+        sessionId={SID}
+        snapshot={contextUsage}
+        send={(m) => codePanelWS.send(m)}
+        onMessage={(fn) => codePanelWS.on_message(fn)}
+      />
 
       {/* Recording-button pulse — this window has its own DOM, so it
           needs its own copy of the keyframes (App's is pet-window only). */}

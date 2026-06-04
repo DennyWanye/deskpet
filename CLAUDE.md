@@ -2,6 +2,24 @@
 
 本文件给 Claude 子代理 / 助手用，记录本仓库特有的开发上下文（区别于全局 `~/.claude/CLAUDE.md`）。
 
+> 📊 **接手前先读全局状态**: [`STATUS/status.md`](./STATUS/status.md) —
+> 所有并行 worktree / 功能模块完成度 / 最近里程碑 / 已知问题，一页看清。
+
+---
+
+## ✅ STATUS 更新纪律（HARD — 不可妥协）
+
+**任何任务一旦"通过测试完成"，必须同步更新 [`STATUS/status.md`](./STATUS/status.md)。**
+
+- **触发条件**：一个 WI / slice / 功能模块跑通验收（pytest/vitest/cargo/手工 E2E 全绿）→ 视为"完成"。
+- **强制动作**（完成的同一次交付内，不能拖到下次）：
+  1. 更新 §3 模块完成度（🟡 进行中 → ✅，或新增行）
+  2. 若是里程碑级 → 追加一行到 §4 最近里程碑（倒序）
+  3. 若 worktree 合并到 master → 更新 §2 表格状态
+  4. 改顶部"最后更新"日期
+- **判定**："改了代码 / 跑过测试但没更新 STATUS" = 任务**未完成**。
+- **粒度**：细节放各 plan 文档，STATUS 只记状态 + 链接，保持一页能看完。
+
 ---
 
 ## 🔑 开发期登录测试账号（**仅 DEV 环境**）
@@ -92,6 +110,33 @@ cd backend && python -m pytest tests/test_tool_artifact.py tests/test_tool_last_
 4. **不要加沙箱护栏**（feedback_no_sandbox_constraints）—— deskpet 是单机桌宠，只防手滑级破坏。
 5. **跨层契约漂移**（feedback_cross_layer_contract）—— pytest + tsc 都过但后端前端对字段单位 disagree → `scripts/e2e_*.py` live smoke 兜底。
 6. **vector worker test_enqueue_small_batch_flushes_on_interval flaky**（time-based，已 spawn_task 跟踪修复）。
+7. **不要手动起 backend 再起 Tauri（端口双占）★ 已踩多次** —— Tauri 自己会
+   spawn 一个 backend 到 `DESKPET_BACKEND_PORT`（默认 8100，见
+   `process_manager.rs::spawn_once` + `check_port_free`）。如果你为了"先验证
+   backend"手动 `python main.py` 占了那个端口，Tauri 启动时 `os error 10048`
+   端口被占用 → 桌宠弹"启动失败"对话框。**正确做法**：**不要**手动起 backend，
+   只给 **Tauri 进程**注入 env（`DESKPET_BACKEND_PORT` / `DESKPET_USER_DATA_DIR`
+   / `DESKPET_DEV_MODE` / `DESKPET_BACKEND_DIR`），让 Tauri 自己 spawn + 管理
+   backend。要看 backend 日志：它 stdout 被 rust pipe（读完 SHARED_SECRET 后
+   静默 drain），**structlog 全走 stderr → `Stdio::inherit()` → 落进 tauri dev
+   的重定向 log**，所以抓 tauri dev 的 log 就能拿到完整 backend 日志。
+8. **跑 worktree 的 backend 必须设 `DESKPET_BACKEND_DIR`（否则 Tauri 跑 frozen
+   exe，没有你的改动）★** —— `backend_launch.rs::resolve_with` 优先级：
+   **priority-1** = `DESKPET_BACKEND_DIR` env（设了就跑 `<dir>/.venv/Scripts/
+   python.exe main.py`，`DESKPET_PYTHON` 可覆盖解释器）；**priority-2** = bundle
+   `target/debug/backend/deskpet-backend.exe`（PyInstaller frozen，**主 checkout
+   旧构建产物，不含 worktree 改动**）。所以真机测 worktree 代码必须
+   `DESKPET_BACKEND_DIR=<worktree>/backend` + `DESKPET_PYTHON=<主.venv python>`，
+   日志里确认出现 `[backend_launch] Dev python=... backend_dir=<worktree>` 才对；
+   若看到 `[backend_launch] Bundled exe=...` 说明跑的是旧 frozen，测了等于白测。
+9. **`tauri dev` 会自己跑 `beforeDevCommand`（= `npm run dev:relay`）起 vite ——
+   不要再手动起一个 vite（双 vite 互抢 strictPort）★** —— `tauri.conf.json` 的
+   `beforeDevCommand` 已经会启动 vite dev server。如果你为了"先确认前端"又手动
+   `npm run dev:relay`，就会有两个 vite 抢同一个 `DESKPET_VITE_PORT`（strictPort
+   下第二个直接退或漂到下一个端口，devUrl 对不上 → 白屏 / webview 连错）。**正确
+   做法**：要么纯跑 `npx tauri dev`（让它自管唯一 vite），要么用
+   `--config '{"build":{"beforeDevCommand":""}}'` 关掉自带 vite 后只手动起一个。
+   二选一，别两个都起。
 
 ---
 

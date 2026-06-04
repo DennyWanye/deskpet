@@ -18,7 +18,6 @@ import { HIYORI_PARAMS, makeStubCoreModel } from './_stubModel'
 
 function makeSession(partial: Partial<SessionState> = {}): SessionState {
   return {
-    sid: 'sess',
     status: 'idle',
     age_seconds: 0,
     last_event_at_ms: Date.now(),
@@ -46,7 +45,6 @@ describe('e2e wire — PetStateMachine + AnimationOverlay', () => {
     const sid = 'sess'
     const sessions = {
       [sid]: makeSession({
-        sid,
         supervisor_severity: 'red',
         supervisor_alert: {
           alert_id: 'a1',

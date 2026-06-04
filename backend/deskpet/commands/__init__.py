@@ -9,13 +9,16 @@ main.py handler 调 dispatch_slash_command。
 约定:
   - cmd 不区分大小写（lowercased）
   - args 是一个空格分隔的 raw string；handler 自行 split
-  - 返回 dict {type, ...} — type ∈ {"skill_result", "goal_set", "goal_cleared",
-    "help", "error"}
+  - 返回 dict {type, ...} — type ∈ {"skill_result", "goal_set", "goal_status",
+    "goal_cleared", "help", "prefs_list", "prefs_cleared", "error"}
 
 Builtin commands:
   - /help — 列出所有可用 skill + builtin command
   - /goal <text>   — 设置 session-level 目标
   - /goal clear    — 清除目标
+  - /prefs         — 查看偏好记忆（意图/计划）
+  - /prefs clear   — 清除全部偏好记忆
+  - /prefs clear intent|plan — 按 kind 清除
   - /<skill_name>  — 调用 SkillLoader（直接走 invoke_script，不经 LLM）
 """
 from __future__ import annotations
@@ -33,6 +36,7 @@ async def dispatch_slash_command(
     *,
     skill_loader: Any = None,
     session_goal_store: Any = None,
+    session_pref_memory: Any = None,
 ) -> dict[str, Any]:
     """Route a slash command. Returns response dict (always non-empty).
 
@@ -42,6 +46,7 @@ async def dispatch_slash_command(
         session_id: session for goal context
         skill_loader: SkillLoader instance (or None when v1 feature flag off)
         session_goal_store: SessionGoalStore (or None)
+        session_pref_memory: PreferenceMemory (or None when features.preference_memory off)
     """
     name = (name or "").strip().lower()
     args = (args or "").strip()
@@ -56,6 +61,10 @@ async def dispatch_slash_command(
     # Builtin: /goal
     if name == "goal":
         return _handle_goal(args, session_id, session_goal_store)
+
+    # Builtin: /prefs — 查看/清除偏好记忆（意图/计划），防误记。
+    if name == "prefs":
+        return _handle_prefs(args, session_pref_memory)
 
     # Skill: /<skill_name>
     if skill_loader is not None:
@@ -73,6 +82,8 @@ def _handle_help(skill_loader: Any) -> dict[str, Any]:
         {"name": "help", "description": "列出所有可用命令 + skill"},
         {"name": "goal <text>", "description": "设置 session 级长期目标"},
         {"name": "goal clear", "description": "清除当前 goal"},
+        {"name": "prefs", "description": "查看偏好记忆（意图/计划）"},
+        {"name": "prefs clear [intent|plan]", "description": "清除偏好记忆（可按 kind）"},
     ]
     skills: list[dict[str, str]] = []
     if skill_loader is not None:
@@ -119,6 +130,72 @@ def _handle_goal(
         "session_id": session_id,
         "text": goal.text,
         "max_iterations": goal.max_iterations,
+    }
+
+
+_PREFS_VALID_KINDS = ("intent", "plan")
+
+
+def _handle_prefs(args: str, pref_memory: Any) -> dict[str, Any]:
+    """`/prefs` — 查看 / 清除偏好记忆（防误记，决策1/2 风险标注）。
+
+    - 无 args → list_entries() → prefs_list 契约。
+    - "clear" → 全清 → prefs_cleared(kind=None)。
+    - "clear intent" / "clear plan" → 按 kind 清 → prefs_cleared(kind=<str>)。
+    - pref_memory is None（features.preference_memory off）→ error。
+
+    锁定返回契约（防跨层漂移，项目坑#5）：
+      list  → {"type":"prefs_list","entries":[{text,label,kind,ts}],"count":N}
+      clear → {"type":"prefs_cleared","removed":N,"kind":<str|null>}
+    """
+    if pref_memory is None:
+        return {
+            "type": "error",
+            "message": "偏好记忆未启用 (features.preference_memory)",
+        }
+    parts = args.split() if args else []
+    if not parts:
+        # list
+        try:
+            entries = pref_memory.list_entries()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("prefs list failed: %s", exc)
+            entries = []
+        norm = [
+            {
+                "text": e.get("text"),
+                "label": e.get("label"),
+                "kind": e.get("kind"),
+                "ts": e.get("ts"),
+            }
+            for e in entries
+        ]
+        return {"type": "prefs_list", "entries": norm, "count": len(norm)}
+
+    if parts[0].lower() == "clear":
+        kind: Optional[str] = None
+        if len(parts) >= 2:
+            kind_arg = parts[1].lower()
+            if kind_arg not in _PREFS_VALID_KINDS:
+                return {
+                    "type": "error",
+                    "message": (
+                        f"未知 kind: {kind_arg}（可选 "
+                        f"{'/'.join(_PREFS_VALID_KINDS)}）"
+                    ),
+                }
+            kind = kind_arg
+        try:
+            removed = pref_memory.clear(kind)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("prefs clear failed: %s", exc)
+            return {"type": "error", "message": f"清除失败: {exc}"}
+        return {"type": "prefs_cleared", "removed": int(removed), "kind": kind}
+
+    return {
+        "type": "error",
+        "message": f"未知 /prefs 子命令: {parts[0]}",
+        "hint": "用 /prefs 查看，/prefs clear [intent|plan] 清除",
     }
 
 

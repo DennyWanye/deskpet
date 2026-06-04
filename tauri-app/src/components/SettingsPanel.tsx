@@ -496,8 +496,10 @@ function DangerZoneSection() {
     <section style={{ ...sectionStyle, borderTop: "1px solid #fecaca" }}>
       <h3 style={{ ...h3Style, color: "#b91c1c" }}>危险区</h3>
       <p style={hintStyle}>
-        "完全卸载" 会清除 <code>%AppData%\deskpet\</code> 下的配置、SQLite
-        数据库与日志。卸载安装包本身仍需在「应用和功能」里进行。
+        "完全卸载" 会清除 deskpet 解析到的用户数据目录（配置、SQLite、日志）。
+        ⚠️ 若为 portable 安装（数据实际在安装目录的 <code>userdata/</code>）或你
+        自定义过数据目录，此按钮可能删不到真正的数据——最可靠的做法是直接删除
+        整个安装目录。卸载安装包本身仍需在「应用和功能」里进行。
       </p>
       <label
         style={{
@@ -514,7 +516,8 @@ function DangerZoneSection() {
           data-testid="purge-include-models"
         />
         <span>
-          同时删除 <code>%LocalAppData%\deskpet\models</code>（模型缓存 ~9 GB）
+          同时删除本地模型缓存（若已用 <code>DESKPET_MODEL_ROOT</code> 迁移到
+          自定义目录，则删该目录）
         </span>
       </label>
       {err && (

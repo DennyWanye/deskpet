@@ -41,6 +41,15 @@ hiddenimports: list[str] = []
 hiddenimports += collect_submodules("faster_whisper")
 hiddenimports += collect_submodules("ctranslate2")
 hiddenimports += collect_submodules("silero_vad")
+# 2026-05-30 P0 bug fix #10: deskpet/tools/__init__.py uses pkgutil
+# .iter_modules to dynamically discover + import every tool module
+# (excel_tools, doc_tools, ppt_tools, image_tools, etc). PyInstaller's
+# static analysis can't see these — without explicit hidden_imports the
+# office tools (excel_create / doc_create / ppt_create) NEVER reach the
+# registry → LLM tool list lacks them → B1/B2/B5 (and many others) fail.
+# Discovered via CDP-driven prompt asking LLM to enumerate tools.
+hiddenimports += collect_submodules("deskpet.tools")
+hiddenimports += collect_submodules("deskpet.skills")
 hiddenimports += ["sqlite_vec"]                    # P4-S20: L3 vector recall
 hiddenimports += [
     "tzdata",                   # zoneinfo needs this on Windows
@@ -79,6 +88,14 @@ datas += [
     # with any tests that still touch the legacy path.
     ("memory/migrations", "memory/migrations"),    # legacy path
     ("deskpet/memory/migrations", "deskpet/memory/migrations"),  # canonical
+    # 2026-05-30 P0 bug fix #7: ship builtin skills directory.
+    # Production install had `skill.reload_ok count=0` because PyInstaller
+    # never bundled `deskpet/skills/builtin/` (it's a data tree, not a
+    # Python module). Result: B1-B10 skill tests all failed — LLM真选
+    # skill_invoke 但 SkillLoader 找不到 excel-generate / doc-edit / ppt-
+    # generate 等 → 没文件生成 → fake completion 漏网。
+    # Discovered via CDP-driven R3-3 test + backend log skill.reload_ok=0.
+    ("deskpet/skills/builtin", "deskpet/skills/builtin"),
     # P4-S21 #12: ship the unified-schema config.toml so seed_user_config_if_missing
     # has a source to seed from / migrate legacy installs against. Without this,
     # frozen builds with no <exe_dir>/config.toml returned None and the migration
@@ -179,6 +196,11 @@ a = Analysis(
         "jupyter",
         "pytest",
         "_pytest",
+        # FlagEmbedding 推理经 transformers.trainer 拉入 datasets(训练用)，
+        # 但推理 lazy `is_datasets_available()` 可选；其 PyInstaller 隔离
+        # 子进程 bindepend 导入会崩(SubprocessDiedError)→ 排除即修复 +
+        # 减体积，运行时 is_datasets_available()→False 安全降级。
+        "datasets",
     ],
     noarchive=False,
 )

@@ -335,10 +335,19 @@ class FeaturesConfig:
       check + 未达成自动 continue（WI-B 系列）。OFF 时 SessionGoalStore 不构造。
     * ``agent_parallel`` — 启 ``agent_parallel`` 工具暴露给 LLM（WI-C 系列）。
       OFF 时工具不出现在 schemas，子代理并发能力不可用。
+    * ``plan_confirm_gate`` — superpowers Layer 1A/1B 决策2：code 模式非平凡任务
+      先出 plan（已有 maybe_extract_plan）并**等用户点[执行]确认再跑 ReAct**（硬门）。
+      OFF（默认）时 plan 仍展示但 auto-confirm（现状字节级一致）。前端需配合
+      渲染 [执行]/[取消] 按钮（chat_v2_plan.awaiting_confirm + plan_confirm WS）。
+    * ``preference_memory`` — superpowers Layer 1B：BGE-M3 语义偏好记忆。计划记忆
+      让 plan-confirm 硬门对"语义相似且以往批准过"的任务**自动确认**（决策2 的
+      "记下来后续直接做"）。OFF（默认）时不构造 PreferenceMemory，门每次都等确认。
     """
     slash_commands: bool = False
     goal_mode: bool = False
     agent_parallel: bool = False
+    plan_confirm_gate: bool = False
+    preference_memory: bool = False
 
 
 @dataclass
@@ -433,9 +442,20 @@ def _load_tools(raw_tools: dict) -> ToolsConfig:
     raw = dict(raw_tools)
     raw_lm = dict(raw.pop("last_mile", {}) or {})
     raw_v = dict(raw.pop("verifier", {}) or {})
+    raw.pop("web", None)  # [tools.web] 由 tools/_config.py 单独加载，非 ToolsConfig 字段
     last_mile = _load_section(ToolsLastMileConfig, raw_lm)
     verifier = _load_section(ToolsVerifierConfig, raw_v)
-    return ToolsConfig(last_mile=last_mile, verifier=verifier)
+    # WI-T5.1 v3: 顶层 [tools] 字段（disabled_toolsets 等）此前被漏读 → 配了不生效。
+    # 显式补读，使 config.toml 的 toolset 门控 / dangerous 白名单 / 默认超时真正生效。
+    return ToolsConfig(
+        last_mile=last_mile,
+        verifier=verifier,
+        disabled_toolsets=list(raw.get("disabled_toolsets", []) or []),
+        disabled_toolsets_schema_only=list(raw.get("disabled_toolsets_schema_only", []) or []),
+        dangerous_tools_allowlist=list(raw.get("dangerous_tools_allowlist", []) or []),
+        default_timeout_seconds=float(raw.get("default_timeout_seconds", 60.0) or 60.0),
+        strict_unknown_toolset=bool(raw.get("strict_unknown_toolset", False)),
+    )
 
 
 def _validate_flag_invariants(cfg: AppConfig) -> None:
@@ -861,6 +881,12 @@ def _load_config_impl(path: str | Path = "config.toml") -> AppConfig:
         config.vad = _load_section(VADConfig, raw["vad"])
     if "voice" in raw:
         config.voice = _load_section(VoiceConfig, raw["voice"])
+    # Companion + Code 升级 v1 功能开关 [features] — 此前 load_config 漏读该段
+    # (和 _load_tools 漏读 disabled_toolsets 同类 bug), 导致 slash_commands /
+    # goal_mode / agent_parallel 在 config.toml 配了也不生效(config.features
+    # 永远是默认全 False)。补读使这三个功能能真正开启。
+    if "features" in raw:
+        config.features = _load_section(FeaturesConfig, raw["features"])
     if "memory" in raw:
         # [memory.v2] / [memory.v2.facts] 是嵌套子表，_load_section 只做
         # 平铺解析 —— 先把 v2 pop 出来单独构建，再装回。
@@ -883,6 +909,10 @@ def _load_config_impl(path: str | Path = "config.toml") -> AppConfig:
     # 子表（同 [memory.v2] 模式：_load_section 平铺，子表单独 dispatch）。
     if "tools" in raw:
         config.tools = _load_tools(raw["tools"])
+    # Companion+Code v1/v2 — [features] flat dataclass 解析。
+    # 包含 slash_commands / goal_mode / agent_parallel 3 flag（默认 OFF）.
+    if "features" in raw:
+        config.features = _load_section(FeaturesConfig, raw["features"])
     # P4-S15: stash the raw parsed TOML so consumers (MCP bootstrap, agent
     # bootstrap, etc.) can pick out their sections without us bolting on
     # a dataclass for each one.

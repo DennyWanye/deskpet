@@ -258,14 +258,25 @@ class EnhancedRetriever:
                         qvec[0], limit=top_k
                     )
             except Exception as exc:  # noqa: BLE001
-                log.debug("facts vector_search failed: %s", exc)
+                # 向量召回失败是真降级（不是"无结果"）。warning 让它可见 ——
+                # 否则 facts 召回静默退化到 LIKE 路，无人察觉（审计 FATAL-B）。
+                log.warning(
+                    "facts vector_search failed, degrading to LIKE: %s", exc
+                )
                 rows = []
         if not rows:
+            if emb_usable:
+                # 向量路可用但 0 命中（如老 fact 无 embedding）→ 降级 LIKE。
+                # debug 记录降级点，便于排查"facts 召回为何空"（审计 FATAL-B）。
+                log.debug("facts vector recall empty; falling back to LIKE search")
             # LIKE 兜底（embedder 缺失 / mock / 向量召回空）。
             try:
                 rows = await self._facts_store.search(query, limit=top_k)
             except Exception as exc:  # noqa: BLE001
-                log.debug("facts LIKE search failed: %s", exc)
+                # 向量 + LIKE 双失效 → facts 召回彻底空。warning 让双重降级可见。
+                log.warning(
+                    "facts LIKE search also failed; facts recall empty: %s", exc
+                )
                 return []
         return [_fact_row_to_hit(r, source="facts") for r in rows]
 

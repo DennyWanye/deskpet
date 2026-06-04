@@ -85,4 +85,45 @@ describe("splitToolError", () => {
     const out = splitToolError(raw);
     expect(out.hint).toBeNull();
   });
+
+  // ───────────────────────────────────────────────────────────────
+  // 回归 (2026-06-04 工具层严测 TC-27)：last-mile envelope 包装后，工具
+  // 自身的 {ok:false, hint, examples} 被套进 envelope.result（JSON 字符串）。
+  // 旧 splitToolError 只查顶层 obj.hint → 取不到 → 金黄修复建议卡不触发。
+  // 修复后应解包 envelope.result 取嵌套 hint/examples。
+  // ───────────────────────────────────────────────────────────────
+  it("regression: envelope-nested hint (result is JSON string) is extracted", () => {
+    const inner = JSON.stringify({
+      ok: false,
+      error: "ENOENT",
+      hint: "G:\\no\\such\\file.txt 不存在。请先用 list_directory 确认目录里有哪些文件。",
+      examples: [{ path: "README.md" }],
+    });
+    const envelope = JSON.stringify({ ok: true, result: inner, error: null });
+    const out = splitToolError(envelope);
+    expect(out.hint).toBe(
+      "G:\\no\\such\\file.txt 不存在。请先用 list_directory 确认目录里有哪些文件。",
+    );
+    expect(out.examples).toEqual([{ path: "README.md" }]);
+  });
+
+  it("regression: top-level hint takes priority over nested result", () => {
+    const envelope = JSON.stringify({
+      ok: false,
+      hint: "顶层 hint 优先",
+      result: JSON.stringify({ ok: false, hint: "嵌套 hint 不该覆盖" }),
+    });
+    const out = splitToolError(envelope);
+    expect(out.hint).toBe("顶层 hint 优先");
+  });
+
+  it("regression: envelope result without nested hint → still null (no false positive)", () => {
+    const envelope = JSON.stringify({
+      ok: true,
+      result: JSON.stringify({ ok: true, value: 1 }),
+      error: null,
+    });
+    const out = splitToolError(envelope);
+    expect(out.hint).toBeNull();
+  });
 });

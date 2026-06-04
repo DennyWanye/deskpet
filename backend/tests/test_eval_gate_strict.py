@@ -49,7 +49,9 @@ def tmp_baseline(tmp_path, monkeypatch):
 def _stub_run_eval(monkeypatch, result: dict) -> None:
     """让 eval_gate.run_eval 直接返 result（不真跑 MetricsRunner）。"""
 
-    async def _fake(*, top_k: int = 20):  # noqa: ARG001
+    async def _fake(*, top_k: int = 20, stage: str = "stage1", **_kw):  # noqa: ARG001
+        # F2 (memory-stage2-followup)：run_eval 新增 ``stage`` 参数；stub 接受
+        # 它（+ **kwargs 兜底未来新参数），否则 _amain 调用会 TypeError。
         return dict(result)
 
     monkeypatch.setattr(eval_gate, "run_eval", _fake)

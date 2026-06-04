@@ -38,6 +38,7 @@ import {
 import { PetCelebrationBubble } from "./pet-anim/PetCelebrationBubble";
 import { PetDNDBadge } from "./pet-anim/PetDNDBadge";
 import { MemoryPanel } from "./components/MemoryPanel";
+import { ContextBreakdownModal } from "./components/ContextBreakdownModal";
 import { ContextTracePanel } from "./components/ContextTracePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { DialogBar } from "./components/DialogBar";
@@ -506,36 +507,13 @@ function App() {
     return () => window.clearInterval(id);
   }, []);
 
-  // 2026-05-26: 前端兜底持久化 — 用 window.addEventListener("resize")
-  // + 防抖调 set_window_geometry。Rust 侧的 WindowEvent::Resized 也会触发
-  // 同样的写盘逻辑（lib.rs:218），两路冗余确保不丢；同一尺寸重复 save 是
-  // idempotent，文件被覆盖成相同内容，无副作用。
-  useEffect(() => {
-    let timer: number | null = null;
-    const persist = () => {
-      const w = Math.round(window.innerWidth);
-      const h = Math.round(window.innerHeight);
-      if (w < 240 || h < 360) return;
-      import("@tauri-apps/api/core")
-        .then(({ invoke }) =>
-          invoke("set_window_geometry", { width: w, height: h }).catch(() => {
-            // command 可能不存在（旧 Rust 二进制）— 静默忽略
-          }),
-        )
-        .catch(() => {
-          /* not under Tauri */
-        });
-    };
-    const onResize = () => {
-      if (timer != null) window.clearTimeout(timer);
-      timer = window.setTimeout(persist, 800);
-    };
-    window.addEventListener("resize", onResize);
-    return () => {
-      window.removeEventListener("resize", onResize);
-      if (timer != null) window.clearTimeout(timer);
-    };
-  }, []);
+  // 2026-05-31: 删除前端 resize → invoke("set_window_geometry") 兜底循环。
+  // 该 useEffect 是"拉伸后自动缩小两次"的根因 —— set_window_geometry 命令
+  // 内部调用 win.set_size(LogicalSize)，会再触发一次 WindowEvent::Resized，
+  // 而 window.innerWidth (CSS inner) 与 set_size (outer) 在 DPI/边框场景
+  // 下相差几像素，每轮收缩一些 → 用户感知"缩小两次"后稳定。
+  // 持久化已由 Rust 端 ResizeDebouncer（lib.rs WindowEvent::Resized 钩子）
+  // 独家负责，不需要前端冗余写盘。
 
   // Control channel (text chat + interrupt + emotion/action events)
   const { state, lastMessage, sendChatV2, sendInterrupt, getChannel: getControlChannel } =
@@ -558,6 +536,14 @@ function App() {
         type: "session_messages_load",
         payload: { session_id: "default", limit: 200 },
       });
+      // 2026-05-31 restore — pull cached context-usage on connect so the
+      // ring gauge in toolbar hydrates immediately.
+      try {
+        ch.send({
+          type: "context_usage_request",
+          payload: { session_id: "default" },
+        });
+      } catch { /* best-effort */ }
       historyLoadedRef.current = true;
     } catch (e) {
       console.warn("[Pet] session_messages_load send failed:", e);
@@ -577,6 +563,8 @@ function App() {
 
   // S14 — memory management panel toggle.
   const [memoryOpen, setMemoryOpen] = useState(false);
+  // 2026-05-31 restore — context-usage breakdown modal (ring drill-down).
+  const [contextModalOpen, setContextModalOpen] = useState(false);
   // P4-S11 §16.5 — ContextTrace panel (decision timeline + token budget)
   const [traceOpen, setTraceOpen] = useState(false);
 
@@ -760,6 +748,24 @@ function App() {
             ...prev,
             { role: "assistant", text: `${ok} ${tool} 结果` },
           ]);
+        }
+        break;
+      }
+      case "context_usage": {
+        // 2026-05-31 restore — context-usage ring update from backend.
+        const cu = (lastMessage as any).payload;
+        if (cu?.session_id) {
+          useSessionsStore.getState().ensure(cu.session_id);
+          useSessionsStore.getState().upsert(cu.session_id, { context_usage: cu });
+        }
+        break;
+      }
+      case "chat_v2_user_echo": {
+        // 2026-05-31 restore — multi-window sync: peer typed a user message.
+        // Backend skips originator so receiving means peer-origin → push.
+        const echoText = (lastMessage as any).payload?.text;
+        if (typeof echoText === "string" && echoText.length > 0) {
+          setMessages((prev) => [...prev, { role: "user", text: echoText }]);
         }
         break;
       }
@@ -1130,12 +1136,11 @@ function App() {
     const occInterval = window.setInterval(async () => {
       const now = performance.now();
       try {
-        const w = await import("@tauri-apps/api/window").then((m) =>
-          m.getCurrentWindow(),
-        );
+        const { getCurrentWindow, currentMonitor } = await import("@tauri-apps/api/window");
+        const w = getCurrentWindow();
         const pos = await w.outerPosition();
         const size = await w.outerSize();
-        const monitor = await w.currentMonitor();
+        const monitor = await currentMonitor();
         if (!monitor) return;
         const petRect = {
           x: pos.x,
@@ -1179,43 +1184,69 @@ function App() {
   // in Live2DCanvas (already wired to setDragState).
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    let snapTimer: number | null = null;
     let cancelled = false;
     (async () => {
       try {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const { getCurrentWindow, currentMonitor } = await import("@tauri-apps/api/window");
         const w = getCurrentWindow();
         const off = await w.onMoved(async () => {
-          try {
-            const pos = await w.outerPosition();
-            const size = await w.outerSize();
-            const monitor = await w.currentMonitor();
-            if (!monitor) return;
-            const edge: Edge = pickEdge(
-              { x: pos.x, y: pos.y, w: size.width, h: size.height },
-              { width: monitor.size.width, height: monitor.size.height },
-              100,
-            );
-            const now = performance.now();
-            liveRef.current?.setEdgeAttached(edge, now);
-            if (edge !== null) {
-              // Snap by re-positioning slightly out past edge.
-              const { snapTarget } = await import("./pet-anim/edgeWatcher");
-              const t = snapTarget(
-                { x: pos.x, y: pos.y, w: size.width, h: size.height },
-                { width: monitor.size.width, height: monitor.size.height },
-                edge,
-                10,
-              );
-              if (t) {
-                const { PhysicalPosition } = await import(
-                  "@tauri-apps/api/window"
-                );
-                await w.setPosition(new PhysicalPosition(t.x, t.y));
-              }
-            }
-          } catch {
-            /* silent — Tauri API issue */
+          // 2026-06-03 多屏拖动修复：onMoved 在拖动中**持续触发**。原来在这里
+          // 立即 pickEdge + setPosition 吸边 → 拖到屏幕边缘(含两屏交界)就被吸住、
+          // 跨不过去，且 setPosition 又触发 onMoved → 振荡抖动（用户实测：从三星
+          // 拖不回小米，剧烈抖动后弹回三星）。改为**防抖**：拖动停下(onMoved 静止
+          // ~250ms = 松手)后才吸一次，拖动期间不干预位置 → 可自由跨屏。
+          if (snapTimer !== null) {
+            window.clearTimeout(snapTimer);
           }
+          snapTimer = window.setTimeout(async () => {
+            try {
+              const pos = await w.outerPosition();
+              const size = await w.outerSize();
+              const monitor = await currentMonitor();
+              if (!monitor) return;
+              // 2026-06-03 多屏坐标修复：outerPosition() 返回**全局**物理坐标
+              // （非主屏从 monitor.position 偏移起算，如小米屏 x 从 3840 起），而
+              // pickEdge/snapTarget 按「显示器局部 0..size」算边缘。必须先减去显示器
+              // 原点转成局部坐标，吸附结果再加回原点 —— 否则在非主屏上 pickEdge 永远
+              // 误判「右边缘」（全局 x ≫ 局部宽），snapTarget 把桌宠 setPosition 回主屏
+              // （用户实测：拖到小米后剧烈抖动弹回三星）。
+              const mx = monitor.position.x;
+              const my = monitor.position.y;
+              const localRect = {
+                x: pos.x - mx,
+                y: pos.y - my,
+                w: size.width,
+                h: size.height,
+              };
+              const screen = {
+                width: monitor.size.width,
+                height: monitor.size.height,
+              };
+              const edge: Edge = pickEdge(localRect, screen, 100);
+              const now = performance.now();
+              liveRef.current?.setEdgeAttached(edge, now);
+              if (edge !== null) {
+                // Snap by re-positioning slightly out past edge.
+                const { snapTarget } = await import("./pet-anim/edgeWatcher");
+                const t = snapTarget(localRect, screen, edge, 10);
+                if (t) {
+                  // 局部吸附目标加回显示器原点 → 全局坐标；仅当与当前位置有
+                  // 意义差异时才 setPosition，防「setPosition→onMoved→再吸」自触发循环。
+                  const gx = t.x + mx;
+                  const gy = t.y + my;
+                  if (Math.abs(gx - pos.x) > 2 || Math.abs(gy - pos.y) > 2) {
+                    const { PhysicalPosition } = await import(
+                      "@tauri-apps/api/window"
+                    );
+                    await w.setPosition(new PhysicalPosition(gx, gy));
+                  }
+                }
+              }
+            } catch {
+              /* silent — Tauri API issue */
+            }
+          }, 250);
         });
         if (cancelled) {
           off();
@@ -1228,6 +1259,9 @@ function App() {
     })();
     return () => {
       cancelled = true;
+      if (snapTimer !== null) {
+        window.clearTimeout(snapTimer);
+      }
       unlisten?.();
     };
   }, []);
@@ -1246,13 +1280,13 @@ function App() {
       "mousemove",
       "wheel",
       "pointermove",
-      "visibilitychange",
       "focus",
       "blur",
     ];
     for (const ev of events) {
       window.addEventListener(ev, onActivity, { passive: true });
     }
+    document.addEventListener("visibilitychange", onActivity, { passive: true });
     // Seed: first mount counts as activity so we don't immediately enter low_energy.
     idleStateRef.current = idleWatcherRef.current.notifyActivity(
       idleStateRef.current,
@@ -1262,6 +1296,7 @@ function App() {
       for (const ev of events) {
         window.removeEventListener(ev, onActivity);
       }
+      document.removeEventListener("visibilitychange", onActivity);
     };
   }, []);
 
@@ -1943,6 +1978,8 @@ function App() {
         connectionState={state}
         routeKind={routeKind}
         topOffset={petError ? 66 : undefined}
+        contextUsage={sessions["default"]?.context_usage ?? null}
+        onContextRingClick={() => setContextModalOpen(true)}
       />
 
       {/* S14 memory management overlay */}
@@ -1951,6 +1988,25 @@ function App() {
         onClose={() => setMemoryOpen(false)}
         sessionId="default"
         getChannel={getControlChannel}
+      />
+
+      {/* 2026-05-31 restore — Context usage breakdown (ring drill-down) */}
+      <ContextBreakdownModal
+        open={contextModalOpen}
+        onClose={() => setContextModalOpen(false)}
+        sessionId="default"
+        snapshot={sessions["default"]?.context_usage ?? null}
+        send={(m) => {
+          const ch = getControlChannel();
+          if (ch) {
+            try { ch.send(m); } catch (e) { console.warn("[ContextModal] send failed:", e); }
+          }
+        }}
+        onMessage={(fn) => {
+          const ch = getControlChannel();
+          if (!ch) return () => {};
+          return ch.onMessage(fn);
+        }}
       />
 
       {/* P4-S11 ContextTrace overlay */}
