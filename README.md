@@ -2,6 +2,18 @@
 
 本地部署的桌面语音宠物：Live2D 桌宠 + 全本地语音交互管线（VAD → ASR → LLM → TTS）。
 
+---
+
+## 📥 下载安装（Windows 测试版 / 中转站版）
+
+最新安装包见 **[Releases 页面](https://github.com/DennyWanye/deskpet/releases/latest)**:
+
+1. 在最新 release 里下载**全部 4 个文件**(`DeskPet_*_x64_en-US.msi` + `cab1.cab` + `cab2.cab` + `cab3.cab`)到**同一个文件夹**。
+2. 双击 `.msi`(弹 UAC 点"是")→ 按提示安装(约 3.7 GB)。
+3. 首启走引导窗;用 LLM 需登录中转站账号,或在 Settings → LLM Providers 手填自己的 OpenAI / Anthropic / 本地 Ollama。
+
+> ⚠️ GitHub 单文件限 2GB,安装包拆成 1 个 msi + 3 个 cab,**4 个文件必须同一文件夹,缺一不可**。
+
 > 📊 **项目整体状态一页看清**: [`STATUS/status.md`](./STATUS/status.md) —
 > 所有并行 worktree / 功能模块完成度 / 最近里程碑 / 已知问题。
 
