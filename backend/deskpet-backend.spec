@@ -68,6 +68,9 @@ hiddenimports += [
     "uvicorn.lifespan.on",
     # edge-tts uses aiohttp via optional import chain
     "edge_tts",
+    # deep-research CDP-Edge JS 渲染兜底(research_cdp_edge.py)直接 import websockets
+    # 连本地无头 Edge → 显式入包,使冻结正式包也能用 js_render=cdp-edge(Windows)。
+    "websockets",
 ]
 hiddenimports += _mypyc_modules
 

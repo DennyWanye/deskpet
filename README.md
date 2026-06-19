@@ -2,18 +2,6 @@
 
 本地部署的桌面语音宠物：Live2D 桌宠 + 全本地语音交互管线（VAD → ASR → LLM → TTS）。
 
----
-
-## 📥 下载安装（Windows 测试版 / 中转站版）
-
-最新安装包见 **[Releases 页面](https://github.com/DennyWanye/deskpet/releases/latest)**:
-
-1. 在最新 release 里下载**全部 4 个文件**(`DeskPet_*_x64_en-US.msi` + `cab1.cab` + `cab2.cab` + `cab3.cab`)到**同一个文件夹**。
-2. 双击 `.msi`(弹 UAC 点"是")→ 按提示安装(约 3.7 GB)。
-3. 首启走引导窗;用 LLM 需登录中转站账号,或在 Settings → LLM Providers 手填自己的 OpenAI / Anthropic / 本地 Ollama。
-
-> ⚠️ GitHub 单文件限 2GB,安装包拆成 1 个 msi + 3 个 cab,**4 个文件必须同一文件夹,缺一不可**。
-
 > 📊 **项目整体状态一页看清**: [`STATUS/status.md`](./STATUS/status.md) —
 > 所有并行 worktree / 功能模块完成度 / 最近里程碑 / 已知问题。
 
@@ -107,7 +95,8 @@ deskpet/
 │   └── src-tauri/    # Rust 原生层 (窗口透明、麦克风权限)
 ├── docs/superpowers/plans/  # 设计文档 (OpenSpec plans)
 ├── config.toml       # 全局配置
-└── plans/            # 历史规划文档 (docx)
+└── plans/            # 功能规划 / PRD / 路线图（见 plans/index.md 总索引）
+    └── index.md      # 📑 所有规划工作项的一页式导航
 ```
 
 ---
@@ -422,6 +411,11 @@ Schema 版本从 v9 升级到 v10。
 项目的设计文档、调研报告、内测就绪材料的速查表。代码改动遵循
 spec-first：3+ 文件的改动先有 plan/spec，再有实现。
 
+> 📑 **规划总索引**: [`plans/index.md`](./plans/index.md) —
+> 所有功能规划 / PRD / 路线图（`plans/<日期-主题>/`）的一页式导航，含一句话说明
+> 与状态（✅ 已落地 / 🟡 进行中 / 📋 规划）。**新建 plan 文件夹后请在此索引登记一行。**
+> 功能落地状态以 [`STATUS/status.md`](./STATUS/status.md) 为准。
+
 > 🧪 **手工测试用例索引**: [`testcase/index.md`](./testcase/index.md) —
 > 登记所有需人工一步步执行（带预期结果）的 testcase；每份用例写清测试范围、
 > 目的、步骤与判定。新增手工测试请在该索引登记。
@@ -607,6 +601,7 @@ fake-completion 生产抓获率 0%）+ 替换 5 个 stub 工具为真实现 + �
 
 | 文档 | 作用 |
 |------|------|
+| [`release/README.md`](./release/README.md) | ⭐ **发布 & 自动更新运行手册（当前权威）** — 本地构建+签名 → 公开 GitHub release + 腾讯 COS 国内源 → 客户端自动更新；含分享链接、出新版步骤、踩坑清单。2026-06-05 真机 E2E 验证 beta.2→beta.3 自更新跑通 |
 | [`plans/2026-05-22-beta-100-readiness.md`](./plans/2026-05-22-beta-100-readiness.md) | 内测就绪**主计划** — 12 个工作项 (WI-01~WI-12) 的 PRD + 技术设计 + TDD + 排期 + Go/No-Go checklist |
 | [`plans/2026-05-22-beta-100-manual-test.md`](./plans/2026-05-22-beta-100-manual-test.md) | **人工点击测试脚本** — 6 条测试路径，逐步可勾选，含全新安装 / 升级 / 卸载 / updater 全流程 |
 | [`plans/2026-05-22-beta-100-manual-test-results.md`](./plans/2026-05-22-beta-100-manual-test-results.md) | **实机测试执行记录** — windows-mcp 实机跑 WI-01/WI-02，结果 13/13 通过、0 功能 bug |

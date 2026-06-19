@@ -505,3 +505,16 @@ timeout = 60.0
 [llm_p4.providers.gemini]
 default_model = "gemini-1.5-pro"
 timeout = 60.0
+
+# deep-research 抓取/检索增强开关(真实默认在代码 research_tools._research_raw(),此处为文档)。
+[research]
+# JS 渲染抓取兜底:治 trafilatura 抓到的 JS/SPA 空壳站。默认关(opt-in)。中国可用(本地渲染)。
+js_render = false
+# 渲染引擎:
+#   "cdp-edge" = 连系统已装 Edge 无头 + CDP(纯后端,零下载,Windows 可用;Mac/Linux 默认无 Edge)
+#   "webview"  = 复用 Tauri 自带 WebView 隐藏窗(三端零体积零安装,下一期主线,本期未实现→降级)
+#   "crawl4ai" = Crawl4AI/Playwright+Chromium(~100-160MB,仅 dev/源码模式;冻结正式包不可用)
+# 未配置时按平台自动:Windows→cdp-edge(已落地),其它→webview(本期降级)。
+js_render_engine = "cdp-edge"
+# 单页渲染超时(秒),超时优雅降级到 jina/原结果
+js_render_timeout = 20

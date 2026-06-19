@@ -117,7 +117,10 @@ def _resolve_persona(config: dict[str, Any]) -> str:
 
 
 def _approx_tokens(text: str) -> int:
-    return max(1, len(text) // 4) if text else 0
+    if not text:
+        return 0
+    from deskpet.agent.tokens import count_text_tokens
+    return count_text_tokens(text)
 
 
 _ASSERT_PROTOCOL: Component = PersonaComponent()

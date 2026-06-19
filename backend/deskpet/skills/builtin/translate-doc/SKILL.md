@@ -1,6 +1,8 @@
 ---
 name: translate-doc
 description: 翻译文本或整份 Word 文档，保留原排版
+when_to_use: 用户要翻译一段文本或整份 Word 文档时
+triggers: [翻译]
 version: 0.1.0
 author: deskpet
 task_types: [task]

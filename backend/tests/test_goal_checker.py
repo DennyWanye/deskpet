@@ -64,28 +64,35 @@ async def test_bare_object_fallback_when_no_fences():
 
 
 @pytest.mark.asyncio
-async def test_llm_exception_safe_fails_to_done():
+async def test_llm_exception_safe_fails_to_skipped():
+    # R-T3 §15.4 变更：LLM 异常 → (False, "goal_check=skipped")
+    # 原行为 (True, "checker_error") 被变更是因为：
+    #   done=True 会触发 mark_done，在 checker 本身故障时静默标目标完成 —
+    #   这是危险的默认放行（尤其高后果目标）。
+    # 新行为：done=False + hint="goal_check=skipped" 表示"无法正向确认"，
+    # AgentLoop 看到 goal_check=skipped 时不调用 mark_done，保持目标 active。
     checker = GoalChecker(_make_failing_llm(RuntimeError("LLM blew up")))
     done, hint = await checker.check("x", [])
-    # Safe-fail: 不阻 dispatch → 返 done=True + checker_error 标记
-    assert done is True
-    assert hint == "checker_error"
+    assert done is False
+    assert hint == "goal_check=skipped"
 
 
 @pytest.mark.asyncio
-async def test_unparseable_output_safe_fails():
+async def test_unparseable_output_safe_fails_to_skipped():
+    # R-T3 §15.4 变更：JSON 畸形 → (False, "goal_check=skipped")（同上理由）
     checker = GoalChecker(_make_llm("I cannot parse this at all"))
     done, hint = await checker.check("x", [])
-    assert done is True
-    assert hint == "checker_error"
+    assert done is False
+    assert hint == "goal_check=skipped"
 
 
 @pytest.mark.asyncio
-async def test_missing_done_field_safe_fails():
+async def test_missing_done_field_safe_fails_to_skipped():
+    # R-T3 §15.4 变更：缺 done 字段 → (False, "goal_check=skipped")（同上理由）
     checker = GoalChecker(_make_llm('{"hint": "no done field"}'))
     done, hint = await checker.check("x", [])
-    assert done is True
-    assert hint == "checker_error"
+    assert done is False
+    assert hint == "goal_check=skipped"
 
 
 @pytest.mark.asyncio
@@ -145,14 +152,15 @@ async def test_long_assistant_message_truncated_in_prompt():
 
 
 @pytest.mark.asyncio
-async def test_non_string_llm_response_safe_fails():
+async def test_non_string_llm_response_safe_fails_to_skipped():
+    # R-T3 §15.4 变更：非字符串响应 → (False, "goal_check=skipped")
     async def _call(prompt: str):
         return 42  # type: ignore[return-value]
 
     checker = GoalChecker(_call)
     done, hint = await checker.check("x", [])
-    assert done is True
-    assert hint == "checker_error"
+    assert done is False
+    assert hint == "goal_check=skipped"
 
 
 @pytest.mark.asyncio

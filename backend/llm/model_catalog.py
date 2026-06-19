@@ -214,11 +214,21 @@ def build_catalog(model_ids: list[str]) -> list[dict[str, Any]]:
         if not mid or mid in seen:
             continue
         seen.add(mid)
+        # 2026-06-12: 档位列表 — UI「上下文窗口」从只读 chip 变为按型号
+        # 可选下拉(>1 档才可选)。BUILTIN 没档位表的型号 → 单档不可调。
+        try:
+            from llm import model_info as _mi
+            _supported = (
+                _mi.supported_windows_for(mid) if mid in _mi.BUILTIN else []
+            )
+        except Exception:  # noqa: BLE001
+            _supported = []
         out.append({
             "id": mid,
             "label": _label_for(mid),
             "caps": model_param_caps(mid),
             "context_window": model_context_window(mid),
+            "supported_windows": _supported,
         })
     return out
 

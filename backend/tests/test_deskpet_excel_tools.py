@@ -124,3 +124,115 @@ def test_t1_10_system_path_refused():
 def test_t1_11_empty_sheets_list_rejected():
     r = xl.excel_create({"sheets": []})
     assert not r["ok"]
+
+
+# --- 复杂 Excel 升级 (number_formats / merge / cell_styles / charts / images) ---
+
+def test_t1_12_number_format_by_col(tmp_path: Path):
+    spec = {"sheets": [{
+        "name": "钱",
+        "rows": [["项目", "金额"], ["A", 1200], ["B", 300]],
+        "header_row": True,
+        "number_formats": [{"col": "B", "format": "#,##0.00"}],
+    }]}
+    r = xl.excel_create(spec, output_path=str(tmp_path / "nf.xlsx"))
+    assert r["ok"], r
+    wb = _load(r["path"])
+    ws = wb["钱"]
+    assert ws["B2"].number_format == "#,##0.00"
+    assert ws["B3"].number_format == "#,##0.00"
+    # 表头行(row1)不应被列格式影响(from_row 默认 2)
+    assert ws["B1"].number_format != "#,##0.00"
+
+
+def test_t1_13_number_format_by_range(tmp_path: Path):
+    spec = {"sheets": [{
+        "name": "P",
+        "rows": [["率"], [0.25], [0.5]],
+        "number_formats": [{"range": "A2:A3", "format": "0.0%"}],
+    }]}
+    r = xl.excel_create(spec, output_path=str(tmp_path / "pct.xlsx"))
+    assert r["ok"], r
+    ws = _load(r["path"])["P"]
+    assert ws["A2"].number_format == "0.0%"
+
+
+def test_t1_14_merge_cells(tmp_path: Path):
+    spec = {"sheets": [{
+        "name": "M",
+        "rows": [["季度汇总", None, None], ["Q1", "Q2", "Q3"]],
+        "merge_cells": ["A1:C1"],
+    }]}
+    r = xl.excel_create(spec, output_path=str(tmp_path / "mg.xlsx"))
+    assert r["ok"], r
+    ws = _load(r["path"])["M"]
+    assert "A1:C1" in [str(rng) for rng in ws.merged_cells.ranges]
+
+
+def test_t1_15_cell_styles_fill_and_color(tmp_path: Path):
+    spec = {"sheets": [{
+        "name": "St",
+        "rows": [["标题"], ["数据"]],
+        "cell_styles": [{
+            "range": "A1",
+            "bold": True,
+            "fill": "#1F4E78",
+            "font_color": "#FFFFFF",
+            "align": "center",
+            "border": True,
+        }],
+    }]}
+    r = xl.excel_create(spec, output_path=str(tmp_path / "st.xlsx"))
+    assert r["ok"], r
+    ws = _load(r["path"])["St"]
+    cell = ws["A1"]
+    assert cell.font.bold is True
+    assert cell.fill.fgColor.rgb == "FF1F4E78"
+    assert cell.font.color.rgb == "FFFFFFFF"
+    assert cell.border.left.style == "thin"
+
+
+def test_t1_16_multiple_charts(tmp_path: Path):
+    spec = {"sheets": [{
+        "name": "Ch",
+        "rows": [["m", "v"], ["a", 1], ["b", 2]],
+        "charts": [
+            {"type": "bar", "data": "B1:B3", "categories": "A2:A3", "anchor": "D2"},
+            {"type": "line", "data": "B1:B3", "categories": "A2:A3", "anchor": "D20"},
+        ],
+    }]}
+    r = xl.excel_create(spec, output_path=str(tmp_path / "ch.xlsx"))
+    assert r["ok"], r
+    ws = _load(r["path"])["Ch"]
+    assert len(ws._charts) == 2
+
+
+def test_t1_17_image_embedded(tmp_path: Path):
+    if not xl._HAS_XLIMAGE:
+        pytest.skip("openpyxl image support / Pillow missing")
+    # 造一张最小 PNG
+    from PIL import Image as _PILImage
+
+    img_path = tmp_path / "dot.png"
+    _PILImage.new("RGB", (10, 10), (255, 0, 0)).save(img_path)
+    spec = {"sheets": [{
+        "name": "Img",
+        "rows": [["see chart"]],
+        "images": [{"path": str(img_path), "anchor": "C2"}],
+    }]}
+    r = xl.excel_create(spec, output_path=str(tmp_path / "img.xlsx"))
+    assert r["ok"], r
+    ws = _load(r["path"])["Img"]
+    assert len(ws._images) == 1
+
+
+def test_t1_18_default_path_under_output_excel(tmp_path: Path, monkeypatch):
+    # default_kind='Excel' → 落 <user_data>/OutPut/Excel (这里把 user_data 指到 tmp)
+    monkeypatch.setenv("DESKPET_USER_DATA_DIR", str(tmp_path))
+    r = xl.excel_create({"sheets": [{"name": "S", "rows": [["a"]]}]})
+    assert r["ok"], r
+    p = Path(r["path"])
+    assert p.exists()
+    assert p.parent.name == "Excel"
+    assert p.parent.parent.name == "OutPut"
+    p.unlink(missing_ok=True)

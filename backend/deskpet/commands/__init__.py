@@ -23,10 +23,21 @@ Builtin commands:
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Optional
 
 log = logging.getLogger(__name__)
+
+
+async def _maybe_await(value: Any) -> Any:
+    """Await ``value`` only if it is awaitable. 兜底旧 store / MagicMock：
+    新 store 的 persist/persist_abandon 返回 coroutine → await；旧 store 或
+    测试 MagicMock 返回普通值 → 直接放过（BC，不破坏既有调用方）。
+    """
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def dispatch_slash_command(
@@ -60,7 +71,7 @@ async def dispatch_slash_command(
 
     # Builtin: /goal
     if name == "goal":
-        return _handle_goal(args, session_id, session_goal_store)
+        return await _handle_goal(args, session_id, session_goal_store)
 
     # Builtin: /prefs — 查看/清除偏好记忆（意图/计划），防误记。
     if name == "prefs":
@@ -98,7 +109,7 @@ def _handle_help(skill_loader: Any) -> dict[str, Any]:
     return {"type": "help", "builtins": builtins, "skills": skills}
 
 
-def _handle_goal(
+async def _handle_goal(
     args: str, session_id: str, store: Any,
 ) -> dict[str, Any]:
     if store is None:
@@ -110,6 +121,12 @@ def _handle_goal(
     if not args or args_lower == "clear" or args_lower == "":
         if args_lower == "clear":
             ok = store.clear(session_id)
+            # 落 abandoned（不物理删，保留历史给 P0-3 沉淀）；
+            # getattr 兜底旧 store（无 persist_abandon 时跳过，BC），
+            # _maybe_await 兜底非 async 返回值（MagicMock / 旧 store）。
+            _ab = getattr(store, "persist_abandon", None)
+            if _ab is not None:
+                await _maybe_await(_ab(session_id))
             return {"type": "goal_cleared", "session_id": session_id, "ok": ok}
         # show current
         current = store.get(session_id)
@@ -125,6 +142,11 @@ def _handle_goal(
         }
     # set
     goal = store.set(session_id, args)
+    # 落库 active goal；getattr 兜底旧 store（无 persist 时纯内存，BC），
+    # _maybe_await 兜底非 async 返回值（MagicMock / 旧 store）。
+    _persist = getattr(store, "persist", None)
+    if _persist is not None:
+        await _maybe_await(_persist(goal))
     return {
         "type": "goal_set",
         "session_id": session_id,

@@ -144,20 +144,22 @@ patterns:
 
 # ─── T9-14b ephemeral 信任面 ───────────────────────────────
 
-def test_t9_14b_ephemeral_called_only_when_set():
+@pytest.mark.asyncio
+async def test_t9_14b_ephemeral_called_only_when_set():
     """ephemeral_subagent=None 时 consult 返回 False（无救援，直接 fail）。"""
     gate = VerifyGate(extractor=RegexExtractor([]), mode="strict",
                       ephemeral_subagent=None)
-    verdict = gate.consult_ephemeral_subagent(
+    verdict = await gate.consult_ephemeral_subagent(
         ledger=[], failed_claims=[], assistant_text="x",
     )
     assert verdict is False
 
 
-def test_t9_14b_ephemeral_pass_path():
+@pytest.mark.asyncio
+async def test_t9_14b_ephemeral_pass_path():
     called_with: list[dict] = []
 
-    def _mock_eph(ctx: dict) -> bool:
+    async def _mock_eph(ctx: dict) -> bool:
         called_with.append(ctx)
         return True
 
@@ -167,7 +169,7 @@ def test_t9_14b_ephemeral_pass_path():
                      started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
                      ended_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
                      ok=True)
-    verdict = gate.consult_ephemeral_subagent(
+    verdict = await gate.consult_ephemeral_subagent(
         ledger=[r],
         failed_claims=[UnmatchedClaim(
             pattern_id="x", raw_text="已生成",
@@ -181,16 +183,17 @@ def test_t9_14b_ephemeral_pass_path():
     assert called_with[0]["ledger_size"] == 1
 
 
-def test_t9_14b_ephemeral_exception_falls_back_to_fail(caplog):
+@pytest.mark.asyncio
+async def test_t9_14b_ephemeral_exception_falls_back_to_fail(caplog):
     import logging
     caplog.set_level(logging.WARNING)
 
-    def _bad_eph(ctx: dict) -> bool:
+    async def _bad_eph(ctx: dict) -> bool:
         raise RuntimeError("ephemeral subagent crashed")
 
     gate = VerifyGate(extractor=RegexExtractor([]), mode="strict",
                       ephemeral_subagent=_bad_eph)
-    verdict = gate.consult_ephemeral_subagent(
+    verdict = await gate.consult_ephemeral_subagent(
         ledger=[], failed_claims=[], assistant_text="x",
     )
     assert verdict is False

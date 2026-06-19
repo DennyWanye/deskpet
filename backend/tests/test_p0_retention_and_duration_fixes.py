@@ -144,3 +144,53 @@ async def test_t2_3_receipt_duration_ms_zero_for_instant_handler():
         ledger = store.load_session("t2_3_instant")
         assert len(ledger) == 1
         assert ledger[0].duration_ms >= 0  # not negative
+
+
+@pytest.mark.asyncio
+async def test_receipt_copies_artifact_shas_from_envelope(tmp_path):
+    """Bug#3 子问题 (2026-06-11)：envelope 有 artifacts 时 receipt.artifacts
+    应带产物 sha256(原 registry 从不传 artifact_shas → receipt 恒 [])。
+    verify gate 对账「声称产物 vs 真产物」需要这个绑定。
+    """
+    import json as _json
+    from deskpet.tools.registry import ToolRegistry, ToolSpec
+    from deskpet.tools.receipt_store import ReceiptStore
+    from types import SimpleNamespace
+    import hashlib
+
+    art = tmp_path / "out.pptx"
+    art.write_bytes(b"fake-pptx-bytes")
+    expected_sha = hashlib.sha256(b"fake-pptx-bytes").hexdigest()
+
+    def _maker(args: dict, task_id: str = "") -> str:
+        return _json.dumps({"ok": True, "path": str(art)})
+
+    store = ReceiptStore(tmp_path / "receipts", key=b"\x42" * 32)
+    registry = ToolRegistry()
+    spec = ToolSpec(
+        name="maker",
+        toolset="test",
+        schema={"description": "artifact probe", "parameters": {}},
+        handler=_maker,
+        permission_category="read_file",
+    )
+    with registry._lock:
+        registry._tools["maker"] = spec
+    registry.set_receipt_store_provider(lambda: store)
+    # 开 artifact_envelope flag → envelope 带 artifacts
+    registry.set_tools_config_provider(
+        lambda: SimpleNamespace(last_mile=SimpleNamespace(artifact_envelope=True))
+    )
+
+    result = await registry.execute_tool(
+        "maker", params={}, session_id="sha_probe", task_id="t",
+    )
+    assert result["ok"] is True
+    assert result.get("artifacts"), "前置:envelope 应含 artifacts"
+
+    ledger = store.load_session("sha_probe")
+    assert len(ledger) == 1
+    rec = ledger[0]
+    assert rec.artifacts == [expected_sha], (
+        f"receipt.artifacts 应为产物 sha256,实际 {rec.artifacts}"
+    )

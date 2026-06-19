@@ -1,6 +1,8 @@
 ---
 name: file-organize
 description: 整理文件夹 —— 按类型/日期归类、查找重复文件（先出计划，确认后执行）
+when_to_use: 用户要整理文件夹、按类型或日期归类文件、查找清理重复文件时
+triggers: [整理文件, 整理一下文件夹, 整理下载, 归类文件, 重复文件]
 version: 0.1.0
 author: deskpet
 task_types: [task]

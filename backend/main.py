@@ -12,6 +12,10 @@ try:
 except AttributeError:
     pass
 
+from deskpet.frozen_worker_dispatch import dispatch_frozen_worker_if_requested
+
+dispatch_frozen_worker_if_requested()
+
 import asyncio
 import os
 import re
@@ -65,7 +69,7 @@ from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from pathlib import Path
 from pydantic import BaseModel, field_validator, model_validator
 
-from config import load_config, resolve_config_path
+from config import load_config, resolve_config_path, effective_llm_model
 import paths as _paths
 from paths import resolve_model_dir  # P3-S1
 from context import ServiceContext
@@ -182,6 +186,20 @@ if _llm_overrides:
         config.llm.local.base_url = _llm_overrides["base_url"]
     if "model" in _llm_overrides:
         config.llm.local.model = _llm_overrides["model"]
+        # P-B 修复(同步 raw): 覆盖只写 dataclass,但有代码读 config.raw["llm"]["model"]
+        # (压缩窗口 :1384 / stub :4268 / breakdown 探针 :2944)会拿到旧种子 gemma → 这里
+        # 同步原始 dict,使所有 in-process raw 读取也读到有效模型。配合下方 effective_llm_model
+        # 访问器(WI-3)双保险。见 plans/2026-06-16-effective-llm-model-resolution。
+        try:
+            config.raw.setdefault("llm", {})["model"] = _llm_overrides["model"]
+        except Exception:  # noqa: BLE001
+            pass
+    if "base_url" in _llm_overrides:
+        # base_url 也同步 raw(让 breakdown 探针的 base_url 预览也对;真出站本就用 dataclass)
+        try:
+            config.raw.setdefault("llm", {})["base_url"] = _llm_overrides["base_url"]
+        except Exception:  # noqa: BLE001
+            pass
     if "temperature" in _llm_overrides:
         config.llm.local.temperature = float(_llm_overrides["temperature"])
     if "api_key" in _llm_overrides and _llm_overrides["api_key"]:
@@ -617,6 +635,38 @@ def _make_str_llm_call(provider, *, max_tokens: int = 512):
     return _call
 
 
+# 把运行中的 local_llm(relay base_url + keychain key) 注入 deep-research，
+# 让 research_run 的 plan/synthesize/reflection 走和聊天 agent 同一个 live
+# relay（修旧 _resolve_default_llm_call 读 providers[0] 丢 key 的隐患）。
+try:
+    from deskpet.tools import research_tools as _research_tools
+    _research_tools.set_live_llm_call(_make_str_llm_call(local_llm, max_tokens=4096))
+
+    # LLM 重排桥: 用【廉价模型】(默认 gpt-4.1-mini,中转站有)做 research 召回后的
+    # cross-encoder 式精排 —— 免下载本地 bge-reranker、免占本地内存,复用 relay。
+    # 同 base_url + keychain key,只换 model。[research].reranker_model 可覆盖。
+    # 仅在云端/relay base_url 下注入: 本地 ollama(localhost) 通常没有 gpt-4.1-mini,
+    # 会每次研究都失败白调,故 localhost 端点不注入(research 自动跳过精排)。
+    try:
+        _r_base = str(config.llm.local.base_url or "")
+        if _r_base and not _research_tools._is_loopback_url(_r_base):
+            _rerank_model = str(
+                (config.raw.get("research") or {}).get("reranker_model", "gpt-4.1-mini")
+            )
+            _rerank_provider = OpenAICompatibleProvider(
+                base_url=_r_base,
+                api_key=_resolved_api_key,
+                model=_rerank_model,
+            )
+            _research_tools.set_rerank_llm_call(
+                _make_str_llm_call(_rerank_provider, max_tokens=2048)
+            )
+    except Exception as _exc2:  # noqa: BLE001 — 未注入则 research 跳过精排
+        logger.debug("research_rerank_wiring_skipped", error=str(_exc2))
+except Exception as _exc:  # noqa: BLE001 — research 仍可回退 config 重建
+    logger.debug("research_live_llm_wiring_skipped", error=str(_exc))
+
+
 # ─── superpowers Layer 1A/1B 决策2：plan-confirm 硬门 ────────────────
 # code 模式非平凡任务出 plan 后，_run_chat（后台任务）在此 Future 上 await，
 # 等前端点 [执行]/[取消] → plan_confirm WS handler set_result → 继续/取消。
@@ -624,6 +674,136 @@ def _make_str_llm_call(provider, *, max_tokens: int = 512):
 # 单用户桌宠：按 session_id key 足够（code session id 唯一；门只在 code 模式触发）。
 # value = {"fut": Future[str], "text": 原始任务文本}（text 供 Layer 1B 计划记忆记录）。
 _PLAN_CONFIRM_WAITERS: dict[str, dict] = {}
+
+# ─── WI-4.3 技能自创闭环：skill_candidate_confirm Future-await ────────
+# 复制 _PLAN_CONFIRM_WAITERS 模式，独立 channel（不复用 plan-confirm）。
+# key = candidate_id (int)；value = Future[str] ("accept" | "reject")。
+# propose() 后把 Future 注册到此字典，WS handler skill_candidate_confirm
+# 调 _SKILL_CANDIDATE_WAITERS.resolve() → set_result → 唤醒挂起协程。
+try:
+    from deskpet.skills.skill_codifier import SkillCandidateWaiters as _SCWaiters
+    _SKILL_CANDIDATE_WAITERS = _SCWaiters()
+except Exception:
+    _SKILL_CANDIDATE_WAITERS = None  # type: ignore[assignment]
+
+
+# ─── WI-4.3 技能自创闭环 hook（方案 B 抽 helper）─────────────────────
+# 2026-06-06：原 codify hook 只 inline 在 chat handler 的 FinalEvent 分支 →
+# turn 经 ErrorEvent（relay ReadError）/ 迭代上限 / 被 stop 中止结束时整段不跑
+# → 多工具 turn 跑了 ≥5 工具但卡不弹（真机诊断）。抽成模块级 helper，在
+# FinalEvent + ErrorEvent 两处都调，让 turn 任意路径结束都能触发技能自创。
+# safe-fail：任何异常只 debug log，不中断正常 turn。flag OFF → 整段跳过（BC）。
+async def _maybe_codify_skill(service_context, config, sid, ws, waiters):
+    try:
+        _codify_cfg = getattr(getattr(config, "skills", None), "codify", None)
+        if _codify_cfg is None or not getattr(_codify_cfg, "enabled", False):
+            return
+        from deskpet.skills.skill_codifier import SkillCodifier as _SCodifier
+        _tp_rec = service_context.get("tool_path_recorder")
+        _sc_loader = service_context.get("skill_loader")
+        _sc_candidate_store = service_context.get("skill_candidate_store")
+        if _tp_rec is None or _sc_candidate_store is None:
+            return
+        _sg_store = service_context.get("session_goal_store")
+        _sc_goal_id = None
+        if _sg_store is not None:
+            _ag = getattr(_sg_store, "get_active_goal", None)
+            if callable(_ag):
+                _ag_obj = _ag(sid)
+                if _ag_obj is not None:
+                    _sc_goal_id = getattr(_ag_obj, "goal_id", None)
+        if _sc_goal_id is None:
+            _sc_goal_id = sid
+        _sc_goal_text = ""
+        if _sg_store is not None:
+            _gt_fn = getattr(_sg_store, "get_goal_text", None)
+            if callable(_gt_fn):
+                _sc_goal_text = _gt_fn(sid) or ""
+        # complete() 把 agent_loop 录得的 _active 工具步快照成 ToolPath（pop）。
+        # 无录步 → steps=[] → 不提候选（trivial turn）。idempotent：第二次调
+        # （FinalEvent 后 ErrorEvent 不会重复触发，因 _active 已被 pop 空）。
+        _tp = _tp_rec.complete(sid, goal_id=_sc_goal_id, goal_text=_sc_goal_text)
+        if _tp is None or not _tp.steps:
+            return
+        _sc_user_dir = None
+        if _sc_loader is not None:
+            _dirs = getattr(_sc_loader, "_dirs", [])
+            if len(_dirs) >= 2:
+                _sc_user_dir = _dirs[1]
+        if _sc_user_dir is None:
+            return
+        _llm_for_codify = service_context.get("llm_registry")
+        if _llm_for_codify is None:
+            return
+
+        async def _make_codify_llm_call(prompt: str) -> str:
+            from llm.types import ChatResponse as _CR
+            _cr: _CR = await _llm_for_codify.chat_with_fallback(
+                [{"role": "user", "content": prompt}], model=None,
+            )
+            return _cr.content or ""
+
+        _codifier = _SCodifier(
+            candidate_store=_sc_candidate_store,
+            user_skill_dir=_sc_user_dir,
+            llm_call=_make_codify_llm_call,
+            skill_loader=_sc_loader,
+        )
+        _sc_cid = await _codifier.propose(_tp)
+        if _sc_cid is None:
+            return
+        _sc_pending = await _sc_candidate_store.fetch_pending(_sc_cid)
+        if _sc_pending is None:
+            return
+        await ws.send_json({
+            "type": "skill_candidate_proposed",
+            "payload": {
+                "candidate_id": _sc_cid,
+                "name": _sc_pending.get("name"),
+                "description": _sc_pending.get("description"),
+                "steps": _sc_pending.get("steps", []),
+                "session_id": sid,
+            },
+        })
+        logger.info(
+            "skill_candidate_proposed cid=%d name=%s sid=%s",
+            _sc_cid, _sc_pending.get("name"), sid,
+        )
+        if waiters is not None:
+            import asyncio as _aio_sc
+
+            # Bug#2 修复 (2026-06-11)：confirm 等待拆独立 task。原 300s
+            # Future-await 内联在 chat task 里 → chat_v2_final 已发但 task
+            # 还活着;用户下一条消息触发同 sid 抢占 cancel → 候选 Future
+            # 一起死(卡点击无响应、candidate 永久 pending),且确认期间
+            # chat 被实际占住。独立 task 后:chat task 立即收尾,候选确认
+            # 与后续对话真并行,新消息的 preempt 也伤不到确认链路。
+            _sc_fut = _aio_sc.get_event_loop().create_future()
+            waiters.add(_sc_cid, _sc_fut)
+
+            async def _await_candidate_decision(
+                _cid=_sc_cid, _fut=_sc_fut, _cod=_codifier, _w=waiters
+            ):
+                try:
+                    try:
+                        _decision = await _aio_sc.wait_for(_fut, timeout=300)
+                    except _aio_sc.TimeoutError:
+                        _decision = "reject"
+                        logger.info("skill_candidate_timeout cid=%d", _cid)
+                    finally:
+                        _w.pop(_cid)
+                    await _cod.confirm(_cid, accept=(_decision == "accept"))
+                    logger.info(
+                        "skill_candidate_resolved cid=%d decision=%s", _cid, _decision,
+                    )
+                except Exception as _aw_ex:  # noqa: BLE001 — safe-fail
+                    logger.debug(
+                        "skill_candidate_wait_failed cid=%d err=%s", _cid, _aw_ex
+                    )
+
+            _aio_sc.create_task(_await_candidate_decision())
+    except Exception as _sc_ex:  # noqa: BLE001 — safe-fail
+        logger.debug("skill_codify_hook_failed sid=%s err=%s", sid, _sc_ex)
 
 
 # ─── WI-T2.1 v3 build_agent 工厂（接电 VerifyGate）─────────────────
@@ -652,6 +832,15 @@ def build_agent(
     # Companion+Code v1 — WI-B3 goal_mode 接电
     session_goal_store=None,
     goal_checker=None,
+    # WI-4.0 compaction — pre-built ContextCompressor or None (flag off = BC)
+    compressor=None,
+    # FP-5 缺口 5a (2026-06-06) — WI-4.2 remount + 自动披露接电。两者 None (默认)
+    # → _AgentLoop 跳过 _remount_skills + auto-disclosure（字节级 BC）。
+    skill_loader=None,
+    skill_matcher=None,
+    # FP-5 缺口 2 (2026-06-06) — WI-1.6 工具路径录制喂 FP-5 技能自创。
+    # None (默认) → agent_loop 不喂 recorder（字节级 BC：codify hook complete() 得空 steps → 不提候选）。
+    tool_path_recorder=None,
 ):
     """Build a wired _AgentLoop with optional VerifyGate + ReceiptStore.
 
@@ -687,15 +876,27 @@ def build_agent(
                 RegexExtractor,
                 VerifyGate,
                 load_claim_patterns,
+                make_ephemeral_verifier,
             )
             patterns_path = _Path(verifier_cfg.claim_patterns_file)
             if not patterns_path.is_absolute():
                 # Resolve relative to backend/ (where the default yaml lives)
                 patterns_path = _Path(__file__).parent / patterns_path
             patterns = load_claim_patterns(patterns_path)
+            # WI-2.2: construct ephemeral verifier from cloud/local LLM
+            # provider=None → None → VerifyGate falls back to conservative fail (BC)
+            _ephemeral_llm = _make_str_llm_call(
+                local_llm or cloud_llm, max_tokens=256
+            ) if (local_llm or cloud_llm) else None
+            _ephemeral_subagent = (
+                make_ephemeral_verifier(_ephemeral_llm)
+                if _ephemeral_llm is not None
+                else None
+            )
             verify_gate = VerifyGate(
                 extractor=RegexExtractor(patterns),
                 mode=verifier_cfg.verify_gate_mode,
+                ephemeral_subagent=_ephemeral_subagent,
             )
             logger.info(
                 "verify_gate_init mode=%s patterns=%d path=%s",
@@ -728,6 +929,49 @@ def build_agent(
     except Exception:  # noqa: BLE001
         nudges = 2
 
+    # WI-2.1: read structured_reflection flag from verifier config (default False = BC)
+    use_structured_reflection = (
+        bool(getattr(verifier_cfg, "structured_reflection", False))
+        if verifier_cfg else False
+    )
+
+    # WI-2.4: construct ExternalEvaluator when flag on + provider available.
+    # flag off (default) OR provider=None → None (BC, 0 extra LLM calls).
+    _external_evaluator = None
+    _use_external_evaluator = (
+        bool(getattr(verifier_cfg, "external_evaluator", False))
+        if verifier_cfg else False
+    )
+    if _use_external_evaluator:
+        try:
+            from deskpet.agent.external_evaluator import ExternalEvaluator as _EE  # noqa: PLC0415
+            _evaluator_provider_key = (
+                getattr(verifier_cfg, "evaluator_provider", "default")
+                if verifier_cfg else "default"
+            )
+            # Resolve provider: "default" → reuse local_llm (first positional provider
+            # available in the registry). Same pattern as WI-2.3 judgment LLM.
+            # provider=None → ExternalEvaluator safe-fails (logs evaluator_skipped).
+            _ev_provider = None
+            try:
+                # local_llm is available via the registry's first provider
+                _ev_provider = getattr(llm_registry, "providers", [None])[0] if llm_registry else None
+            except Exception:  # noqa: BLE001
+                pass
+            _ev_llm_call = _make_str_llm_call(_ev_provider, max_tokens=512)
+            # FP-3 R-T3 接线：evaluator 仅对高后果目标触发（is_high_consequence_goal
+            # 门控），故超时/错误时应保守拦截（返 revise）而非放行 —— 高后果场景
+            # 漏放代价远大于误拦。生产构造启用 conservative_on_error（之前默认 False
+            # → R-T3「高后果 evaluator 超时保守拦」分支生产从不触发）。
+            _external_evaluator = _EE(
+                llm_call=_ev_llm_call, conservative_on_error=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — safe-fail
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "external_evaluator construction failed: %s — skipping", exc
+            )
+
     return _AgentLoop(
         llm_registry=llm_registry,
         tool_registry=tool_registry,
@@ -744,6 +988,20 @@ def build_agent(
         # flag OFF 时 store/checker=None → agent_loop 跳过 goal-check（BC）
         session_goal_store=session_goal_store,
         goal_checker=goal_checker,
+        # ─── WI-2.1 结构化反思（flag off = BC）───
+        structured_reflection=use_structured_reflection,
+        # ─── WI-2.4 外部评估器（flag off = BC, None = 0 calls）───
+        external_evaluator=_external_evaluator,
+        # ─── WI-4.0 compaction（flag off = compressor=None = BC）───
+        compressor=compressor,
+        # ─── FP-5 缺口 5a：WI-4.2 remount + 自动披露（flag off = None = BC）───
+        skill_loader=skill_loader,
+        skill_matcher=skill_matcher,
+        # ─── FP-5 缺口 2：WI-1.6 工具路径录制喂技能自创（flag off = None = BC）───
+        tool_path_recorder=tool_path_recorder,
+        # ─── WI-4b pre-flush：压缩前把任务态落 L1(跨 session 记任务)。模块级
+        # _file_memory(L1048)在 build_agent 调用时已就绪；try 失败则 None(BC)。───
+        file_memory=globals().get("_file_memory"),
     )
 
 
@@ -805,6 +1063,28 @@ try:
         model_path=_bge_dir,
         use_mock_when_missing=True,
     )
+
+    # Wire BGE-M3 semantic relevance into deep-research (WI-2.2). The
+    # scorer returns cosine(topic, passage) ∈ [0,1] per passage so
+    # research_run blends it into relevance. Skipped when the embedder is
+    # the mock (hash vectors carry no semantics) → keyword-only fallback.
+    try:
+        import numpy as _np
+        from deskpet.tools import research_tools as _rt_sem
+
+        async def _research_semantic(query: str, passages: list[str]) -> list[float]:
+            if _embedder.is_mock() or not passages:
+                return []
+            vecs = await _embedder.encode([query] + list(passages))
+            arr = _np.asarray(vecs, dtype="float32")
+            norms = _np.linalg.norm(arr, axis=1, keepdims=True)
+            arr = arr / _np.clip(norms, 1e-8, None)
+            qv, pv = arr[0], arr[1:]
+            return [float(x) for x in pv @ qv]
+
+        _rt_sem.set_semantic_scorer(_research_semantic)
+    except Exception as _exc:  # noqa: BLE001 — research degrades to keyword
+        logger.debug("research_semantic_wiring_skipped", error=str(_exc))
 
     # P4-S15: SessionDB at <data>/state.db, side-by-side with the legacy
     # memory.db. on_message_written hook will be wired to VectorWorker.enqueue
@@ -873,11 +1153,13 @@ try:
                 cross_key_merge=_cross_key_enabled,
                 cross_key_llm=_facts_llm,
                 embedder=_embedder,
+                goal_facts=_v2_cfg.goal_facts,  # FP-4 WI-3.1
             )
             logger.info(
                 "p4_fact_extractor_ready",
                 min_chars=_v2_cfg.facts.min_user_chars,
                 cross_key_merge=_cross_key_enabled,
+                goal_facts=_v2_cfg.goal_facts,
             )
         else:
             logger.info("p4_fact_extractor_skipped", reason="no_llm_provider")
@@ -1072,6 +1354,12 @@ try:
             from deskpet.agent.goal_checker import GoalChecker as _GC
             _session_goal_store = _GS()
             _goal_checker = _GC(llm_call=_make_str_llm_call(local_llm or cloud_llm))
+            # R-T1：接电持久化。_session_db 在上方已构造。
+            try:
+                _session_goal_store.bind_persistence(_session_db)
+                logger.info("goal_store_bound_persistence")
+            except Exception as _bp_exc:  # noqa: BLE001
+                logger.warning("goal_store_bind_persistence_failed: %s", _bp_exc)
             logger.info("companion_code_v1_goal_mode_ready")
         except Exception as _gm_exc:  # noqa: BLE001
             logger.warning("companion_code_v1_goal_mode_init_failed: %s", _gm_exc)
@@ -1079,6 +1367,194 @@ try:
             _goal_checker = None
     service_context.register("session_goal_store", _session_goal_store)
     service_context.register("goal_checker", _goal_checker)
+
+    # WI-4.0 compaction：ContextCompressor 构造 + 注入 build_agent。
+    # flag OFF（默认）→ _context_compressor = None → AgentLoop BC（不调）。
+    # flag ON → 真构造；build_agent 工厂从 service_context 取并传给 AgentLoop。
+    _context_compressor = None
+    _compaction_enabled = bool(
+        getattr(getattr(config, "features", None), "compaction_enabled", False)
+    )
+    if _compaction_enabled:
+        try:
+            from deskpet.agent.context_compressor import (
+                ContextCompressor as _CtxCompressor,
+            )
+            # context_window default 32000 for relay models; threshold 0.75.
+            # Use the already-constructed local_llm (haiku-scale) for the
+            # summary call so we don't spin up a new connection.
+            # FP-2 真机修复: compressor 调 chat_with_fallback,而裸 provider
+            # (OpenAICompatibleProvider) 没有该方法 → AttributeError 被
+            # safe-fail 吞掉,压缩永远失败(should_compress 过了也白过)。
+            # 复用 codify 同款 shim 包装(见下方 _CodifyShim 注释,同一个坑)。
+            from agent.tool_use_shim import (
+                OpenAICompatibleAgentLLM as _CmpShim,
+            )
+            _compactor_llm = local_llm or cloud_llm
+            # 2026-06-12: 压缩窗口不再 hardcode 32000 —— 按当前主模型经
+            # model_info 三层解析(BUILTIN ← 用户档位 override)。用户在
+            # 「模型与参数」面板选 1M 档后,重启即对压缩阈值生效。
+            _cmp_window, _cmp_threshold, _cmp_eff_pct = 32000, 0.75, 0.95
+            try:
+                from llm import model_info as _mi_cmp
+                # P-B 修复: 用有效出站模型(运行时覆盖后,如 gpt-5.5)解析压缩窗口,而非
+                # config.raw 旧种子(gemma 32K)→ 否则按错模型阈值过早压缩浪费大窗口。
+                _cmp_model = effective_llm_model(config).strip()
+                if _cmp_model:
+                    _cmp_info = _mi_cmp.resolve(_cmp_model)
+                    _cmp_window = int(_cmp_info.context_window)
+                    _cmp_threshold = float(_cmp_info.compact_at_pct)
+                    # WI-1: effective_pct 供 buffer 触发公式(剩余 token buffer)。
+                    _cmp_eff_pct = float(_cmp_info.effective_pct)
+            except Exception as _cmp_exc:  # noqa: BLE001
+                logger.warning(
+                    "compaction_window_resolve_failed err=%s — fallback 32000",
+                    str(_cmp_exc)[:120],
+                )
+            _context_compressor = _CtxCompressor(
+                llm_registry=(
+                    _CmpShim(provider=_compactor_llm)
+                    if _compactor_llm is not None else None
+                ),
+                context_window=_cmp_window,
+                threshold_percent=_cmp_threshold,
+                effective_pct=_cmp_eff_pct,
+            )
+            logger.info(
+                "wi4_0_compaction_enabled context_window=%d threshold=%.2f eff_pct=%.2f"
+                % (_cmp_window, _cmp_threshold, _cmp_eff_pct)
+            )
+        except Exception as _cmp_init_exc:  # noqa: BLE001
+            logger.warning(
+                "wi4_0_compaction_init_failed err=%s — disabled",
+                _cmp_init_exc,
+            )
+            _context_compressor = None
+    service_context.register("context_compressor", _context_compressor)
+
+    # ─── goal-completion FP-5 接线修复 (2026-06-06) ──────────────────────────
+    # 独立验收发现 codify hook (main.py:5836/5838/5859) + remount/auto-disclosure
+    # 接线引用的 3 个 service (tool_path_recorder / skill_candidate_store /
+    # llm_registry) + skill_matcher 在 lifespan 从未构造/注册 → get() 抛
+    # ValueError("Unknown service") 被 try/except 吞 → WI-4.1/4.2/4.3 真机 no-op。
+    # 修法：flag ON 时构造真实例 register；flag OFF 时一律 register(None) 占位
+    # （保字节级 BC + 让 get() 不抛）。所有新构造都 flag-gated。
+    #
+    # 缺口 2 — ToolPathRecorder (WI-1.6)：录工具路径喂 4.3 自创。codify flag ON
+    # 才构造。喂数据接线已补全（2026-06-06）：build_agent → _AgentLoop(tool_path_recorder=)
+    # → agent_loop 每个 tool_result 调 record_tool(name, ok)；codify hook 在 run 结束
+    # 调 complete() 快照 → get/complete 返回非空 ToolPath，真机自创端到端可触发。
+    _tool_path_recorder = None
+    _skill_candidate_store = None
+    _llm_registry_for_codify = None
+    _codify_flag = bool(
+        getattr(getattr(getattr(config, "skills", None), "codify", None), "enabled", False)
+    )
+    if _codify_flag:
+        try:
+            from deskpet.agent.tool_path import ToolPathRecorder as _TPRecorder
+            from deskpet.skills.skill_codifier import (
+                SkillCandidateStore as _SCStore,
+            )
+            from agent.tool_use_shim import OpenAICompatibleAgentLLM as _CodifyShim
+            _tool_path_recorder = _TPRecorder()
+            # 缺口 3 — SkillCandidateStore：pending 候选独立表 (pending_skill_
+            # candidates)，与 SkillMemoryStore 同 state.db，lazy _ensure_table
+            # （首写才建表 → flag-OFF 字节基线不受影响）。
+            _skill_candidate_store = _SCStore(_state_db_path)
+            # 缺口 4 — llm_registry：codify hook 需 chat_with_fallback(...) ->
+            # ChatResponse。复用 chat handler 同款 OpenAICompatibleAgentLLM shim
+            # （provider_registry 是 [[llm.providers]] 配置管理器，无 chat_with_
+            # fallback → 不可复用）。绑定已构造的 local_llm/cloud_llm provider。
+            _codify_provider = local_llm or cloud_llm
+            if _codify_provider is not None:
+                _llm_registry_for_codify = _CodifyShim(provider=_codify_provider)
+            logger.info(
+                "fp5_codify_wiring_ready tool_path=%s candidate_store=%s llm=%s",
+                _tool_path_recorder is not None,
+                _skill_candidate_store is not None,
+                _llm_registry_for_codify is not None,
+            )
+        except Exception as _codify_wire_exc:  # noqa: BLE001
+            logger.warning(
+                "fp5_codify_wiring_failed err=%s — disabled", _codify_wire_exc
+            )
+            _tool_path_recorder = None
+            _skill_candidate_store = None
+            _llm_registry_for_codify = None
+    service_context.register("tool_path_recorder", _tool_path_recorder)
+    service_context.register("skill_candidate_store", _skill_candidate_store)
+    service_context.register("llm_registry", _llm_registry_for_codify)
+
+    # 缺口 5c — SkillMatcher (WI-4.1)：embedding 相似度披露 + remount。
+    # auto_disclosure flag ON 才构造 SkillMatcher(embedder).build(loader.all())
+    # 并注入给 SkillComponent（下方 build_default_assembler 调用）+ build_agent (缺口 5a/5b)。
+    # flag OFF → matcher=None → SkillComponent / agent_loop 全程降级 desc-only (BC)。
+    _skill_matcher = None
+    _auto_disclosure_flag = bool(
+        getattr(
+            getattr(getattr(config, "skills", None), "auto_disclosure", None),
+            "enabled",
+            False,
+        )
+    )
+    if _auto_disclosure_flag:
+        try:
+            from deskpet.skills.skill_matcher import SkillMatcher as _SkillMatcher
+            _skill_matcher = _SkillMatcher(embedder=_embedder)
+            # TC-5.1 修复 (2026-06-11)：生产 embedder.encode 是 async，原 sync
+            # build() 是静默 no-op（缓存恒空）。这里是 module-level（无运行
+            # loop），真正的 build_async 预热在 lifespan 里 create_task
+            # （锚点 fp5_skill_matcher_prewarmed）。
+            logger.info("fp5_auto_disclosure_wiring_ready matcher=%s", True)
+        except Exception as _ad_wire_exc:  # noqa: BLE001
+            logger.warning(
+                "fp5_auto_disclosure_wiring_failed err=%s — disabled", _ad_wire_exc
+            )
+            _skill_matcher = None
+    # matcher/loader 注入 SkillComponent 在下方 build_default_assembler 调用处
+    # （缺口 5c）；注入 build_agent 在 chat handler 处取用（缺口 5a/5b）。
+    service_context.register("skill_matcher", _skill_matcher)
+
+    # FP-4 B-10：goal→facts 双写钩接电。
+    # 条件：goal_mode ON + goal_facts_hook flag ON + 两个 store 都已构造。
+    # goal_store 不 import facts（§1.7 冻结约束）→ 通过 bind_on_goal_set 注入 callback。
+    _goal_facts_hook_flag = bool(getattr(_v2_cfg, "goal_facts_hook", False))
+    if (
+        _session_goal_store is not None
+        and _facts_store is not None
+        and _goal_facts_hook_flag
+    ):
+        try:
+            _fs_ref = _facts_store  # closure capture
+
+            async def _goal_to_facts(sid: str, text: str) -> None:
+                """单向钩：goal set → facts upsert(category=goal, scope=session)。
+
+                TC-4.5 修复: 用 upsert_replacing 而非裸 upsert —— 后者是纯
+                INSERT,真机同 key 堆了 15 行全 active;replacing 版保证
+                goal_<sid> 始终单条 active,旧目标走 supersede 链。
+                """
+                try:
+                    await _fs_ref.upsert_replacing(
+                        category="goal",
+                        subject="user",
+                        key=f"goal_{sid}",
+                        value=text,
+                        confidence=0.9,
+                        source_msg_id=None,
+                        evidence=f"goal set for session {sid}",
+                        scope="session",
+                    )
+                except Exception as _upsert_exc:  # noqa: BLE001 — safe-fail
+                    logger.warning(
+                        "goal_to_facts_upsert_failed sid=%s: %s", sid, _upsert_exc
+                    )
+
+            _session_goal_store.bind_on_goal_set(_goal_to_facts)
+            logger.info("b10_goal_facts_hook_bound")
+        except Exception as _b10_exc:  # noqa: BLE001 — safe-fail
+            logger.warning("b10_goal_facts_hook_bind_failed: %s", _b10_exc)
 
     # P4-S14 + S15: ContextAssembler — pass embedder so TaskClassifier can
     # use the embed-tier route (rule → embed → llm cascade). When BGE-M3
@@ -1107,6 +1583,7 @@ try:
             _workspace_mem_store = None
 
     from deskpet.agent.assembler import build_default_assembler as _build_assembler
+    _persona_inject_flag = bool(getattr(_v2_cfg, "persona_inject", False))
     _assembler = _build_assembler(
         embedder=_embedder,
         llm_registry=None,
@@ -1114,6 +1591,27 @@ try:
         context_window=32_000,
         budget_ratio=0.6,
         workspace_memory_store=_workspace_mem_store,
+        # FP-4 WI-3.2：人格画像注入（flag 关 → component 空转，BC）。
+        facts_store=_facts_store if _persona_inject_flag else None,
+        persona_inject=_persona_inject_flag,
+        # FP-5 缺口 5c (2026-06-06)：auto_disclosure flag ON 时注入 matcher/loader
+        # → SkillComponent 真做 embedding 披露；flag OFF → 两者 None → desc-only (BC)。
+        skill_matcher=_skill_matcher,
+        skill_loader=_skill_loader,
+        # FP-5 缺口 5j (2026-06-06 子代理复评)：把 auto_disclosure 配置交给
+        # assembler 当 assemble() 的 default_config → 任何 venue（文字 _run_chat /
+        # 语音 voice_pipeline / 未来新增）都自动拿到 skills 配置，根治 venue-miss
+        # （原靠各调用方各自传 → 语音 venue 漏传，第 8 处同根 bug）。
+        auto_disclosure_config=(
+            {
+                "enabled": bool(config.skills.auto_disclosure.enabled),
+                "strong_threshold": float(config.skills.auto_disclosure.strong_threshold),
+                "budget_tokens": int(config.skills.auto_disclosure.budget_tokens),
+                "per_skill_max_tokens": int(config.skills.auto_disclosure.per_skill_max_tokens),
+            }
+            if getattr(getattr(config, "skills", None), "auto_disclosure", None)
+            else None
+        ),
     )
     service_context.register("context_assembler", _assembler)
 
@@ -1470,6 +1968,14 @@ async def lifespan(app: FastAPI):
             )
         except Exception as exc:
             logger.warning("code_sessions_restore_failed", error=str(exc))
+    # R-T1：goal_store 启动恢复（重启仍在的核心路径）。
+    _gs_for_restore = service_context.get("session_goal_store")
+    if _gs_for_restore is not None:
+        try:
+            _n = await _gs_for_restore.load_persisted()
+            logger.info("goal_store_load_persisted restored=%d", _n)
+        except Exception as _lp_exc:  # noqa: BLE001
+            logger.warning("goal_store_load_persisted_failed: %s", _lp_exc)
     _mm = service_context.get("memory_manager")
     if _mm is not None:
         try:
@@ -1477,6 +1983,16 @@ async def lifespan(app: FastAPI):
             logger.info("p4_memory_manager_ready")
         except Exception as exc:
             logger.warning("p4_memory_manager_init_failed", error=str(exc))
+    # FP-4 WI-3.3 ★ FIX BUG: FactsStore.daily_decay() was never called in prod.
+    # Apply once at startup (mirrors retriever's "run once at startup" convention).
+    # Pinned facts are skipped (WI-3.3). Failure is non-fatal — only logs.
+    _fs_for_decay = service_context.get("facts_store")
+    if _fs_for_decay is not None:
+        try:
+            _decay_n = await _fs_for_decay.daily_decay()
+            logger.info("p4_facts_daily_decay_startup", mutated=_decay_n)
+        except Exception as _dd_exc:  # noqa: BLE001
+            logger.warning("p4_facts_daily_decay_failed", error=str(_dd_exc))
     _sl = service_context.get("skill_loader")
     if _sl is not None:
         try:
@@ -1484,6 +2000,21 @@ async def lifespan(app: FastAPI):
             logger.info("p4_skill_loader_ready", count=len(_sl.list_skills()))
         except Exception as exc:
             logger.warning("p4_skill_loader_start_failed", error=str(exc))
+    # TC-5.1 修复 (2026-06-11)：SkillMatcher 缓存预热。module-level 的 sync
+    # build() 对 async 生产 embedder 是静默 no-op → 这里 loader 启动后台跑
+    # build_async（encode 内部自动 warmup embedder，不阻塞启动）。失败无害——
+    # match_async 仍会逐 turn 惰性建缓存。
+    _sm_for_prewarm = service_context.get("skill_matcher")
+    if _sm_for_prewarm is not None and _sl is not None:
+        async def _skill_matcher_prewarm_bg() -> None:
+            try:
+                _n = await _sm_for_prewarm.build_async(_sl.all())
+                logger.info("fp5_skill_matcher_prewarmed", cached=_n)
+            except Exception as _pw_exc:  # noqa: BLE001
+                logger.warning("fp5_skill_matcher_prewarm_failed", error=str(_pw_exc))
+
+        # fire-and-forget; we deliberately don't await (same as embedder warmup)
+        asyncio.create_task(_skill_matcher_prewarm_bg())
     # P4-S15: Embedder warmup runs in the background so cold-start isn't
     # blocked by 286 MB of BGE-M3 weights. Mock fallback returns instantly.
     _emb = service_context.get("embedder")
@@ -1496,6 +2027,18 @@ async def lifespan(app: FastAPI):
                 logger.warning("p4_embedder_warmup_failed", error=str(exc))
         # fire-and-forget; we deliberately don't await
         asyncio.create_task(_embedder_warmup_bg())
+    # Option A (2026-06-05): 首启模型下载。瘦包(DESKPET_BUNDLE_MODELS=0)不内嵌
+    # 模型 → 后台 daemon 线程从 hf-mirror 拉缺失的 bge-m3 / faster-whisper。
+    # 注册到 service_context 供 p4_ipc 的 model_provision_status 探针读取；
+    # start_background 幂等。失败不阻塞启动（ASR/记忆各自有降级）。
+    try:
+        from deskpet.model_provisioner import ModelProvisioner
+        _provisioner = ModelProvisioner()
+        service_context.register("model_provisioner", _provisioner)
+        _provisioner.start_background()
+        logger.info("model_provisioner_started")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("model_provisioner_start_failed", error=str(exc))
     # superpowers Layer 1B — PreferenceMemory（BGE-M3 语义偏好记忆）。
     # flag OFF（默认）→ 不构造 → plan-confirm 门每次都等确认（现状）。
     # 需要真 embedder（embed 接口）；mock 也能跑（向量稳定可匹配）。
@@ -1505,6 +2048,7 @@ async def lifespan(app: FastAPI):
             _pref_mem = PreferenceMemory(
                 _paths.user_data_dir() / "preference_memory.json",
                 _emb.embed,
+                pref_decay=bool(config.memory.v2.pref_decay),
             )
             service_context.register("preference_memory", _pref_mem)
             logger.info(
@@ -2114,6 +2658,15 @@ async def lifespan(app: FastAPI):
                     except Exception as _ex:  # noqa: BLE001
                         logger.debug("auto_resume_audit_failed err=%s", _ex)
 
+                # WI-1.5：resume 注入原 goal_text（窄版）。从 service_context
+                # 取活跃 goal store（goal_mode OFF → None → getter 返 None → BC）。
+                def _goal_text_getter_for_resume(_sid: str):
+                    _gs = service_context.get("session_goal_store")
+                    try:
+                        return _gs.get_goal_text(_sid) if _gs is not None else None
+                    except Exception:  # noqa: BLE001 — safe-fail, 不阻 resume
+                        return None
+
                 _orch = _AROrch(
                     supervisor=_supervisor_agent,
                     chat_dispatcher=_auto_resume_dispatch,
@@ -2122,6 +2675,7 @@ async def lifespan(app: FastAPI):
                     enabled=bool(_sup_cfg.get("auto_resume_enabled", True)),
                     ws_emitter=_auto_resume_emit,
                     audit_writer=_auto_resume_audit,
+                    goal_text_getter=_goal_text_getter_for_resume,
                 )
                 service_context.register("auto_resume", _orch)
                 logger.info(
@@ -3729,9 +4283,9 @@ async def control_channel(ws: WebSocket):
                     # the first real turn lands.
                     try:
                         from llm.model_info import resolve as _resolve_model_for_stub
-                        # Best-effort: use whatever model the local llm
-                        # is configured for (config.toml [llm].model).
-                        _stub_model = (config.raw.get("llm") or {}).get("model") or ""
+                        # P-B 修复: 用有效出站模型(运行时覆盖后)发给前端 context_usage 环,
+                        # 而非 config.raw 旧种子 → 否则前端模型环显示旧 gemma 名 + 错窗口。
+                        _stub_model = effective_llm_model(config)
                         _info = _resolve_model_for_stub(_stub_model) if _stub_model else None
                         _cw = int(_info.context_window) if _info else 32_000
                         _eff = float(_info.effective_pct) if _info else 0.95
@@ -3973,6 +4527,23 @@ async def control_channel(ws: WebSocket):
                             "plan_confirm_clear_failed sid=%s err=%s", _csid, _pc_e
                         )
 
+            elif msg_type == "skill_candidate_confirm":
+                # WI-4.3 技能自创闭环 — 前端确认/拒绝候选技能。
+                # 与 plan_confirm 镜像：set_result 唤醒 _run_chat 末段挂起的协程。
+                # payload: {candidate_id: int, accept: bool}
+                _sc_payload = raw.get("payload", {}) or {}
+                _sc_cid = int(_sc_payload.get("candidate_id", 0) or 0)
+                _sc_accept = bool(_sc_payload.get("accept", False))
+                _sc_decision = "accept" if _sc_accept else "reject"
+                if _SKILL_CANDIDATE_WAITERS is not None:
+                    _SKILL_CANDIDATE_WAITERS.resolve(_sc_cid, _sc_decision)
+                    logger.info(
+                        "skill_candidate_confirm_received cid=%d decision=%s",
+                        _sc_cid, _sc_decision,
+                    )
+                else:
+                    logger.debug("skill_candidate_confirm: waiters not initialized")
+
             elif msg_type == "code_session_delete":
                 # P4-S24 followup: user clicked 🗑️ on a project tile / sidebar
                 # entry and confirmed the dialog. Drop the in-memory state
@@ -4153,6 +4724,14 @@ async def control_channel(ws: WebSocket):
                         "base_url": _base_url,
                     },
                 })
+
+            # 2026-06-13: 此处原有一个简版 "model_context_set" 分支(只认
+            # {model, context_window}) —— 它在 elif 链里抢在 p4_ipc(6456)
+            # 之前,把 ModelContextCard 的完整协议请求({scope, model,
+            # fields})劫持并报错,坏了设置卡的保存两天。已删,统一走
+            # p4_ipc 完整版(fields 白名单含 context_window/compact_at_pct,
+            # scope global/project 深合并 TOML)。ChangeModelModal 的档位
+            # 选择也已改发完整协议。
 
             elif msg_type in (
                 "settings_providers_list_request",
@@ -4714,6 +5293,34 @@ async def control_channel(ws: WebSocket):
                                         "persona_model_resolve_skipped sid=%s err=%s",
                                         _sid, _pm_exc,
                                     )
+                            # FP-5 缺口 5d (2026-06-06 真机抓 bug)：assemble() 传的
+                            # config dict 原先只带 llm/code_mode，**漏带 skills**→
+                            # SkillComponent._read_auto_disclosure_config 读不到
+                            # auto_disclosure → auto_enabled 恒 False → 自动披露
+                            # （WI-4.1/4.2）生产运行时永不发生（matcher/loader 注入了也白搭）。
+                            # 同 [skills.codify] 漏解析一类的跨层契约漂移。补回 skills 段。
+                            _ad_cfg_dict: dict = {}
+                            try:
+                                _ad = config.skills.auto_disclosure
+                                _ad_cfg_dict = {
+                                    "auto_disclosure": {
+                                        "enabled": bool(_ad.enabled),
+                                        "strong_threshold": float(_ad.strong_threshold),
+                                        "budget_tokens": int(_ad.budget_tokens),
+                                        "per_skill_max_tokens": int(_ad.per_skill_max_tokens),
+                                    }
+                                }
+                            except Exception:  # noqa: BLE001
+                                _ad_cfg_dict = {}
+                            # FP-5 缺口 5f (2026-06-06 真机)：code 会话应确定性走
+                            # `code` policy（含 skill → 自动披露生效），而非靠用户
+                            # 文本分类（"整理会议纪要生成PPT" 会落到 chat → 无 skill）。
+                            # code_mode 开 → task_type_override="code"，让 SkillComponent
+                            # 在 code 会话稳定 fan-out（codify 在 code 造技能，disclosure
+                            # 也必须在 code 召回，闭环一致）。
+                            _tt_override = (
+                                "code" if _code_cfg.get("enabled") else None
+                            )
                             _bundle = await _assembler.assemble(
                                 user_message=_text,
                                 memory_manager=service_context.get("memory_manager"),
@@ -4721,12 +5328,14 @@ async def control_channel(ws: WebSocket):
                                 skill_registry=service_context.get("skill_loader"),
                                 mcp_manager=service_context.get("mcp_manager"),
                                 session_id=_sid,
+                                task_type_override=_tt_override,
                                 config={
                                     "llm": {
                                         "model": _persona_model,
                                         "base_url": _persona_base,
                                     },
                                     "code_mode": _code_cfg,
+                                    "skills": _ad_cfg_dict,
                                 },
                             )
                             if _bundle is not None and _bundle.decisions is not None:
@@ -5299,6 +5908,15 @@ async def control_channel(ws: WebSocket):
                         # Companion+Code v1 WI-B3: 拉 goal_mode 接电资产 (None when flag OFF)
                         _goal_store_for_agent = service_context.get("session_goal_store")
                         _goal_checker_for_agent = service_context.get("goal_checker")
+                        # WI-4.0 compaction: None when flag off (BC)
+                        _compressor_for_agent = service_context.get("context_compressor")
+                        # FP-5 缺口 5b (2026-06-06)：取 skill_loader/skill_matcher 传
+                        # build_agent → _AgentLoop 真做 WI-4.2 remount + 自动披露。
+                        # flag OFF → matcher=None → 降级 desc-only（字节级 BC）。
+                        _skill_loader_for_agent = service_context.get("skill_loader")
+                        _skill_matcher_for_agent = service_context.get("skill_matcher")
+                        # FP-5 缺口 2：WI-1.6 工具路径录制器（flag off → None → BC）
+                        _tp_recorder_for_agent = service_context.get("tool_path_recorder")
                         _agent = build_agent(
                             config,
                             llm_registry=_shim,
@@ -5311,6 +5929,10 @@ async def control_channel(ws: WebSocket):
                             signature_repeat_threshold=_sig_repeat_thr,
                             session_goal_store=_goal_store_for_agent,
                             goal_checker=_goal_checker_for_agent,
+                            compressor=_compressor_for_agent,
+                            skill_loader=_skill_loader_for_agent,
+                            skill_matcher=_skill_matcher_for_agent,
+                            tool_path_recorder=_tp_recorder_for_agent,
                         )
                         # P4-S25 A1: stream by default — gives the user
                         # instant visible feedback on thinking-mode
@@ -5427,7 +6049,12 @@ async def control_channel(ws: WebSocket):
                                 # AND a code-panel-friendly `tool_call`
                                 # event so the new MessageStream renders
                                 # ToolCallCard inline.
-                                await _ws.send_json({
+                                # 2026-06-12: 工具事件也要广播给 default 会话
+                                # 的 peer 窗口(消息面板) —— 之前只发起方窗口
+                                # 能看到工具执行过程,面板里"后台在干活但
+                                # 什么都不显示",用户体验差。与 chat_v2_delta
+                                # 同模式 fan-out。
+                                _tue_msg = {
                                     "type": "tool_use_event",
                                     "payload": {
                                         "kind": "request",
@@ -5436,8 +6063,10 @@ async def control_channel(ws: WebSocket):
                                         "turn": ev.iteration,
                                         "session_id": _sid,
                                     },
-                                })
-                                await _ws.send_json({
+                                }
+                                await _ws.send_json(_tue_msg)
+                                await _broadcast_default_chat_peers(_ws, _tue_msg)
+                                _tc_msg = {
                                     "type": "tool_call",
                                     "payload": {
                                         "name": ev.tool_call.name,
@@ -5445,7 +6074,9 @@ async def control_channel(ws: WebSocket):
                                         "turn": ev.iteration,
                                         "session_id": _sid,
                                     },
-                                })
+                                }
+                                await _ws.send_json(_tc_msg)
+                                await _broadcast_default_chat_peers(_ws, _tc_msg)
                                 # P6 bugfix 2026-05-14 (history persistence):
                                 # tool_call 也要入 SessionDB，否则重启或 F5 后
                                 # UI 只能看到 user 气泡，看不到 agent 调用过
@@ -5480,7 +6111,9 @@ async def control_channel(ws: WebSocket):
                                     _parsed = json.loads(ev.result)
                                 except Exception:
                                     _parsed = ev.result
-                                await _ws.send_json({
+                                # 2026-06-12: 同 tool_call —— 结果事件也广播
+                                # 给消息面板 peer,工具执行全过程两窗一致。
+                                _tur_msg = {
                                     "type": "tool_use_event",
                                     "payload": {
                                         "kind": "result",
@@ -5489,8 +6122,10 @@ async def control_channel(ws: WebSocket):
                                         "turn": ev.iteration,
                                         "session_id": _sid,
                                     },
-                                })
-                                await _ws.send_json({
+                                }
+                                await _ws.send_json(_tur_msg)
+                                await _broadcast_default_chat_peers(_ws, _tur_msg)
+                                _tr_msg = {
                                     "type": "tool_result",
                                     "payload": {
                                         "tool": ev.tool_name,
@@ -5499,7 +6134,9 @@ async def control_channel(ws: WebSocket):
                                         "turn": ev.iteration,
                                         "session_id": _sid,
                                     },
-                                })
+                                }
+                                await _ws.send_json(_tr_msg)
+                                await _broadcast_default_chat_peers(_ws, _tr_msg)
                                 # P6 bugfix 2026-05-14 (history persistence):
                                 # tool_result 也要入 SessionDB (role='tool'
                                 # + tool_call_id 回指 assistant 的调用)。
@@ -5610,6 +6247,13 @@ async def control_channel(ws: WebSocket):
                                             )
                                 except Exception as _ex:  # noqa: BLE001
                                     logger.debug("auto_resume_success_emit_failed sid=%s err=%s", _sid, _ex)
+
+                                # WI-4.3 技能自创闭环（方案 B：codify 抽 helper，FinalEvent +
+                                # ErrorEvent 两处调 → turn 任意路径结束都触发技能自创）。
+                                await _maybe_codify_skill(
+                                    service_context, config, _sid, _ws, _SKILL_CANDIDATE_WAITERS,
+                                )
+
                             elif isinstance(ev, _ErrEv):
                                 # P5-S2 Phase 4: try AutoResumeOrchestrator
                                 # FIRST for recoverable error reasons. If
@@ -5665,6 +6309,13 @@ async def control_channel(ws: WebSocket):
                                             "error_class": getattr(ev, "error_class", "") or "",
                                         },
                                     })
+
+                                # WI-4.3 方案 B：turn 经 ErrorEvent（relay ReadError /
+                                # 中止 / 迭代上限）结束时也触发 codify —— 若本 run 已跑
+                                # ≥5 工具，仍能弹技能自创卡（不依赖 turn 干净到 FinalEvent）。
+                                await _maybe_codify_skill(
+                                    service_context, config, _sid, _ws, _SKILL_CANDIDATE_WAITERS,
+                                )
 
                         # P4-S24: assistant persistence moved INTO the
                         # FinalEvent handler above so a same-sid task
@@ -6134,6 +6785,9 @@ async def audio_channel(ws: WebSocket):
         # VOICE-MSGPANEL-SYNC: 注入实时解析 originator 的语音广播器（_voice_broadcast
         # 在上面定义，闭包捕获 session_id，广播时实时取发起窗口 control_ws 作 skip 目标）。
         broadcast=_voice_broadcast,
+        # FP-5 缺口 5k：传 AppConfig 让语音 venue 走 build_agent 工厂（接 verify_gate
+        # + codify + skill 披露/重挂），与文字 venue 对齐。
+        app_config=config,
     )
     # Register so control-channel `interrupt` messages can reach us.
     _pipelines[session_id] = pipeline

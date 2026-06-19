@@ -169,16 +169,37 @@ def auto_temp_path(prefix: str, suffix: str) -> Path:
     return _temp_dir() / name
 
 
+def _default_output_path(prefix: str, suffix: str, kind: str) -> Path:
+    """No path given → land under ``<user_data>/OutPut/<kind>/`` (user can
+    actually find it) with a collision-proof name. Falls back to the system
+    temp dir if the paths module is unavailable (standalone scripts) or the
+    OutPut dir can't be created (read-only profile)."""
+    if kind:
+        try:
+            from paths import output_dir  # type: ignore[import-not-found]
+
+            ts = int(time.time())
+            uniq = _short_hash(_next_seed_uniq(), 4)
+            return output_dir(kind) / f"{prefix}-{ts}-{uniq}{suffix}"
+        except Exception:  # noqa: BLE001 — fall back to temp
+            pass
+    return auto_temp_path(prefix, suffix)
+
+
 def resolve_for_write(
     p: Optional[str | os.PathLike[str]],
     *,
     default_prefix: str,
     default_suffix: str,
+    default_kind: str = "",
 ) -> Path:
     """Resolve an output path for a *new* file.
 
     Rules:
-      * ``p`` is None  → auto-named file in the system temp dir.
+      * ``p`` is None  → auto-named file. With ``default_kind`` set, lands
+                          under ``<user_data>/OutPut/<kind>/`` (mirrors the
+                          PPT behavior so users can find it); otherwise the
+                          system temp dir.
       * ``p`` given    → its parent directory must be authorized OR be
                           the temp dir; and the path must not fall under
                           a system directory.
@@ -186,7 +207,7 @@ def resolve_for_write(
     Raises :class:`PathError` when the target is not writable per policy.
     """
     if not p:
-        return auto_temp_path(default_prefix, default_suffix)
+        return _default_output_path(default_prefix, default_suffix, default_kind)
 
     target = _norm(p)
     if is_system_path(target):

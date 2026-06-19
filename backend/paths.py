@@ -138,6 +138,22 @@ def user_data_dir() -> Path:
     return Path(platformdirs.user_data_dir(_APP_NAME, appauthor=_APP_AUTHOR, roaming=True))
 
 
+def output_dir(kind: str = "") -> Path:
+    """用户生成物统一输出目录: ``<user_data>/OutPut[/<kind>]``。
+
+    桌宠生成的所有交付物(PPT/文档/图片等)都落这里,按类型分子目录
+    (如 ``OutPut/PPT``),用户好找。目录按需创建;创建失败返回路径本身
+    (调用方写文件时自然报错,不在这里抛)。
+    """
+    base = user_data_dir() / "OutPut"
+    target = base / kind if kind else base
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001 — 只读盘等;调用方写文件时报错
+        pass
+    return target
+
+
 def user_cache_dir() -> Path:
     """Cache directory (HF scratch, temp files).
 

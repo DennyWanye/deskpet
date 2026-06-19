@@ -37,10 +37,20 @@ import {
 } from "./pet-anim/dndDetector";
 import { PetCelebrationBubble } from "./pet-anim/PetCelebrationBubble";
 import { PetDNDBadge } from "./pet-anim/PetDNDBadge";
+import { PetWorkingBubble } from "./components/PetWorkingBubble";
 import { MemoryPanel } from "./components/MemoryPanel";
+import { ModelDownloadBanner } from "./components/ModelDownloadBanner";
 import { ContextBreakdownModal } from "./components/ContextBreakdownModal";
 import { ContextTracePanel } from "./components/ContextTracePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
+import {
+  PET_MODELS,
+  DEFAULT_PET_MODEL_ID,
+  PET_MODEL_LS_KEY,
+  resolvePetModel,
+  fetchPetModels,
+  type PetModel,
+} from "./petModels";
 import { DialogBar } from "./components/DialogBar";
 import { UserBubble } from "./components/UserBubble";
 import { StartupOverlay, type BootState } from "./components/StartupOverlay";
@@ -348,6 +358,10 @@ function App() {
     visible: boolean;
     message: string;
   }>({ visible: false, message: "" });
+  // Tier-1「努力工作」气泡：agent 任务执行期（发消息 / 调工具）→ true，
+  // 仅在 chat_v2_final / chat_v2_error / 用户中断时关。独立于 thinking
+  // 状态（thinking 收到首个 chunk 即关，不适合表达"整个任务期"）。
+  const [working, setWorking] = useState(false);
   // F1 DND active mirror (state so badge re-renders).
   const [dndActiveUI, setDndActiveUI] = useState(false);
   const timeCelebrationRef = useRef(
@@ -623,6 +637,36 @@ function App() {
 
   // P2-1-S3 — settings panel toggle (cloud account / strategy / daily budget).
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 桌宠形象选择（设置面板下拉 + localStorage 记住）。改 petModelId →
+  // 下方 Live2DCanvas 的 key 变 → 组件 remount → init 重跑加载新模型 →
+  // 立即换形象（无需重启 app）。
+  const [petModelId, setPetModelId] = useState<string>(
+    () => localStorage.getItem(PET_MODEL_LS_KEY) ?? DEFAULT_PET_MODEL_ID,
+  );
+  // 动态可用模型清单（vite 插件实时扫 public/assets/live2d/ 生成的
+  // /assets/live2d/models.json）。初始用内置 fallback，挂载后 fetch 真实
+  // 清单覆盖 → 下拉列出所有放进去的模型（加/删模型刷新即生效）。
+  const [availableModels, setAvailableModels] = useState<PetModel[]>(
+    () => [...PET_MODELS],
+  );
+  useEffect(() => {
+    let alive = true;
+    void fetchPetModels().then((models) => {
+      if (alive) setAvailableModels(models);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const petModel = resolvePetModel(availableModels, petModelId);
+  const handlePetModelChange = (id: string): void => {
+    setPetModelId(id);
+    try {
+      localStorage.setItem(PET_MODEL_LS_KEY, id);
+    } catch {
+      /* localStorage 不可用 — 非致命，本次会话内仍切换 */
+    }
+  };
 
   // WI-01 (beta-100): first-run onboarding. `onboardingNeeded` flips
   // true only when Rust reports no completion marker. Conservative on
@@ -730,6 +774,8 @@ function App() {
       case "tool_use_event": {
         // v2 B2 M-1: first stream chunk → exit thinking immediately.
         thinkingObsRef.current.notifyFirstChunk(performance.now());
+        // Tier-1: agent 正在调工具 → 保持「努力工作」气泡。
+        setWorking(true);
         const payload = (lastMessage as any).payload || {};
         const kind = payload.kind || "";
         const tool = payload.tool_name || "";
@@ -772,6 +818,8 @@ function App() {
       case "chat_v2_final": {
         // v2 B2: defensive close in case first_chunk path was missed.
         thinkingObsRef.current.notifyEnd(performance.now());
+        // Tier-1: 任务完成 → 关闭「努力工作」气泡。
+        setWorking(false);
         const finalPayload = (lastMessage as any).payload || {};
         const finalText = finalPayload.text || "(完成)";
         setMessages((prev) => [
@@ -821,6 +869,8 @@ function App() {
       case "chat_v2_error": {
         // v2 B2: error closes thinking state.
         thinkingObsRef.current.notifyEnd(performance.now());
+        // Tier-1: 任务出错 → 关闭「努力工作」气泡。
+        setWorking(false);
         // P4-S22 fix: render whatever the backend sent — `error`
         // (catch-all path), `detail` (AgentLoop ErrorEvent), or
         // `reason`. WI-R5: a relay `error_class` (insufficient_balance /
@@ -1308,6 +1358,8 @@ function App() {
     setLatestUserInput(chatText + "\u200B".repeat(messages.length));
     // v2 B2: enter thinking state right when the request goes out.
     thinkingObsRef.current.notifyStart(performance.now());
+    // Tier-1: 任务发出即进入「努力工作」期，至 final/error/中断才关。
+    setWorking(true);
     // P4-S21 #14: backend unified chat / chat_v2 — both route to tool_use
     // AgentLoop. Always send via sendChatV2 (the toolbar toggle is gone).
     sendChatV2(chatText);
@@ -1335,6 +1387,8 @@ function App() {
     liveRef.current?.flushVisemeQueue();
     liveRef.current?.cancelMouthFade();
     thinkingObsRef.current.notifyEnd(now);
+    // Tier-1: 用户中断 → 关闭「努力工作」气泡。
+    setWorking(false);
   }, [stopPlayback, resetPlaybackBuffer, sendInterrupt]);
 
   useEffect(() => {
@@ -1639,8 +1693,9 @@ function App() {
       {/* 收起控件已回归 panel header 最左（清晰固定边缘）。中缝悬浮
           tab 是糟糕交互（漂在消息内容上、还被裁），已移除。 */}
       <Live2DCanvas
+        key={petModel.id}
         ref={liveRef}
-        modelPath="/assets/live2d/hiyori/Hiyori.model3.json"
+        modelPath={petModel.modelPath}
         onFpsUpdate={handleFpsUpdate}
         mouthOpenY={mouthOpenY}
         // pet 区恒为 282 CSS px（= 改造前小窗宽度）。面板开/关时窗口
@@ -1648,6 +1703,9 @@ function App() {
         // 完全解耦，切换不重排、不闪。
         petWidth={282}
       />
+
+      {/* Tier-1 — agent 任务执行期「努力工作」气泡。 */}
+      <PetWorkingBubble active={working} />
 
       {/* P4-S20 — 权限请求弹窗（最高 zIndex） */}
       <PermissionPopup
@@ -1990,6 +2048,9 @@ function App() {
         getChannel={getControlChannel}
       />
 
+      {/* Option A: 首启模型下载进度（瘦包后台从 hf-mirror 拉模型时显示） */}
+      <ModelDownloadBanner getChannel={getControlChannel} />
+
       {/* 2026-05-31 restore — Context usage breakdown (ring drill-down) */}
       <ContextBreakdownModal
         open={contextModalOpen}
@@ -2025,6 +2086,9 @@ function App() {
         secret={secret}
         onConfigChanged={() => setRouteKind(null)}
         relayAdapter={relayAdapter}
+        petModels={availableModels}
+        currentPetModelId={petModelId}
+        onPetModelChange={handlePetModelChange}
       />
 
       {/* P2-1-S8 budget-exceeded toast */}

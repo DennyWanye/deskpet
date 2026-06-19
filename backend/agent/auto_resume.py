@@ -98,6 +98,8 @@ _AUTO_RESUME_TRIGGER_REASONS: frozenset[str] = frozenset({
     "permanent_tool_error",
     "circuit_open",
     "hallucination",
+    "verify_exhausted",    # WI-2.2: verify 两次重试+ephemeral 都失败 → 升级目标级 spawn 重试
+    "evaluator_revise",   # WI-2.4: external evaluator 判定质量不足 → 目标级 replan
 })
 
 
@@ -127,6 +129,7 @@ class AutoResumeOrchestrator:
         ws_emitter: Optional[WsEmitter] = None,
         audit_writer: Optional[AuditWriter] = None,
         clock: Callable[[], float] = time.time,
+        goal_text_getter: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self._supervisor = supervisor
         self._dispatch = chat_dispatcher
@@ -136,6 +139,7 @@ class AutoResumeOrchestrator:
         self._emit = ws_emitter
         self._audit = audit_writer
         self._clock = clock
+        self._goal_text_getter = goal_text_getter
 
     # Useful for runtime config hot-swap (Phase 6 will wire the toggle).
     def set_enabled(self, value: bool) -> None:
@@ -160,6 +164,13 @@ class AutoResumeOrchestrator:
         if not self._enabled:
             logger.info("auto_resume_skipped sid=%s reason=disabled", sid)
             return AutoResumeResult(action="ask_user", reason="disabled")
+
+        # 注(优化 #4 评审结论): 曾想在此加"fresh user turn 不注入收敛 hint"守卫,
+        # 但实测发现——真正的 max_iterations/circuit runaway 的 original_msgs 也常以
+        # user 消息结尾(见 test_p5s2_auto_resume),**消息栈无法区分"fresh turn"与
+        # "runaway"**,加守卫会误拦合法的 runaway 恢复。用户"压缩后看不到任务"的根因
+        # 是【压缩丢任务】,已由 ContextCompressor 结构化摘要保活当前任务(优化 #2)根治;
+        # auto_resume 的 hint 只是症状。故此处不加 fragile 守卫,根因侧解决。
 
         # 1) Check current attempt counter BEFORE doing anything expensive.
         sa = await self._safe_get_activity(sid)
@@ -218,11 +229,19 @@ class AutoResumeOrchestrator:
 
         # 5) nudge with a real hint → spawn fresh task with hint injected.
         hint_text = sup_action.hint_for_main_agent
-        new_msgs = list(original_msgs) + [{
+        new_msgs = list(original_msgs)
+        _gt = self._goal_text_getter(sid) if self._goal_text_getter else None
+        if _gt:
+            new_msgs.append({
+                "role": "system",
+                "content": f"[goal] 恢复任务，原目标仍是：{_gt}\n继续推进。",
+                "_is_goal_anchor": True,
+            })
+        new_msgs.append({
             "role": "system",
             "content": f"[Supervisor Hint] {hint_text}",
             "_is_supervisor_hint": True,
-        }]
+        })
         new_attempt = await self._activity.increment_auto_resume_attempts(sid)
 
         # Audit BEFORE dispatch — so even a dispatcher crash leaves a row.

@@ -278,10 +278,14 @@ export function InputBar({
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (session?.inflight) {
-        stop();
-      } else {
+      // Bug#2 修复 (2026-06-11)：inflight 时 Enter 原来是 stop() —— 打好的
+      // 字既不发送也不排队还静默打断当前 turn(真机 4 次复现"消息被吞")。
+      // 改为:有文字 → 照常发送(后端同 sid 抢占,新消息取代旧 turn);
+      // 空文字 + inflight → 才是停止。
+      if (text.trim()) {
         void send();
+      } else if (session?.inflight) {
+        stop();
       }
     }
   };
@@ -346,13 +350,15 @@ export function InputBar({
         />
         <button
           type="button"
-          onClick={() => (inflight ? stop() : void send())}
+          // Bug#2 修复：与 Enter 一致 —— 有文字永远是发送(inflight 时后端
+          // 同 sid 抢占);只有空文字 + inflight 才显示/执行停止。
+          onClick={() => (text.trim() ? void send() : inflight ? stop() : undefined)}
           disabled={!inflight && !text.trim()}
           style={{
-            background: inflight
-              ? "#dc2626"
-              : text.trim()
-                ? "#2563eb"
+            background: text.trim()
+              ? "#2563eb"
+              : inflight
+                ? "#dc2626"
                 : "rgba(148, 163, 184, 0.2)",
             color: "#fff",
             border: "none",
@@ -364,7 +370,7 @@ export function InputBar({
             height: 36,
           }}
         >
-          {inflight ? "■ 停止" : "发送"}
+          {text.trim() ? "发送" : inflight ? "■ 停止" : "发送"}
         </button>
       </div>
       <div

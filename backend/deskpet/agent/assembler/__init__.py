@@ -40,6 +40,9 @@ from deskpet.agent.assembler.components.workspace import WorkspaceComponent
 from deskpet.agent.assembler.components.workspace_memory import (
     WorkspaceMemoryComponent,
 )
+from deskpet.agent.assembler.components.preference_profile import (
+    PreferenceProfileComponent,
+)
 from deskpet.agent.assembler.policy import load_policies
 from deskpet.agent.assembler.registry import ComponentRegistry
 from deskpet.agent.assembler.tts_prenarration import TTSPreNarrator
@@ -68,6 +71,7 @@ __all__ = [
     "ToolComponent",
     "WorkspaceComponent",
     "WorkspaceMemoryComponent",
+    "PreferenceProfileComponent",
     "load_policies",
 ]
 
@@ -81,25 +85,40 @@ def build_default_assembler(
     context_window: int = 200_000,
     budget_ratio: float = 0.6,
     workspace_memory_store=None,
+    facts_store=None,
+    persona_inject: bool = False,
+    skill_matcher=None,
+    skill_loader=None,
+    auto_disclosure_config=None,
 ) -> ContextAssembler:
     """One-shot factory for the common case.
 
-    Wires: 7 built-in components + packaged default.yaml policies +
+    Wires: 8 built-in components + packaged default.yaml policies +
     classifier with provided embedder/LLM + default budget allocator.
     Caller still supplies memory_manager / tool_registry per-turn
     via :meth:`ContextAssembler.assemble`.
 
     记忆系统升级 WI-M1.6：``workspace_memory_store`` 由 main.py 在
     ``memory.v2.workspace_memory`` flag 开时注入；None → 组件空转。
+
+    FP-4 WI-3.2：``facts_store`` 由 main.py 在 ``memory.v2.persona_inject``
+    flag 开时注入；None / flag_enabled=False → 组件返回空 Slice（BC）。
     """
     registry = ComponentRegistry()
     registry.register(MemoryComponent())
     registry.register(ToolComponent())
-    registry.register(SkillComponent())
+    # FP-5 缺口 5c (2026-06-06): 注入 matcher/loader 让 auto-disclosure 生效。
+    # 默认 None → SkillComponent 降级 desc-only（字节级 BC，与 WI-4.1 前一致）。
+    registry.register(
+        SkillComponent(skill_matcher=skill_matcher, skill_loader=skill_loader)
+    )
     registry.register(PersonaComponent())
     registry.register(TimeComponent())
     registry.register(WorkspaceComponent())
     registry.register(WorkspaceMemoryComponent(store=workspace_memory_store))
+    registry.register(
+        PreferenceProfileComponent(store=facts_store, flag_enabled=persona_inject)
+    )
 
     policies = load_policies()
 
@@ -113,10 +132,17 @@ def build_default_assembler(
         context_window=context_window, budget_ratio=budget_ratio
     )
 
+    # FP-5 缺口 5j：把 auto_disclosure 配置作为 assemble() 的 default_config，
+    # 任何 venue 调用方不传 skills 也能让 SkillComponent 拿到 → 根治 venue-miss。
+    _default_config = None
+    if auto_disclosure_config:
+        _default_config = {"skills": {"auto_disclosure": dict(auto_disclosure_config)}}
+
     return ContextAssembler(
         component_registry=registry,
         policies=policies,
         classifier=classifier,
         budget_allocator=budget,
         enabled=enabled,
+        default_config=_default_config,
     )

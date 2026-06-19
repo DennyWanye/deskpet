@@ -109,6 +109,13 @@ async function open_socket() {
   ws.onopen = () => {
     reconnect_attempt = 0;
     current_state = "connected";
+    // Bug#2 修复 (2026-06-11)：flush 断连期间排队的用户消息(原 send() 在
+    // socket 非 OPEN 时直接丢弃 — 用户消息静默消失的传输层真因)。先 flush
+    // 再拉列表,保持用户消息的先后顺序。
+    while (_outbox.length > 0) {
+      const queued = _outbox.shift();
+      if (queued) ws?.send(queued);
+    }
     // Pull current sessions list on (re)connect so the dashboard hydrates.
     ws?.send(JSON.stringify({ type: "code_sessions_list" }));
     // code-session-model-params: pull the live model catalog so the
@@ -297,10 +304,29 @@ function dispatch(msg: any) {
       // preview); the canonical assistant bubble lands here.
       const cur = store.sessions[sid];
       if (cur) {
-        const cleaned = cur.messages.filter(
+        let cleaned = cur.messages.filter(
           (m) => m.role !== ("assistant_delta" as any) &&
                  m.role !== ("reasoning_delta" as any),
         );
+        if (text) {
+          const lastUserIdx = cleaned.findLastIndex((m) => m.role === "user");
+          const hasSameTurnPreview = cleaned.some(
+            (m, idx) =>
+              idx > lastUserIdx &&
+              m.role === "assistant" &&
+              m.text === text,
+          );
+          if (hasSameTurnPreview) {
+            cleaned = cleaned.filter(
+              (m, idx) =>
+                !(
+                  idx > lastUserIdx &&
+                  m.role === "assistant" &&
+                  m.text === text
+                ),
+            );
+          }
+        }
         store.set_messages(sid, cleaned);
       }
       if (text) store.push_message(sid, { role: "assistant", text });
@@ -330,6 +356,23 @@ function dispatch(msg: any) {
       } as any);
       break;
     }
+    case "skill_candidate_proposed": {
+      // FP-5 WI-4.3c: SkillCodifier 跑完多步任务后 propose 一个候选技能，
+      // 推这条事件让前端渲染一张确认卡，然后后端挂起等用户决定（5min 超时
+      // 则自动 reject）。镜像 chat_v2_plan 的 awaiting plan-card 模式：把候选
+      // 落成一条 `skill_candidate` 消息，由 MessageBubble 渲染 SkillCandidateCard。
+      const p = msg.payload || {};
+      store.push_message(sid, {
+        role: "skill_candidate" as any,
+        skill_candidate_id: p.candidate_id,
+        skill_candidate_name: p.name,
+        skill_candidate_description: p.description,
+        skill_candidate_steps: Array.isArray(p.steps) ? p.steps : [],
+        skill_candidate_awaiting: true,
+        skill_candidate_sid: sid,
+      } as any);
+      break;
+    }
     case "chat_v2_plan_cancelled": {
       // superpowers 决策2: 用户点[取消] 或 后端超时 → 清按钮 + 回 idle
       store.resolve_plan(sid);
@@ -348,6 +391,9 @@ function dispatch(msg: any) {
       const p = msg.payload || {};
       const text = format_slash_result(p.result);
       store.push_message(sid, { role: "slash_result" as any, text });
+      // slash 是同步请求-响应：结果到达即结束本轮。不清 inflight 会让
+      // InputBar 永卡"思考中"（发送钮变停止钮，后续输入无法提交）。
+      store.upsert(sid, { status: "idle", inflight: false });
       break;
     }
     case "tool_call": {
@@ -761,6 +807,15 @@ function dispatch(msg: any) {
         );
       break;
     }
+    case "model_context_set_ack": {
+      // 上下文覆盖保存 ack(p4_ipc 完整版)。catalog 刷新由 modal 保存时
+      // 紧随的 code_models_list 请求完成,这里只记失败。
+      const p = msg.payload || {};
+      if (!p.ok) {
+        console.warn("[ws] model_context_set rejected:", p.reason);
+      }
+      break;
+    }
     case "code_session_model_set": {
       // Ack from backend for code_session_set_model. Same merge as above —
       // backend echoes provider_id + preferred_model + model_params so we
@@ -786,12 +841,19 @@ function dispatch(msg: any) {
   }
 }
 
+// Bug#2 修复 (2026-06-11)：断连时的出站消息排队(原实现直接丢弃 — 用户
+// 消息静默消失)。重连 onopen 时 flush。上限防泄漏:超出丢最旧并告警。
+const _outbox: string[] = [];
+const _OUTBOX_MAX = 50;
+
 export const codePanelWS: CodePanelWS = {
   send(msg) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
     } else {
-      console.warn("[code-panel] send on closed socket; queueing reconnect");
+      console.warn("[code-panel] socket not open; queueing message for flush on reconnect");
+      _outbox.push(JSON.stringify(msg));
+      if (_outbox.length > _OUTBOX_MAX) _outbox.shift();
       schedule_reconnect();
     }
   },

@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from deskpet.agent.assembler.bundle import Slice
 from deskpet.agent.assembler.components.base import Component, ComponentContext
+from deskpet.agent.tokens import count_text_tokens as _ctok
 
 _MAX_ENTRIES = 15
 
@@ -97,7 +98,7 @@ class WorkspaceMemoryComponent:
         return Slice(
             component_name=self.name,
             text_content=text,
-            tokens=max(1, len(text) // 4),
+            tokens=_ctok(text),
             priority=45,
             bucket="dynamic",
             meta={

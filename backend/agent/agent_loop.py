@@ -54,6 +54,16 @@ logger = logging.getLogger("deskpet.agent.loop")
 # Keep at 3 to match the OpenSpec proposal default.
 _REPEAT_THRESHOLD = 3
 
+# ───────────────────── WI-1.3 goal-anchor constants ─────────────────────
+#
+# Every ``_GOAL_ANCHOR_EVERY`` iterations, when there is an active goal,
+# inject a brief ``[目标锚定]`` system message into working_messages so the
+# model is reminded of the original objective and doesn't drift into
+# intermediate side-tasks.  This is ORTHOGONAL to the goal_checker nudge:
+#   anchor = "don't drift away" (preventive, periodic)
+#   nudge  = "you haven't finished yet" (reactive, on end_turn)
+_GOAL_ANCHOR_EVERY = 5
+
 # Module-level template so tests can pin it. Filled with ``.format(
 # name=..., count=...)`` at injection time.
 _REPEAT_NUDGE_MSG = (
@@ -403,6 +413,30 @@ class AgentLoop:
         # 两个都 None (默认) → BC，跳过整段 goal-check 块。
         session_goal_store: Optional[Any] = None,  # deskpet.agent.goal_store.SessionGoalStore
         goal_checker: Optional[Any] = None,        # deskpet.agent.goal_checker.GoalChecker
+        # WI-2.1 structured reflection: when True, _REFLECTION_INSTRUCTION is
+        # appended to verify-gate rebound + selfcheck tier2/tier3 system msgs.
+        # Default False = BC (flag off → byte-identical behaviour to pre-WI-2.1).
+        structured_reflection: bool = False,
+        # WI-2.4 external evaluator: cross-persona quality judge for high-consequence
+        # goals. None (default) = BC (0 extra LLM calls, skip entirely).
+        external_evaluator: Optional[Any] = None,  # deskpet.agent.external_evaluator.ExternalEvaluator
+        # WI-4.0 compaction: ContextCompressor to call when prompt tokens near cap.
+        # None (default) = BC (compressor not injected → zero new behaviour).
+        # When non-None, should_compress() and compress() are called in the loop.
+        compressor: Optional[Any] = None,  # deskpet.agent.context_compressor.ContextCompressor
+        # WI-4.2 skill remount: inject SkillLoader + SkillMatcher for post-compaction
+        # skill body re-inline.  Both default None → BC (no remount, zero overhead).
+        # When non-None and compaction fires, _remount_skills() is called to re-insert
+        # the bodies of skills used this run as a single role=system block.
+        skill_loader: Optional[Any] = None,   # deskpet.skills.loader.SkillLoader
+        skill_matcher: Optional[Any] = None,  # deskpet.skills.skill_matcher.SkillMatcher
+        # WI-1.6 工具路径录制（喂 FP-5 技能自创）。None (默认) → 不录（BC，零开销）。
+        # 非 None 时每个 tool_result 喂 record_tool(name, ok)，complete() 由 codify hook 调。
+        tool_path_recorder: Optional[Any] = None,  # deskpet.agent.tool_path.ToolPathRecorder
+        # WI-4b pre-flush: 压缩真正摘掉中段前,把"当前任务态"写进 L1 文件记忆,
+        # 跨 session 记住任务(frozen-snapshot → 只对下个 session 生效)。None (默认)
+        # → 不 flush(BC)。每个 run 最多 flush 一次(限频,防刷爆 MEMORY.md 50KB cap)。
+        file_memory: Optional[Any] = None,  # deskpet.memory.file_memory.FileMemory
     ) -> None:
         self.llm = llm_registry
         self.tools = tool_registry
@@ -433,6 +467,22 @@ class AgentLoop:
         # WI-B3 Companion+Code v1: /goal store + checker (BC: 两者皆 None → skip)
         self.session_goal_store = session_goal_store
         self.goal_checker = goal_checker
+        # WI-2.1 structured reflection flag (BC: False → no injection)
+        self.structured_reflection = structured_reflection
+        # WI-2.4 external evaluator: cross-persona quality judge for high-consequence
+        # goals (BC: None → skip entirely, 0 extra LLM calls).
+        self.external_evaluator = external_evaluator
+        # WI-4.0 compaction: ContextCompressor (BC: None → skip entirely).
+        # When non-None, loop calls should_compress() + compress() after budget check.
+        self.compressor = compressor
+        # WI-4.2 skill remount (BC: both None → skip entirely).
+        # When non-None and compaction fires, _remount_skills() re-inlines skill bodies.
+        self.skill_loader = skill_loader
+        self.skill_matcher = skill_matcher
+        # WI-1.6 工具路径录制器（BC: None → 不录）。喂 FP-5 4.3 技能自创触发器。
+        self.tool_path_recorder = tool_path_recorder
+        # WI-4b pre-flush L1 句柄（BC: None → 不 flush）。
+        self.file_memory = file_memory
         # P5-S2 Phase 3.3: same-(name, args) repeat detection. When set,
         # the loop checks the activity store's per-session
         # ``tool_signature_window`` BEFORE dispatching each tool_call —
@@ -545,6 +595,8 @@ class AgentLoop:
         completion_nudges_used = 0
         # WI-T2.6: 同 completion_nudges_used 模式 — 本轮起算
         verify_nudges_used = 0
+        # WI-2.2: track previous task_replanning for stagnation detection
+        _prev_task_replanning: str = ""
         # P6 Phase 6 — local mirror of gate.state.tools_used kept so the
         # selfcheck tier messages can format "已用 N 次工具调用". The gate
         # is the source of truth for hard-cap enforcement; this var is
@@ -554,6 +606,53 @@ class AgentLoop:
         # P5-S2 B3: warn-once latch so we don't spam the WARN log every
         # iteration once we're in the 80-95% band.
         _budget_warn_emitted = False
+
+        # WI-4a 目标 always-on 单点注入(对标 Claude Code 钉死 CLAUDE.md)。
+        # 唯一注入点 = 这里(循环前注一次),role=system → context_compressor._partition
+        # 永久排除、永不被压;compress() 见到它就不再自注(去重),整轮恒 ≤1 条 [目标锚定]。
+        # 取代了原"周期性 anchor(每 _GOAL_ANCHOR_EVERY 轮重注)"+"压缩后 _build_goal_anchor
+        # 注入"两处冗余。目标 + 子目标都从 session_goal_store 取。
+        if self.session_goal_store is not None:
+            _ga_fn = getattr(self.session_goal_store, "get_goal_text", None)
+            _always_goal = _ga_fn(session_id) if callable(_ga_fn) else None
+            if _always_goal:
+                _anchor_lines = [f"[目标锚定] 当前目标：{_always_goal}"]
+                _pg_fn = getattr(self.session_goal_store, "get_pending_tasks", None)
+                _pending = _pg_fn(session_id) if callable(_pg_fn) else None
+                if _pending:
+                    _anchor_lines.append(f"[当前子目标] {_pending[0]}")
+                _anchor_lines.append(
+                    "请确保接下来的动作仍服务于上述目标，不要被中间步骤带偏。"
+                )
+                working_messages.append(
+                    {"role": "system", "content": "\n".join(_anchor_lines)}
+                )
+                logger.info(
+                    "wi4a_goal_anchor_always_on sid=%s tid=%s", session_id, tid
+                )
+
+        # WI-4.0 compaction: warn-once latch so we don't spam the log every
+        # iteration when the compressor fires (long multi-tool tasks may cross
+        # the threshold repeatedly; we log the first fire and stay quiet after).
+        _compaction_warn_logged: bool = False
+
+        # WI-4b pre-flush 限频 latch: 每个 run 最多把任务态 flush 进 L1 一次
+        # (防长 agentic 任务反复触发压缩时刷爆 MEMORY.md 50KB cap → 驱逐真实记忆)。
+        _preflush_done: bool = False
+
+        # FP-2 TC-2.1 第 3 刀: relay 真实 prompt_tokens 反馈回路。char-based
+        # 估算对中文/markdown 系统性低估(真机 real 32.9k 时 estimate <24k),
+        # 纯系数追不上内容分布 → 用上一轮 response.usage.input_tokens 兜底,
+        # compaction 判定取 max(estimate, real)。0 = 本 run 还没有真实值。
+        _last_real_prompt_tokens: int = 0
+
+        # WI-4.2 skill remount: track skill_invoke calls this run so that
+        # _remount_skills() knows which skill bodies to re-inline after compaction.
+        # Reset per run() invocation (fresh list each chat turn).
+        # List preserves insertion order for LRU-drop logic; dedup via "already
+        # appended" check below.
+        self._skills_used_order: list[str] = []
+        self._skills_used_this_run: set[str] = set()
 
         for iteration in range(1, self.max_iterations + 1):
             # P6 Phase 6 — TerminationGate.allows_call() is always run.
@@ -639,6 +738,112 @@ class AgentLoop:
                 )
                 return
 
+            # WI-4.0 compaction: after budget guard, before LLM call.
+            # Reuses _budget.estimated_tokens (just computed above).
+            # compressor=None (flag off) → short-circuit, zero overhead.
+            # Operates in-place on working_messages (not assemble — BC).
+            # System messages (skill_prelude/persona/frozen) are kept verbatim
+            # by _partition inside compress() — "不绕 assemble" constraint met.
+            if self.compressor is not None:
+                try:
+                    _ctoken_est = getattr(_budget, "estimated_tokens", 0)
+                except Exception:  # noqa: BLE001
+                    _ctoken_est = 0
+                # 第 3 刀: real usage 兜底(见 _last_real_prompt_tokens 注释)。
+                if _last_real_prompt_tokens > _ctoken_est:
+                    _ctoken_est = _last_real_prompt_tokens
+                # ★ 第 4 刀(真机测压缩发现的核心 bug 修复): 直接数【即将发送的
+                # working_messages】的 token。原来只用 _budget.estimated_tokens(被
+                # BudgetAllocator 压到 window×0.6,低于压缩阈值 window×0.8)+
+                # _last_real_prompt_tokens(每条消息开头重置 0、且单轮聊天不迭代第二次
+                # 拿不到真值) → 两路都够不到阈值 → 压缩**永不触发**(实测 12 消息/
+                # 1746 真 token 仍不压)。直接数 working_messages 调用前可得、不受
+                # allocator 截断、不延迟,是最可靠的触发信号(复用统一计数,优化 #1+#3)。
+                try:
+                    from deskpet.agent.tokens import count_messages_tokens as _cmt
+                    _wm_tokens = _cmt(working_messages)
+                    if _wm_tokens > _ctoken_est:
+                        _ctoken_est = _wm_tokens
+                except Exception:  # noqa: BLE001
+                    pass
+                _ctx_should_compress = False
+                try:
+                    _ctx_cfg = getattr(self._ctx, "config", None)
+                    _ctx_compact_at = getattr(_ctx_cfg, "compact_at_tokens", None)
+                    if _ctx_compact_at is not None:
+                        _ctx_should_compress = (
+                            _ctoken_est >= int(_ctx_compact_at) > 0
+                        )
+                except Exception:  # noqa: BLE001
+                    _ctx_should_compress = False
+                if (
+                    self.compressor.should_compress(_ctoken_est)
+                    or _ctx_should_compress
+                ):
+                    try:
+                        _gt = None
+                        if self.session_goal_store is not None:
+                            _gt_fn = getattr(self.session_goal_store, "get_goal_text", None)
+                            if callable(_gt_fn):
+                                _gt = _gt_fn(session_id)
+                        # WI-4b pre-flush: 摘掉中段前把任务态写进 L1(跨 session 记任务)。
+                        # best-effort + 每 run 限一次(latch),失败绝不阻断压缩。
+                        if self.file_memory is not None and not _preflush_done:
+                            _preflush_done = True
+                            try:
+                                _last_user = ""
+                                for _m in reversed(working_messages):
+                                    if _m.get("role") == "user":
+                                        _last_user = str(_m.get("content") or "")[:500]
+                                        break
+                                _flush_parts = []
+                                if _gt:
+                                    _flush_parts.append(f"目标: {_gt}")
+                                if _last_user:
+                                    _flush_parts.append(f"最近请求: {_last_user}")
+                                if _flush_parts:
+                                    _flush_body = (
+                                        "[任务态快照/task-state] " + "; ".join(_flush_parts)
+                                    )
+                                    await self.file_memory.append(
+                                        "memory", _flush_body, salience=0.6
+                                    )
+                                    logger.info(
+                                        "wi4b_preflush_l1 sid=%s tid=%s chars=%d",
+                                        session_id, tid, len(_flush_body),
+                                    )
+                            except Exception as _pf_exc:  # noqa: BLE001
+                                logger.debug(
+                                    "wi4b_preflush_failed sid=%s err=%s",
+                                    session_id, str(_pf_exc)[:120],
+                                )
+                        _cresult = await self.compressor.compress(
+                            working_messages,
+                            goal_text=_gt,
+                        )
+                        if getattr(_cresult, "compressed", False):
+                            working_messages = _cresult.messages
+                            # WI-4.2: re-inline skill bodies after compaction so
+                            # the LLM doesn't lose skill step details that were
+                            # in the compressed "middle" messages.
+                            working_messages = self._remount_skills(
+                                working_messages, session_id
+                            )
+                            if not _compaction_warn_logged:
+                                logger.info(
+                                    "p1_4_compaction_fired sid=%s tid=%s iter=%d "
+                                    "reduction=%s",
+                                    session_id, tid, iteration,
+                                    getattr(_cresult, "reduction_ratio", "?"),
+                                )
+                                _compaction_warn_logged = True
+                    except Exception as _cmp_exc:  # noqa: BLE001
+                        # Compaction is advisory — never abort the loop on it.
+                        logger.debug(
+                            "p1_4_compaction_failed sid=%s iter=%d err=%s",
+                            session_id, iteration, str(_cmp_exc)[:200],
+                        )
+
             # P6 Phase 6: escalating in-loop self-check (soft nudge).
             # The legacy _TOOL_BUDGET_HARD_MSG soft cap is GONE — the
             # TerminationGate now enforces tool_budget_hard with a HARD
@@ -653,6 +858,11 @@ class AgentLoop:
             if iteration > 0 and iteration % _SELFCHECK_EVERY == 0:
                 budget_left = self.max_iterations - iteration
                 msg = _build_selfcheck_message(iteration, self.max_iterations, tools_used)
+                # WI-2.1: append reflection instruction at tier2/tier3 only
+                # (zero overhead on normal tier1 path; flag off = BC).
+                if self.structured_reflection and iteration >= _SELFCHECK_TIER2_AT:
+                    from deskpet.agent.reflection import _REFLECTION_INSTRUCTION
+                    msg = msg + _REFLECTION_INSTRUCTION
                 working_messages.append({"role": "system", "content": msg})
                 tier = (
                     3 if iteration >= _SELFCHECK_TIER3_AT
@@ -661,9 +871,15 @@ class AgentLoop:
                 )
                 logger.info(
                     "p5s2_selfcheck_injected sid=%s tid=%s iter=%d budget=%d "
-                    "tier=%d tools_used=%d",
+                    "tier=%d tools_used=%d structured_reflection=%s",
                     session_id, tid, iteration, budget_left, tier, tools_used,
+                    self.structured_reflection,
                 )
+
+            # WI-4a: 周期性 [目标锚定] 注入已删除 —— 改由循环前的 always-on 单点注入
+            # (见上方 wi4a_goal_anchor_always_on)。always-on 那条 role=system 常驻、
+            # 不被压、整轮恒 ≤1 条,周期重注是冗余且会堆多条同文 system。防 drift 由
+            # always-on 常驻 + WI-3 结构化摘要保任务共同覆盖,能力不丢。
 
             try:
                 if chain_mode:
@@ -863,6 +1079,9 @@ class AgentLoop:
             totals["output"] += response.usage.output_tokens
             totals["cache_read"] += response.usage.cache_read_tokens
             totals["cache_write"] += response.usage.cache_write_tokens
+            # 第 3 刀: 记录 relay 真实 prompt 大小,喂下一轮 compaction 判定。
+            if response.usage.input_tokens > _last_real_prompt_tokens:
+                _last_real_prompt_tokens = response.usage.input_tokens
 
             # P6 Phase 6 — record the turn (advances turns_used and
             # optionally adds to cost_usd if the response carries a
@@ -970,9 +1189,21 @@ class AgentLoop:
                             self.receipt_store.load_session(session_id)
                             if self.receipt_store is not None else []
                         )
+                        # WI-2.3: thread goal_text into verify_gate.check so
+                        # GoalAlignment is populated when an active goal exists.
+                        # BC: goal_text=None (no store / no active goal) → byte-identical
+                        # to pre-WI-2.3 (check ignores None goal_text).
+                        _vg_goal_text: Optional[str] = None
+                        if self.session_goal_store is not None:
+                            _gt_fn = getattr(
+                                self.session_goal_store, "get_goal_text", None
+                            )
+                            if callable(_gt_fn):
+                                _vg_goal_text = _gt_fn(session_id)
                         v_outcome = self.verify_gate.check(
                             assistant_text=response.content,
                             ledger=ledger,
+                            goal_text=_vg_goal_text,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
@@ -984,11 +1215,54 @@ class AgentLoop:
                     if (v_outcome is not None and not v_outcome.passed
                             and v_outcome.unmatched_claims):
                         verify_nudges_used += 1
-                        # 失败计数达 max → 调 ephemeral 救援
-                        ephemeral_pass = False
-                        if verify_nudges_used >= self.max_verify_nudges:
+
+                        # WI-2.2: stagnation detection — if 2nd+ rebound and
+                        # task_replanning text is nearly identical to previous
+                        # round (difflib ratio > 0.85), the LLM is stuck in
+                        # copy-paste instead of genuinely replanning. Skip to
+                        # ephemeral immediately (don't waste the 2nd nudge).
+                        _stagnant = False
+                        if verify_nudges_used >= 2 and self.structured_reflection:
                             try:
-                                ephemeral_pass = (
+                                from deskpet.agent.reflection import parse_reflection
+                                import difflib as _difflib
+                                _refl = parse_reflection(response.content or "")
+                                _cur_replan = str(_refl.task_replanning) if _refl else ""
+                                if (
+                                    _prev_task_replanning
+                                    and _cur_replan
+                                    and _difflib.SequenceMatcher(
+                                        None, _prev_task_replanning, _cur_replan
+                                    ).ratio() > 0.85
+                                ):
+                                    _stagnant = True
+                                    logger.info(
+                                        "verify_replan_stagnant sid=%s nudge=%d "
+                                        "ratio=%.2f — escalating to ephemeral",
+                                        session_id, verify_nudges_used,
+                                        _difflib.SequenceMatcher(
+                                            None, _prev_task_replanning, _cur_replan
+                                        ).ratio(),
+                                    )
+                                    try:
+                                        from observability.metrics_sink import (
+                                            record as _vg_metric,
+                                        )
+                                        _vg_metric("verify_replan_stagnant", {
+                                            "nudge_count": int(verify_nudges_used),
+                                        })
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                if _refl:
+                                    _prev_task_replanning = _cur_replan
+                            except Exception:  # noqa: BLE001 — safe-fail
+                                pass
+
+                        # 失败计数达 max 或 stagnation → 调 ephemeral 救援
+                        ephemeral_pass = False
+                        if _stagnant or verify_nudges_used >= self.max_verify_nudges:
+                            try:
+                                ephemeral_pass = await (
                                     self.verify_gate.consult_ephemeral_subagent(
                                         ledger=ledger,
                                         failed_claims=v_outcome.unmatched_claims,
@@ -997,8 +1271,43 @@ class AgentLoop:
                                 )
                             except Exception as exc:  # noqa: BLE001
                                 logger.warning("ephemeral consult failed: %s", exc)
+
                         if not ephemeral_pass:
-                            # 回灌 D8 schema
+                            # WI-2.2: verify_exhausted — all layers (nudges +
+                            # ephemeral) exhausted → emit terminal error + return.
+                            # Only when we've either stagnated or used all nudges
+                            # AND ephemeral failed.
+                            if _stagnant or verify_nudges_used >= self.max_verify_nudges:
+                                logger.warning(
+                                    "verify_exhausted sid=%s nudge=%d/%d "
+                                    "stagnant=%s",
+                                    session_id, verify_nudges_used,
+                                    self.max_verify_nudges, _stagnant,
+                                )
+                                try:
+                                    from observability.metrics_sink import (
+                                        record as _vg_metric,
+                                    )
+                                    _vg_metric("verify_exhausted", {
+                                        "nudge_count": int(verify_nudges_used),
+                                        "stagnant": bool(_stagnant),
+                                    })
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                yield ErrorEvent(
+                                    type="error",
+                                    task_id=tid,
+                                    iteration=iteration,
+                                    reason="verify_exhausted",
+                                    detail=(
+                                        f"verify-gate: all retries exhausted after "
+                                        f"{verify_nudges_used} nudge(s). "
+                                        f"stagnant={_stagnant}"
+                                    ),
+                                )
+                                return
+
+                            # Still have nudges: inject rebound + 回灌 D8 schema
                             unmatched_lines = "\n".join(
                                 f"  {i+1}. [unmatched_claim] {c.raw_text!r} — "
                                 f"no receipt matched ({c.reason})"
@@ -1011,6 +1320,31 @@ class AgentLoop:
                                 f"Next: please call the missing tool to actually "
                                 f"perform the action you claimed, then end_turn again."
                             )
+                            # WI-2.3: append goal alignment context to rebound
+                            # when goal_text was provided and GoalAlignment is
+                            # populated. goal_text=None → rebound unchanged (BC).
+                            if (
+                                v_outcome.goal_alignment is not None
+                                and not v_outcome.goal_alignment.aligned
+                            ):
+                                ga = v_outcome.goal_alignment
+                                _evidence_str = "\n".join(
+                                    f"  - {e}"
+                                    for e in ga.objective_evidence[:5]
+                                ) or "  (无客观证据)"
+                                rebound = (
+                                    rebound
+                                    + f"\n原始目标: {ga.goal_text}\n"
+                                    + f"客观证据: {_evidence_str}\n"
+                                    + f"缺口: {ga.gap}\n"
+                                    + "→ 请重规划（结构化反思）后补齐，"
+                                    + "使产物真满足原目标，而非换个说法过关。"
+                                )
+                            # WI-2.1: append reflection instruction when flag on.
+                            # Flag off (default) → rebound string unchanged (BC).
+                            if self.structured_reflection:
+                                from deskpet.agent.reflection import _REFLECTION_INSTRUCTION
+                                rebound = rebound + _REFLECTION_INSTRUCTION
                             if response.content:
                                 working_messages.append({
                                     "role": "assistant",
@@ -1072,10 +1406,12 @@ class AgentLoop:
                             )
                         except Exception as exc:  # noqa: BLE001 — safe-fail
                             logger.warning(
-                                "goal_checker raised (sid=%s): %s — passing through",
+                                "goal_checker raised (sid=%s): %s — skipping check",
                                 session_id, exc,
                             )
-                            _done, _hint = True, "checker_error"
+                            # R-T3 §15.4: 兜底也用 skipped 语义（check() 内已 safe-fail，
+                            # 这里只作双重防护）。不默认 done=True。
+                            _done, _hint = False, "goal_check=skipped"
                         # metric emit (best-effort, not blocking)
                         try:
                             from observability.metrics_sink import (  # noqa: PLC0415
@@ -1087,8 +1423,27 @@ class AgentLoop:
                             })
                         except Exception:  # noqa: BLE001 — metric 失败不阻
                             pass
-                        if not _done:
+                        # R-T3 §15.4: goal_check=skipped → checker 降级，
+                        # 无法正向确认 → 不 mark_done，但也不注入"未达成"nudge
+                        # （我们不知道目标是否真达成，不能给 LLM 假信号）。
+                        # 直接 fall-through 到 FinalEvent / evaluator gate。
+                        if _hint == "goal_check=skipped":
+                            logger.info(
+                                "goal_checker.skipped sid=%s — "
+                                "checker degraded, proceeding without goal confirmation",
+                                session_id,
+                            )
+                            # 不 continue，让正常 FinalEvent 流程继续
+                        elif not _done:
                             self.session_goal_store.increment_iteration(session_id)
+                            # T1：落库 iterations_used，重启不归零。safe-fail
+                            # 内置于 persist_iteration；getattr 兜底旧 store。
+                            _pit = getattr(
+                                self.session_goal_store,
+                                "persist_iteration", None,
+                            )
+                            if _pit is not None:
+                                await _pit(session_id)
                             # Append the assistant message that triggered
                             # this so the LLM sees its own prior end_turn
                             # output — symmetric with completion_probe /
@@ -1116,10 +1471,104 @@ class AgentLoop:
                             continue
                         else:
                             self.session_goal_store.mark_done(session_id)
+                            # 落库 done 终态（与 increment 落库对称）：否则
+                            # load_persisted 只召回 status='active'，已完成目标
+                            # 重启会复活成 active。getattr 兜底旧 store。
+                            _pd = getattr(
+                                self.session_goal_store,
+                                "persist_done", None,
+                            )
+                            if _pd is not None:
+                                await _pd(session_id)
                             logger.info(
                                 "goal_checker.marked_done sid=%s",
                                 session_id,
                             )
+
+                # WI-2.4: external evaluator gate — BEFORE FinalEvent.
+                # Only fires when:
+                #   a) external_evaluator is wired (flag on), AND
+                #   b) is_high_consequence_goal() returns True.
+                # If evaluator returns verdict=revise → emit ErrorEvent
+                # ("evaluator_revise") instead of FinalEvent so auto_resume
+                # can spawn a replan. Runs at most ONCE per goal (here,
+                # before FinalEvent — revise → replan → new run, no loop).
+                # flag off (external_evaluator=None) → skip entirely (BC, 0 calls).
+                if self.external_evaluator is not None:
+                    try:
+                        from deskpet.agent.external_evaluator import (  # noqa: PLC0415
+                            is_high_consequence_goal as _is_hcg,
+                        )
+                        _eval_ledger = (
+                            self.receipt_store.load_session(session_id)
+                            if self.receipt_store is not None else []
+                        )
+                        # Extract goal_text from session_goal_store if wired,
+                        # else fall back to first user message text.
+                        _eval_goal_text = ""
+                        if self.session_goal_store is not None:
+                            _gt_fn = getattr(
+                                self.session_goal_store, "get_goal_text", None
+                            )
+                            if callable(_gt_fn):
+                                _eval_goal_text = _gt_fn(session_id) or ""
+                        if not _eval_goal_text:
+                            # BC fallback: use first user message content
+                            for _m in working_messages:
+                                if _m.get("role") == "user":
+                                    _eval_goal_text = str(_m.get("content") or "")
+                                    break
+                        if _is_hcg(_eval_goal_text, _eval_ledger, []):
+                            _ev_result = await self.external_evaluator.evaluate(
+                                original_goal=_eval_goal_text,
+                                produced_artifacts=[
+                                    getattr(r, "tool_name", "unknown")
+                                    for r in _eval_ledger
+                                ],
+                                objective_evidence=[
+                                    f"receipt ok: tool={getattr(r, 'tool_name', '?')}"
+                                    for r in _eval_ledger if getattr(r, "ok", True)
+                                ],
+                                conversation_summary=str(response.content or "")[:512],
+                            )
+                            if (
+                                _ev_result.get("verdict") == "revise"
+                                and _ev_result.get("quality_score", 10) < 6
+                            ):
+                                logger.info(
+                                    "external_evaluator verdict=revise sid=%s "
+                                    "quality_score=%d issues=%d → emit evaluator_revise",
+                                    session_id,
+                                    _ev_result["quality_score"],
+                                    len(_ev_result.get("issues", [])),
+                                )
+                                try:
+                                    from observability.metrics_sink import (  # noqa: PLC0415
+                                        record as _eval_metric,
+                                    )
+                                    _eval_metric("evaluator_revise_triggered", {
+                                        "quality_score": _ev_result["quality_score"],
+                                        "issues_count": len(_ev_result.get("issues", [])),
+                                    })
+                                except Exception:  # noqa: BLE001 — metric 失败不阻
+                                    pass
+                                yield ErrorEvent(
+                                    type="error",
+                                    task_id=tid,
+                                    iteration=iteration,
+                                    reason="evaluator_revise",
+                                    detail=(
+                                        f"[external_evaluator] 质量不足 "
+                                        f"(score={_ev_result['quality_score']}/10): "
+                                        + "; ".join(_ev_result.get("issues", []))
+                                    ),
+                                )
+                                return
+                    except Exception as exc:  # noqa: BLE001 — safe-fail
+                        logger.warning(
+                            "external_evaluator gate failed (sid=%s): %s — passing through",
+                            session_id, exc,
+                        )
 
                 # P6 Phase 6 — gate records the natural terminal state
                 # before we emit the FinalEvent so consumers reading
@@ -1283,6 +1732,23 @@ class AgentLoop:
                 # longer trigger HALLUCINATION_DETECTED — only repeating the
                 # same path triggers).
                 self._gate.record_tool_call(tc.name, args=tc.arguments)
+                # WI-4.2 skill remount: record skill_invoke calls so that
+                # _remount_skills() can re-inline their bodies after compaction.
+                if tc.name == "skill_invoke" and self.skill_loader is not None:
+                    _sname = None
+                    try:
+                        _sargs = tc.arguments
+                        if isinstance(_sargs, dict):
+                            _sname = _sargs.get("skill_name")
+                        elif isinstance(_sargs, str):
+                            import json as _json_sk
+                            _sargs_d = _json_sk.loads(_sargs)
+                            _sname = _sargs_d.get("skill_name")
+                    except Exception:  # noqa: BLE001 — never block dispatch
+                        pass
+                    if _sname and _sname not in self._skills_used_this_run:
+                        self._skills_used_this_run.add(_sname)
+                        self._skills_used_order.append(_sname)
                 # P6 Phase 6 — tools_used_count was the legacy soft-cap
                 # counter; the gate now tracks tools_used in its state.
                 # Kept as a local var for the (still-active) soft selfcheck
@@ -1358,8 +1824,10 @@ class AgentLoop:
                 )
 
                 # P5-S2 Phase 2: classify *this* tool_result.
+                _tp_err_class = None
                 if permanent_break is None:
                     err_class = _classify_tool_result(result_str)
+                    _tp_err_class = err_class
                     if err_class is agent_errors.PermanentToolError:
                         permanent_break = (
                             "permanent_tool_error",
@@ -1370,6 +1838,20 @@ class AgentLoop:
                             "hallucination",
                             _extract_break_detail(result_str, tc.name),
                         )
+
+                # WI-1.6 录工具路径喂 FP-5 技能自创（recorder=None → no-op，BC）。
+                # ok = 非异常 且 未被分类为永久/幻觉错误。safe-fail，永不阻断派发。
+                if self.tool_path_recorder is not None:
+                    try:
+                        _tp_ok = not isinstance(result, BaseException) and _tp_err_class not in (
+                            agent_errors.PermanentToolError,
+                            agent_errors.HallucinationError,
+                        )
+                        self.tool_path_recorder.record_tool(
+                            session_id, name=tc.name, ok=_tp_ok,
+                        )
+                    except Exception:  # noqa: BLE001 — never block dispatch
+                        pass
 
             if permanent_break is not None:
                 reason, detail = permanent_break
@@ -1396,6 +1878,148 @@ class AgentLoop:
             reason="max_iterations",
             detail=f"exceeded {self.max_iterations} iterations without terminal stop_reason",
         )
+
+    # ------------------------------------------------------------------
+    # WI-4.2 — post-compaction skill body remount
+    # ------------------------------------------------------------------
+
+    _REMOUNT_MARKER = "[已重挂技能 / remounted skills]"
+    _REMOUNT_TOKEN_BUDGET = 25_000  # chars (proxy for tokens; 1 token ≈ 4 chars)
+
+    def _remount_skills(
+        self,
+        messages: list[dict],
+        session_id: str,  # noqa: ARG002 — reserved for future per-session skill store
+    ) -> list[dict]:
+        """Re-inline skill bodies into a single role=system block after compaction.
+
+        Algorithm
+        ---------
+        1. Gather skills to remount:
+           - skills tracked via ``_skills_used_this_run`` (from ``skill_invoke`` calls).
+           - (future: SkillMatcher strong-match set, when matcher available)
+        2. Order by recency of use (``_skills_used_order`` insertion order, most-recent
+           last → iterate reversed for MRU-first priority).
+        3. Re-read bodies via ``skill_loader.read_body(name)`` up to 25K char budget.
+           Skills that exceed remaining budget are dropped (LRU-drop = drop oldest).
+           Skills whose loader raises KeyError / IOError are skipped gracefully.
+        4. Build one role=system block with ``_REMOUNT_MARKER`` as header.
+           BEFORE inserting, remove any existing ``[已重挂技能]`` block (prevents
+           pile-up across repeated compactions).
+        5. No skills used / no bodies loaded → return messages unchanged (no-op).
+        6. skill_loader is None → no-op (BC).
+        """
+        # BC: no loader injected → nothing to do
+        if self.skill_loader is None:
+            return messages
+
+        # Gather names to remount.  Primary source: in-run skill_invoke tracking.
+        # Prefer the ordered list (preserves recency); fall back to the set for
+        # cases where a test (or external code) only sets _skills_used_this_run.
+        _order_attr = getattr(self, "_skills_used_order", [])
+        _set_attr: set[str] = getattr(self, "_skills_used_this_run", set())
+        if _order_attr:
+            names_to_remount: list[str] = list(_order_attr)
+        elif _set_attr:
+            # No ordering info — use the set in arbitrary order.
+            names_to_remount = list(_set_attr)
+        else:
+            names_to_remount = []
+        # Deduplicate while preserving order (shouldn't be needed given how we
+        # build the list, but be defensive).
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for n in names_to_remount:
+            if n not in seen:
+                seen.add(n)
+                ordered.append(n)
+
+        # Future: merge SkillMatcher strong-match names here (WI-4.2 §3.1 note).
+        # When self.skill_matcher is available, call matcher.match(last_user_query)
+        # and union with ``ordered`` (placing matcher hits at the front / MRU).
+
+        if not ordered:
+            # No skills used this run → no-op
+            return messages
+
+        # Load bodies, most-recently-used first, up to budget.
+        # ``ordered`` is insertion-order (oldest first); reverse for MRU priority.
+        budget_remaining = self._REMOUNT_TOKEN_BUDGET
+        sections: list[str] = []
+        # We iterate MRU-first so that the most-recent skills get budget priority.
+        for name in reversed(ordered):
+            try:
+                body = self.skill_loader.read_body(name)
+            except (KeyError, OSError, IOError):
+                # Skill not found or file unreadable → skip gracefully
+                logger.debug(
+                    "skill_remount.skip_unreadable sid=%s name=%s",
+                    session_id, name,
+                )
+                continue
+            except Exception:  # noqa: BLE001
+                continue
+
+            section = f"### {name}\n{body}"
+            if len(section) > budget_remaining:
+                # Would exceed budget — skip this skill (LRU-drop: since we're
+                # iterating MRU-first, any overflow here means we drop the older
+                # skill in subsequent loop iterations — but we still try to fit
+                # shorter ones after this one).  A simpler "first-fit" approach:
+                # just skip and keep trying (smaller bodies may still fit).
+                logger.debug(
+                    "skill_remount.budget_skip sid=%s name=%s body_len=%d remaining=%d",
+                    session_id, name, len(section), budget_remaining,
+                )
+                continue
+            sections.append(section)
+            budget_remaining -= len(section)
+
+        if not sections:
+            # All skills either skipped or over-budget → no-op
+            return messages
+
+        # Build the remount block.  Sections were appended MRU-first; reverse
+        # so the block reads oldest→newest (more natural reading order).
+        sections.reverse()
+        remount_content = (
+            f"{self._REMOUNT_MARKER}\n\n"
+            + "\n\n".join(sections)
+        )
+        remount_block: dict = {"role": "system", "content": remount_content}
+
+        # Remove any existing remount block (single-block invariant — prevents pile-up
+        # across repeated compactions).
+        cleaned = [
+            m for m in messages
+            if not (
+                m.get("role") == "system"
+                and self._REMOUNT_MARKER in (m.get("content") or "")
+            )
+        ]
+
+        # Insert the new remount block.  Place it after the last existing system
+        # message (usually the skill_prelude / persona block) so context order is:
+        #   [system: skill_prelude] … [system: remount] … [user/assistant messages]
+        last_system_idx = -1
+        for idx, m in enumerate(cleaned):
+            if m.get("role") == "system":
+                last_system_idx = idx
+        insert_at = last_system_idx + 1
+
+        result = cleaned[:insert_at] + [remount_block] + cleaned[insert_at:]
+
+        logger.info(
+            "skill_remounted sid=%s names=%s budget_used=%d",
+            session_id,
+            [s.split("\n")[0].replace("### ", "") for s in sections],
+            self._REMOUNT_TOKEN_BUDGET - budget_remaining,
+        )
+        return result
+
+    # ------------------------------------------------------------------
+    # Tool dispatch
+    # ------------------------------------------------------------------
 
     async def _dispatch_tool(
         self, tc: ToolCall, task_id: str, session_id: str = "default"

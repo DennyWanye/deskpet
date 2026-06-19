@@ -41,6 +41,9 @@ try:
     import docx
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt, Inches, RGBColor
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
 
     _HAS_DOCX = True
 except Exception:  # noqa: BLE001
@@ -66,6 +69,157 @@ def _coerce(obj: Any) -> Optional[Any]:
 
 
 # ---------------------------------------------------------------------------
+# Rich-formatting helpers (font color, mixed runs, lists, images, page #)
+# ---------------------------------------------------------------------------
+def _rgb(c: Any) -> Optional["RGBColor"]:
+    """'#1F4E78' / '1F4E78' → RGBColor; bad input → None."""
+    if not c:
+        return None
+    try:
+        s = str(c).lstrip("#")
+        if len(s) == 6:
+            return RGBColor(int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
+def _apply_run_style(run, d: dict[str, Any]) -> None:
+    """Apply bold/italic/underline/color/font_size/font_name to a run.
+    Used both for whole-paragraph shorthand and per-run mixed formatting."""
+    if d.get("bold"):
+        run.bold = True
+    if d.get("italic"):
+        run.italic = True
+    if d.get("underline"):
+        run.underline = True
+    size = d.get("font_size")
+    if size:
+        try:
+            run.font.size = Pt(float(size))
+        except (ValueError, TypeError):
+            pass
+    color = _rgb(d.get("color"))
+    if color is not None:
+        run.font.color.rgb = color
+    name = d.get("font_name") or d.get("font")
+    if name:
+        run.font.name = str(name)
+
+
+def _has_style(document, name: str) -> bool:
+    try:
+        _ = document.styles[name]
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _add_list(document, el: dict[str, Any]) -> None:
+    """Bullet / numbered list. ``el`` = {items:[str|{text,...}], ordered?,
+    level?}. Falls back to plain paragraphs if the list style is missing."""
+    items = el.get("items") or []
+    if not isinstance(items, list):
+        return
+    ordered = bool(el.get("ordered"))
+    base = "List Number" if ordered else "List Bullet"
+    try:
+        level = int(el.get("level", 0) or 0)
+    except (ValueError, TypeError):
+        level = 0
+    name = base if level <= 0 else f"{base} {min(level + 1, 3)}"
+    if not _has_style(document, name):
+        name = base if _has_style(document, base) else ""
+    for it in items:
+        text = it.get("text", "") if isinstance(it, dict) else it
+        para = (
+            document.add_paragraph(style=name)
+            if name
+            else document.add_paragraph()
+        )
+        run = para.add_run(str(text))
+        if isinstance(it, dict):
+            _apply_run_style(run, it)
+
+
+def _add_image(document, el: dict[str, Any]) -> None:
+    """Insert a picture. ``el`` = {path|src, width_in?, align?}."""
+    p = el.get("path") or el.get("src")
+    if not p or not Path(str(p)).exists():
+        log.warning("doc image path missing: %r", p)
+        return
+    kw: dict[str, Any] = {}
+    w = el.get("width_in") or el.get("width_inches")
+    if w:
+        try:
+            kw["width"] = Inches(float(w))
+        except (ValueError, TypeError):
+            pass
+    try:
+        document.add_picture(str(p), **kw)
+    except Exception as exc:  # noqa: BLE001 — image is non-critical
+        log.warning("doc image skipped: %s", exc)
+        return
+    align = _ALIGN.get(str(el.get("align", "")).lower())
+    if align and document.paragraphs:
+        document.paragraphs[-1].alignment = getattr(WD_ALIGN_PARAGRAPH, align)
+
+
+def _shade_cell(cell, hex_fill: str) -> None:
+    """Fill a table cell with a background color (python-docx has no API;
+    inject ``<w:shd>`` into the cell's properties)."""
+    s = str(hex_fill).lstrip("#").upper()
+    if len(s) != 6:
+        return
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), s)
+    cell._tc.get_or_add_tcPr().append(shd)
+
+
+def _add_page_number_field(paragraph) -> None:
+    """Inject a live { PAGE } field into ``paragraph`` (renders the real
+    page number in Word/WPS; python-docx has no high-level API for it)."""
+    run = paragraph.add_run()
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = "PAGE"
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    run._r.append(begin)
+    run._r.append(instr)
+    run._r.append(end)
+
+
+def _apply_header_footer(document, spec_obj: dict[str, Any]) -> None:
+    """Top-level spec keys: header (str), footer (str), page_number (bool).
+    Page number goes centered in the footer (its own line if a footer text
+    is also set)."""
+    header = spec_obj.get("header")
+    footer = spec_obj.get("footer")
+    page_number = bool(spec_obj.get("page_number"))
+    if header is None and footer is None and not page_number:
+        return
+    for section in document.sections:
+        if header is not None:
+            section.header.is_linked_to_previous = False
+            section.header.paragraphs[0].text = str(header)
+        if footer is not None:
+            section.footer.is_linked_to_previous = False
+            section.footer.paragraphs[0].text = str(footer)
+        if page_number:
+            section.footer.is_linked_to_previous = False
+            fp = section.footer.paragraphs[0]
+            if footer is not None and fp.text:
+                fp = section.footer.add_paragraph()
+            fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _add_page_number_field(fp)
+
+
+# ---------------------------------------------------------------------------
 # doc_create
 # ---------------------------------------------------------------------------
 def _add_element(document, el: dict[str, Any]) -> None:
@@ -74,7 +228,7 @@ def _add_element(document, el: dict[str, Any]) -> None:
     # 归一到标准 {type,text} 后再走下面的渲染分支（否则 type 缺省 paragraph、
     # text 取不到 → 渲染出空段落，整篇 docx 正文为空）。
     if "type" not in el:
-        for _k in ("heading", "paragraph", "table", "page_break"):
+        for _k in ("heading", "paragraph", "table", "page_break", "list", "image"):
             if _k in el:
                 el = dict(el)
                 inner = el[_k]
@@ -92,45 +246,64 @@ def _add_element(document, el: dict[str, Any]) -> None:
                     el["text"] = inner
                 elif _k == "table" and "rows" not in el:
                     el["rows"] = inner
+                elif _k == "list" and "items" not in el:
+                    el["items"] = inner  # {"list":["a","b"]} 简写
+                elif _k == "image" and "path" not in el:
+                    el["path"] = inner  # {"image":"C:/a.png"} 简写
                 break
     etype = (el.get("type") or "paragraph").lower()
     if etype == "heading":
         level = int(el.get("level", 1))
         level = max(0, min(level, 9))
-        document.add_heading(str(el.get("text", "")), level=level)
+        h = document.add_heading(str(el.get("text", "")), level=level)
+        # 标题支持字色(品牌色标题),其余排版交给内置 Heading 样式。
+        hc = _rgb(el.get("color"))
+        if hc is not None:
+            for run in h.runs:
+                run.font.color.rgb = hc
     elif etype == "page_break":
         document.add_page_break()
+    elif etype == "list":
+        _add_list(document, el)
+    elif etype == "image":
+        _add_image(document, el)
     elif etype == "table":
         rows = el.get("rows") or []
         if not rows:
             return
         ncols = max((len(r) for r in rows), default=0)
         table = document.add_table(rows=len(rows), cols=ncols)
-        table.style = "Table Grid"
+        table.style = str(el.get("style") or "Table Grid")
+        # 表头底色(默认深蓝+白字),可用 header_fill / header_color 覆盖。
+        hdr_fill = str(el.get("header_fill") or "1F4E78").lstrip("#")
+        hdr_color = _rgb(el.get("header_color") or "FFFFFF")
         for ri, row in enumerate(rows):
             for ci in range(ncols):
                 val = row[ci] if ci < len(row) else ""
                 cell = table.cell(ri, ci)
                 cell.text = str(val)
                 if ri == 0 and el.get("header"):
+                    _shade_cell(cell, hdr_fill)
                     for para in cell.paragraphs:
                         for run in para.runs:
                             run.bold = True
+                            if hdr_color is not None:
+                                run.font.color.rgb = hdr_color
     else:  # paragraph
         para = document.add_paragraph()
-        run = para.add_run(str(el.get("text", "")))
-        if el.get("bold"):
-            run.bold = True
-        if el.get("italic"):
-            run.italic = True
-        size = el.get("font_size")
-        if size:
-            try:
-                from docx.shared import Pt
-
-                run.font.size = Pt(float(size))
-            except Exception:  # noqa: BLE001
-                pass
+        # 段内混排: runs=[{text,bold,color,...}] 让一段里多种格式并存
+        # (如"这几个字红色 + 那几个字加粗")。无 runs 时退化为整段一种格式。
+        runs = el.get("runs")
+        if isinstance(runs, list) and runs:
+            for rd in runs:
+                if isinstance(rd, dict):
+                    run = para.add_run(str(rd.get("text", "")))
+                    _apply_run_style(run, rd)
+                else:
+                    para.add_run(str(rd))
+        else:
+            run = para.add_run(str(el.get("text", "")))
+            _apply_run_style(run, el)  # bold/italic/underline/color/font_size
         align = _ALIGN.get(str(el.get("align", "")).lower())
         if align:
             para.alignment = getattr(WD_ALIGN_PARAGRAPH, align)
@@ -139,8 +312,10 @@ def _add_element(document, el: dict[str, Any]) -> None:
 def doc_create(spec: Any, *, output_path: Optional[str] = None) -> dict[str, Any]:
     """Create a new .docx from ``spec`` = {title?, elements: [...]}.
 
-    Element types: heading{text,level}, paragraph{text,bold,italic,
-    align,font_size}, table{rows,header}, page_break.
+    Element types: heading{text,level,color}, paragraph{text|runs,bold,
+    italic,underline,color,align,font_size}, list{items,ordered,level},
+    table{rows,header,header_fill,header_color,style}, image{path,width_in,
+    align}, page_break. Top-level: header, footer, page_number.
     """
     if not _HAS_DOCX:
         return {"ok": False, "error": "python-docx not installed", "retriable": False}
@@ -155,7 +330,8 @@ def doc_create(spec: Any, *, output_path: Optional[str] = None) -> dict[str, Any
 
     try:
         out_path = office_paths.resolve_for_write(
-            output_path, default_prefix="deskpet-doc", default_suffix=".docx"
+            output_path, default_prefix="deskpet-doc", default_suffix=".docx",
+            default_kind="Doc",
         )
     except office_paths.PathError as exc:
         return {"ok": False, "error": str(exc), "retriable": False}
@@ -166,6 +342,7 @@ def doc_create(spec: Any, *, output_path: Optional[str] = None) -> dict[str, Any
         for el in elements:
             if isinstance(el, dict):
                 _add_element(document, el)
+        _apply_header_footer(document, spec_obj)
         if title:
             try:
                 document.core_properties.title = str(title)
@@ -405,8 +582,13 @@ _CREATE_SCHEMA = {
     "name": "doc_create",
     "description": (
         "Create a new Word .docx locally from a structured spec. Elements: "
-        "heading{text,level}, paragraph{text,bold,italic,align,font_size}, "
-        "table{rows,header}, page_break. Returns the file path."
+        "heading{text,level,color}, paragraph{text OR runs:[{text,bold,italic,"
+        "underline,color:'#RRGGBB',font_size}], bold,italic,color,align,"
+        "font_size}, list{items,ordered,level}, table{rows,header,header_fill,"
+        "header_color,style}, image{path,width_in,align}, page_break. "
+        "Top-level spec keys: title, header (str), footer (str), page_number "
+        "(bool, adds live page numbers). Saves to 桌宠/OutPut/Doc by default — "
+        "tell the user the full returned path."
     ),
     "parameters": {
         "type": "object",

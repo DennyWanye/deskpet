@@ -323,7 +323,14 @@ async def test_goal_already_done_skips_checker():
 
 @pytest.mark.asyncio
 async def test_checker_exception_safe_fails_through():
-    """checker.check raise → safe-fail; 不阻 final."""
+    """R-T3 §15.4 变更：checker.check raise → goal_check=skipped；不阻 final；
+    但目标保持 active（不 mark_done）。
+
+    旧行为：safe-fail → done=True → mark_done（危险：checker 故障时静默完成目标）。
+    新行为：safe-fail → goal_check=skipped → 不 mark_done → goal 保持 active，
+    但 AgentLoop 仍 fall-through 到 FinalEvent（不循环 / 不阻塞）。
+    这防止了 checker 故障时的"幽灵完成"，同时不阻断正常 dispatch。
+    """
 
     class _BrokenChecker:
         async def check(self, goal_text, working_msgs):
@@ -351,7 +358,11 @@ async def test_checker_exception_safe_fails_through():
             session_id="sid-1",
         )
     ]
-    # safe-fail → 视同 done=True → mark_done + emit final
+    # R-T3: checker degraded → NOT mark_done (goal stays active)
     g = store.get("sid-1")
-    assert g is not None and g.done is True
+    assert g is not None and g.done is False, (
+        "goal_check=skipped must NOT mark goal as done — "
+        "checker failure should not silently complete the goal"
+    )
+    # But FinalEvent still emitted (checker skipped doesn't block dispatch)
     assert any(isinstance(e, FinalEvent) for e in events)

@@ -27,8 +27,13 @@
 policies:
 
   chat:
+    # FP-4 缺口 (2026-06-06 真机抓 bug)：``preference_profile`` 组件注册了却
+    # **不在任何 policy 的 prefer 里** → 永不 fan-out → FP-4 偏好/画像注入
+    # （WI-3.2）生产全局死掉（同 FP-5 skill 缺 policy 一类系统性 fanout-gating）。
+    # 给对话/任务/code policy 补 preference_profile（flag persona_inject + 空-facts
+    # 双门控 → flag 关或无 facts 时返回空 Slice，字节级 BC）。
     must: [memory, persona]
-    prefer: [tool, time, workspace]
+    prefer: [tool, time, workspace, preference_profile]
     tools: ["*"]
     memory:
       l1: snapshot
@@ -39,7 +44,7 @@ policies:
     # Pure memory-probe: user asked "what did we discuss about X".
     # Give the LLM the widest possible memory window.
     must: [memory]
-    prefer: [persona, tool, time]
+    prefer: [persona, tool, time, preference_profile]
     tools: [memory_read, memory_search]
     memory:
       l1: snapshot
@@ -49,7 +54,7 @@ policies:
   task:
     # "Do X for me" — actioned request. Full tool access + workspace.
     must: [memory, persona]
-    prefer: [tool, skill, workspace, time]
+    prefer: [tool, skill, workspace, time, preference_profile]
     tools: ["*"]
     memory:
       l1: snapshot
@@ -60,8 +65,12 @@ policies:
     # Coding/debugging — scoped tool list, workspace is high value.
     # 记忆系统升级 WI-M1.6：workspace_memory 组件注入本 session 文件
     # 工作记忆；workspace_recall 工具让 agent 主动查改过的文件。
+    # FP-5 缺口 5e (2026-06-06 真机抓 bug)：原 prefer 漏 skill → code 会话
+    # （/goal 所在、技能最该用的场景）SkillComponent 永不 fan-out → 自动披露
+    # （WI-4.1/4.2）+ codify 造出的技能在 code 会话里永不被召回，与 FP-5 自相矛盾。
+    # 补 skill（prefer = 可选 + 预算/flag 双门控，auto_disclosure 关时 desc-only BC）。
     must: [memory]
-    prefer: [persona, tool, workspace, workspace_memory]
+    prefer: [persona, tool, workspace, workspace_memory, skill, preference_profile]
     tools:
       - file_read
       - file_write
@@ -85,7 +94,7 @@ policies:
 
   plan:
     must: [memory, persona]
-    prefer: [tool, time, workspace]
+    prefer: [tool, time, workspace, preference_profile]
     tools: [todo_add, todo_list, todo_update]
     memory:
       l1: snapshot
@@ -95,7 +104,7 @@ policies:
   emotion:
     # Emotional support — no tools, lean into persona + recent chat.
     must: [memory, persona]
-    prefer: [time]
+    prefer: [time, preference_profile]
     tools: []
     memory:
       l1: snapshot

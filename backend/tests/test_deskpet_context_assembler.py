@@ -719,3 +719,100 @@ async def test_assembler_p95_sanity(tmp_path: Path):
     p95 = timings[int(len(timings) * 0.95) - 1]
     # Mock path is deterministic and cheap — should be well under 50ms.
     assert p95 < 370.0, f"p95={p95:.1f}ms (target <370ms)"
+
+
+# ---------------------------------------------------------------------------
+# FP-5 缺口 5j 回归 (2026-06-06 子代理复评)：assemble() 的 config 必须带
+# skills.auto_disclosure，否则 SkillComponent 降级 desc-only。原靠每个 venue
+# 调用方各自传 → 语音 venue 漏传（第 8 处同根 bug）。改为 assembler build 时
+# 记住 default_config，assemble() 兜底合并。守护：调用方不传 skills 也能拿到。
+# ---------------------------------------------------------------------------
+
+def test_build_default_assembler_threads_auto_disclosure_into_default_config():
+    """工厂把 auto_disclosure_config 接成 assembler._default_config。"""
+    ad = {"enabled": True, "strong_threshold": 0.55,
+          "budget_tokens": 8000, "per_skill_max_tokens": 2000}
+    asm = build_default_assembler(
+        embedder=FakeEmbedder(), llm_registry=FakeLLM("chat"),
+        auto_disclosure_config=ad,
+    )
+    assert asm._default_config == {"skills": {"auto_disclosure": ad}}
+
+
+def test_build_default_assembler_no_auto_disclosure_keeps_default_empty():
+    """不传 auto_disclosure_config → default_config 为空（BC）。"""
+    asm = build_default_assembler(embedder=FakeEmbedder(), llm_registry=FakeLLM("chat"))
+    assert asm._default_config == {}
+
+
+@pytest.mark.asyncio
+async def test_assemble_merges_default_config_when_caller_omits_skills(tmp_path: Path):
+    """venue-miss 根治：调用方 config 只给 llm（语音 venue 那样），assemble()
+    应把 default_config 的 skills 段兜底合并进去 → SkillComponent 拿得到
+    auto_disclosure（而非降级 desc-only）。用一个捕获 ctx.config 的探针组件验证。"""
+    from deskpet.agent.assembler.assembler import ContextAssembler
+    from deskpet.agent.assembler.registry import ComponentRegistry
+    from deskpet.agent.assembler.bundle import Slice
+    from deskpet.agent.assembler.classifier import TaskClassifier
+    from deskpet.agent.assembler.policy import AssemblyPolicy
+
+    seen = {}
+
+    class _Probe:
+        name = "memory"  # must-component so it always runs
+
+        async def provide(self, ctx):
+            seen["config"] = dict(ctx.config or {})
+            return Slice(component_name="memory", text_content="", tokens=0,
+                         priority=70, bucket="frozen", meta={})
+
+    reg = ComponentRegistry()
+    reg.register(_Probe())
+    asm = ContextAssembler(
+        component_registry=reg,
+        policies={"chat": AssemblyPolicy(task_type="chat", must=["memory"], prefer=[])},
+        classifier=TaskClassifier(embedder=FakeEmbedder()),
+        default_config={"skills": {"auto_disclosure": {"enabled": True}}},
+    )
+    # Caller passes ONLY llm (mirrors voice_pipeline.py) — no skills key.
+    await asm.assemble("你好", config={"llm": {"model": "m"}}, task_type_override="chat")
+    assert seen["config"].get("skills") == {"auto_disclosure": {"enabled": True}}, \
+        f"default_config 的 skills 未兜底合并: {seen['config']}"
+    assert seen["config"].get("llm") == {"model": "m"}, "调用方 llm 应保留"
+
+
+@pytest.mark.asyncio
+async def test_assemble_deep_merges_partial_skills_keeps_default_auto_disclosure(tmp_path: Path):
+    """第10处加固：caller 传**部分** skills 二级 dict(如只含 codify)时,default 的
+    skills.auto_disclosure 不被整段抹掉(一层深合并)。"""
+    from deskpet.agent.assembler.assembler import ContextAssembler
+    from deskpet.agent.assembler.registry import ComponentRegistry
+    from deskpet.agent.assembler.bundle import Slice
+    from deskpet.agent.assembler.classifier import TaskClassifier
+    from deskpet.agent.assembler.policy import AssemblyPolicy
+
+    seen: dict = {}
+
+    class _Probe:
+        name = "memory"
+
+        async def provide(self, ctx):
+            seen["config"] = dict(ctx.config or {})
+            return Slice(component_name="memory", text_content="", tokens=0,
+                         priority=70, bucket="frozen", meta={})
+
+    reg = ComponentRegistry()
+    reg.register(_Probe())
+    asm = ContextAssembler(
+        component_registry=reg,
+        policies={"chat": AssemblyPolicy(task_type="chat", must=["memory"], prefer=[])},
+        classifier=TaskClassifier(embedder=FakeEmbedder()),
+        default_config={"skills": {"auto_disclosure": {"enabled": True}}},
+    )
+    # Caller passes a DIFFERENT skills sub-key (codify) — must NOT wipe auto_disclosure.
+    await asm.assemble("你好", config={"skills": {"codify": {"x": 1}}},
+                       task_type_override="chat")
+    merged_skills = seen["config"].get("skills") or {}
+    assert merged_skills.get("auto_disclosure") == {"enabled": True}, \
+        f"深合并应保留 default 的 auto_disclosure: {merged_skills}"
+    assert merged_skills.get("codify") == {"x": 1}, "调用方的 codify 子键应保留"

@@ -24,6 +24,7 @@ export type MessageRole =
   | "tool_call"
   | "tool_result"
   | "plan"              // P4-S25 A2: plan card preceding execution
+  | "skill_candidate"   // FP-5 WI-4.3c: 技能自创确认卡（后端 propose → 用户确认）
   | "slash_result"      // FEAT-A2: /slash 命令结果（help/goal/prefs/skill/error）
   | "error";
 
@@ -49,6 +50,16 @@ export interface Message {
   // superpowers 决策2 plan-confirm 硬门: 等用户点 [执行]/[取消]
   plan_awaiting_confirm?: boolean;
   plan_sid?: string;  // which session this plan belongs to (for plan_confirm WS)
+  // FP-5 WI-4.3c: 技能自创确认卡 payload（镜像 plan-card 的 awaiting 模式）
+  skill_candidate_id?: number;     // 后端 pending_skill_candidates 行 id（回传 key）
+  skill_candidate_name?: string;
+  skill_candidate_description?: string;
+  skill_candidate_steps?: string[];
+  // 等用户点 [保存技能]/[忽略]；resolve 后置 false → 按钮消失 / 显示结果
+  skill_candidate_awaiting?: boolean;
+  // resolve 后记录用户最终决定（true=已保存, false=已忽略），驱动结果文案
+  skill_candidate_accepted?: boolean;
+  skill_candidate_sid?: string;    // 该卡所属 session（回传 WS 时不需要但便于定位）
   // Bookkeeping
   ts: number;
 }
@@ -187,6 +198,10 @@ interface SessionsStore {
    *  plan 消息的 awaiting_confirm（按钮消失）。msgId 可空 → 清该会话最近
    *  一条仍 awaiting 的 plan（超时取消路径用）。 */
   resolve_plan(sid: string, msgId?: string): void;
+  /** FP-5 WI-4.3c: 用户点了技能卡的 [保存技能]/[忽略] 后，清掉该卡的
+   *  awaiting（按钮消失），并记录 accepted 决定以驱动结果文案。镜像
+   *  resolve_plan 的 by-id / latest-fallback 模式。candidateId 优先按 id 命中。 */
+  resolve_skill_candidate(sid: string, candidateId: number, accepted: boolean): void;
   upsert_todos(sid: string, todos: Todo[]): void;
   remove(sid: string): void;
   set_inflight(delta: number): void;
@@ -296,10 +311,25 @@ export const useSessionsStore = create<SessionsStore>((set) => ({
   set_messages(sid, messages) {
     set((state) => {
       const cur = state.sessions[sid] ?? blank_session(sid);
+      // 2026-06-06 真机 bug fix：skill_candidate / plan 确认卡是 ephemeral 前端-only
+      // 消息（不持久化到 SessionDB）。打开「完整 chat」/ F5 触发 session_messages_load
+      // → 这里整体替换 messages 会**丢掉仍 awaiting 的确认卡**（真机找技能卡时开
+      // 完整 chat 反而弄丢卡的根因）。重载时把内存里仍 awaiting 的卡 merge 回尾部。
+      const awaitingCards = cur.messages.filter(
+        (m) =>
+          (m.role === "skill_candidate" && m.skill_candidate_awaiting) ||
+          (m.role === "plan" && m.plan_awaiting_confirm),
+      );
+      const reloadedIds = new Set(messages.map((m) => m.id));
+      const preserved = awaitingCards.filter((m) => !reloadedIds.has(m.id));
       return {
         sessions: {
           ...state.sessions,
-          [sid]: { ...cur, messages, last_activity: Date.now() },
+          [sid]: {
+            ...cur,
+            messages: [...messages, ...preserved],
+            last_activity: Date.now(),
+          },
         },
       };
     });
@@ -319,6 +349,34 @@ export const useSessionsStore = create<SessionsStore>((set) => ({
         next[i] = { ...m, plan_awaiting_confirm: false };
         cleared = true;
         if (!msgId) break; // no id → only the latest one
+        break;
+      }
+      if (!cleared) return {};
+      return {
+        sessions: {
+          ...state.sessions,
+          [sid]: { ...cur, messages: next },
+        },
+      };
+    });
+  },
+
+  resolve_skill_candidate(sid, candidateId, accepted) {
+    set((state) => {
+      const cur = state.sessions[sid];
+      if (!cur) return {};
+      let cleared = false;
+      const next = [...cur.messages];
+      for (let i = next.length - 1; i >= 0; i--) {
+        const m = next[i];
+        if (m.role !== "skill_candidate" || !m.skill_candidate_awaiting) continue;
+        if (m.skill_candidate_id !== candidateId) continue;
+        next[i] = {
+          ...m,
+          skill_candidate_awaiting: false,
+          skill_candidate_accepted: accepted,
+        };
+        cleared = true;
         break;
       }
       if (!cleared) return {};

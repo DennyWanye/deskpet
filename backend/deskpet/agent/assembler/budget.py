@@ -164,27 +164,37 @@ def _zero_out(sl: Slice) -> Slice:
 
 
 _TRIM_MARKER = "\n[…trimmed by budget]"
-_TRIM_MARKER_TOKENS = max(1, len(_TRIM_MARKER) // 4)
+
+
+def _count_tokens(text: str) -> int:
+    """统一 token 计数(与 compressor/token_budget 同口径,CJK-aware,优化 #1+#3)。"""
+    from deskpet.agent.tokens import count_text_tokens
+    return count_text_tokens(text)
+
+
+_TRIM_MARKER_TOKENS = max(1, _count_tokens(_TRIM_MARKER))
 
 
 def _shrink_slice(sl: Slice, target_tokens: int) -> Slice:
     """Truncate a slice's text to roughly ``target_tokens`` tokens.
 
-    Token estimate here is the same coarse "1 token ≈ 4 chars" used
-    elsewhere. We reserve room for the trim marker itself so the final
-    slice never exceeds ``target_tokens``.
+    token→char 映射按**内容自身的 char/token 比**算(旧版固定 4char/token 会让 CJK
+    内容反向超预算:中文 1token≈1char,按 4char/token 截会留 ~4 倍 token,优化 #1+#3)。
+    预留 trim marker 余量,保证最终 ``new.tokens <= target_tokens``。
     """
     if target_tokens <= 0 or not sl.text_content:
         return _zero_out(sl)
     # Reserve tokens for the trim marker + safety slack.
     body_tokens = max(1, target_tokens - _TRIM_MARKER_TOKENS - 1)
-    chars = max(4, body_tokens * 4)
+    # 内容自身的 chars-per-token(CJK≈1,英文≈3.5),用它把 token 目标映射成字符上限。
+    full_tok = max(1, _count_tokens(sl.text_content))
+    chars_per_tok = max(1.0, len(sl.text_content) / full_tok)
+    chars = max(4, int(body_tokens * chars_per_tok))
     if len(sl.text_content) <= chars:
         return sl
     truncated = sl.text_content[:chars].rstrip() + _TRIM_MARKER
-    # Recompute from actual truncated length — keep the post-condition
-    # ``new.tokens <= target_tokens`` tight.
-    new_tokens = min(target_tokens, max(1, len(truncated) // 4))
+    # Recompute from actual truncated length — keep the post-condition tight.
+    new_tokens = min(target_tokens, max(1, _count_tokens(truncated)))
     return Slice(
         component_name=sl.component_name,
         text_content=truncated,

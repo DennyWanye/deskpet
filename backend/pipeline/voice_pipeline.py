@@ -59,6 +59,9 @@ class VoicePipeline:
         permission_gate_v2: object | None = None,
         local_llm: object | None = None,
         broadcast: object | None = None,
+        # FP-5 缺口 5k (2026-06-06 子代理复评第9处)：语音 venue 接 build_agent
+        # 工厂需要 AppConfig（构造 verify_gate / codify 等），与文字 venue 对齐。
+        app_config: object | None = None,
     ):
         self.vad = vad
         self.asr = asr
@@ -78,6 +81,10 @@ class VoicePipeline:
         self._tool_registry_v2 = tool_registry_v2
         self._permission_gate_v2 = permission_gate_v2
         self._local_llm = local_llm
+        self._app_config = app_config
+        # FP-5 缺口 5k：codify fire-and-forget 任务的强引用集（防被 GC 提前回收，
+        # 仿 goal_store B-10 _fanout_tasks 修复）。done 后自动 discard。
+        self._codify_tasks: set = set()
         # VOICE-MSGPANEL-SYNC: 多窗口广播器（None == legacy / 单测，跳过 fan-out）。
         # 由 main.py audio_channel 注入 _broadcast_default_chat_peers，让语音对话
         # 也能像文字 chat_v2 一样同步到「消息·主线程」消息框窗口。
@@ -100,6 +107,39 @@ class VoicePipeline:
         task = self._current_task
         if task and not task.done():
             task.cancel()
+
+    async def _maybe_codify_voice(self) -> None:
+        """FP-5 缺口 5k：语音 venue 的技能自创 codify hook（对齐文字 venue）。
+
+        若本轮跑了 ≥5 工具/≥3 不同工具，从 tool_path_recorder 的路径生成技能候选
+        → 经 control_ws 发 skill_candidate_proposed 给桌宠主 UI 渲染确认卡。
+
+        **fire-and-forget**（子代理终轮复评抓出）：_maybe_codify_skill 内部会
+        `wait_for(确认, timeout=300s)` 等用户点技能卡，而语音 TTS 在本轮 agent
+        返回后才合成 → 若直接 await codify，本轮真提候选时用户会听到最长 300s 静音。
+        故 schedule 成后台任务立即返回，让 TTS 正常播；codify 的确认等待在后台跑。
+        app_config / service_context 缺失（legacy/单测）→ no-op（BC）。
+        """
+        sc = self._service_context
+        if self._app_config is None or sc is None:
+            return
+        task = asyncio.ensure_future(self._codify_worker())
+        self._codify_tasks.add(task)
+        task.add_done_callback(self._codify_tasks.discard)
+
+    async def _codify_worker(self) -> None:
+        """实际 codify 调用（后台跑）。safe-fail：异常只 debug log。"""
+        try:
+            from main import (  # noqa: PLC0415 — lazy: avoid circular import
+                _maybe_codify_skill,
+                _SKILL_CANDIDATE_WAITERS,
+            )
+            await _maybe_codify_skill(
+                self._service_context, self._app_config, self.session_id,
+                self.control_ws, _SKILL_CANDIDATE_WAITERS,
+            )
+        except Exception as exc:  # noqa: BLE001 — codify 不能让语音崩
+            logger.debug("voice_codify_skipped", error=str(exc))
 
     async def _emit_tag_event(self, evt: TagEvent) -> None:
         """Forward emotion/action tag to control channel for Live2D driving."""
@@ -504,11 +544,58 @@ class VoicePipeline:
         )
         from agent.tool_use_shim import OpenAICompatibleAgentLLM as _Shim
         shim = _Shim(provider=self._local_llm)
-        loop = _AgentLoop(
-            llm_registry=shim,
-            tool_registry=self._tool_registry_v2,
-            max_iterations=8,
-        )
+        # FP-5 缺口 5k (2026-06-06 子代理复评第9处)：语音 venue 走 build_agent 工厂
+        # （与文字 venue _run_chat 对齐）→ 接 verify_gate(FP-3 产物校验) + skill
+        # 披露/重挂(FP-5) + tool_path_recorder(喂 FP-5 技能自创 codify)。
+        # app_config 缺失(legacy/单测) → 回退裸 _AgentLoop（字节级 BC）。
+        sc = self._service_context
+        loop = None
+        if self._app_config is not None:
+            try:
+                from main import (  # noqa: PLC0415 — lazy: avoid circular import
+                    build_agent as _build_agent,
+                    _get_receipt_store as _grs,
+                )
+                from agent.context_manager import ContextManager as _CtxMgr  # noqa: PLC0415
+                # v2_enabled 回退闸：AppConfig 把 [context] 放在 .raw（无 .context
+                # 属性），必须从 config.raw 读，对齐文字 venue main.py:5370-5373。
+                # （原 getattr(self._app_config,"context",...) 恒落空→恒 True，
+                # 导致 v2_enabled=false 回退闸对语音失效——子代理终轮复评抓出。）
+                _raw = getattr(self._app_config, "raw", {}) or {}
+                _v2 = bool(
+                    ((_raw.get("context") or {}).get("manager") or {})
+                    .get("v2_enabled", True)
+                )
+                _ctx_mgr = _CtxMgr.for_session(
+                    model=getattr(self._local_llm, "model", "unknown"),
+                    project_root=None,
+                    v2_enabled=bool(_v2),
+                )
+                def _g(_n: str):
+                    return sc.get(_n) if sc is not None else None
+                loop = _build_agent(
+                    self._app_config,
+                    llm_registry=shim,
+                    tool_registry=self._tool_registry_v2,
+                    context_manager=_ctx_mgr,
+                    receipt_store_getter=_grs,
+                    max_iterations=8,
+                    session_goal_store=_g("session_goal_store"),
+                    goal_checker=_g("goal_checker"),
+                    compressor=_g("context_compressor"),
+                    skill_loader=_g("skill_loader"),
+                    skill_matcher=_g("skill_matcher"),
+                    tool_path_recorder=_g("tool_path_recorder"),
+                )
+            except Exception as _ba_exc:  # noqa: BLE001 — wiring 不能让语音崩
+                logger.warning("voice_build_agent_failed_fallback", error=str(_ba_exc))
+                loop = None
+        if loop is None:
+            loop = _AgentLoop(
+                llm_registry=shim,
+                tool_registry=self._tool_registry_v2,
+                max_iterations=8,
+            )
 
         final_text = ""
         parser = StreamingTagParser()
@@ -569,8 +656,12 @@ class VoicePipeline:
                             pass
                     elif isinstance(ev, _FinEv):
                         final_text = ev.content or ""
+                        # FP-5 缺口 5k：技能自创闭环（方案 B：FinalEvent + ErrorEvent
+                        # 两处调 codify helper，对齐文字 venue main.py:6085/6148）。
+                        await self._maybe_codify_voice()
                     elif isinstance(ev, _ErrEv):
                         logger.warning("agent_loop_error", error=ev.error)
+                        await self._maybe_codify_voice()
                         if self.control_ws:
                             try:
                                 await self.control_ws.send_json({

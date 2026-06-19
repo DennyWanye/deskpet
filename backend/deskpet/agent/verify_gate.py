@@ -15,11 +15,12 @@ stub 时期已建好接口；本次升级把 stub 替换为真正逻辑：
 """
 from __future__ import annotations
 
+import json
 import logging
 import re as _re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, Protocol
+from typing import Any, Awaitable, Callable, Literal, Optional, Protocol
 
 import yaml
 
@@ -53,6 +54,18 @@ class VerifierFailure:
 
 
 @dataclass
+class GoalAlignment:
+    """WI-2.3: 原目标 vs 客观产物对照结果（由 VerifyGate.check 填入）。
+
+    仅当 check() 传入 goal_text 时生成；goal_text=None 时 VerifyOutcome.goal_alignment=None（BC）。
+    """
+    goal_text: str                 # 重述的【原始目标】（防 verifier 漂移的锚）
+    objective_evidence: list[str]  # receipt + outcome_verifier 的客观信号
+    aligned: bool                  # 客观证据是否真满足原目标
+    gap: str                       # aligned=False 时差什么；aligned=True 时为空串
+
+
+@dataclass
 class VerifyOutcome:
     passed: bool
     claims_extracted: int = 0
@@ -61,6 +74,7 @@ class VerifyOutcome:
     elapsed_ms: int = 0
     extractor_used: str = "regex"
     failure_count: int = 0
+    goal_alignment: Optional[GoalAlignment] = None  # WI-2.3: None when goal_text not provided (BC)
 
 
 @dataclass
@@ -272,13 +286,13 @@ class VerifyGate:
         *,
         extractor: ClaimExtractor,
         mode: str = "off",
-        ephemeral_subagent: Optional[Callable[[Any], bool]] = None,
+        ephemeral_subagent: Optional[Callable[[Any], Awaitable[bool]]] = None,
     ) -> None:
         if mode not in ("off", "shadow", "strict"):
             raise ValueError(f"invalid mode: {mode}")
         self.extractor = extractor
         self.mode = mode
-        # ephemeral_subagent: 接 ledger+failed_claims, 返回 final_verdict
+        # ephemeral_subagent: async callable接 payload dict, 返回 final_verdict bool
         self.ephemeral_subagent = ephemeral_subagent
 
     def check(
@@ -286,8 +300,9 @@ class VerifyGate:
         *,
         assistant_text: str,
         ledger: list[ToolReceipt],
+        goal_text: Optional[str] = None,  # WI-2.3: BC default None → behavior identical to pre-WI-2.3
     ) -> VerifyOutcome:
-        # off mode：总 pass（兼容 BC 路径）
+        # off mode：总 pass（兼容 BC 路径）; goal_text irrelevant in off mode
         if self.mode == "off":
             return VerifyOutcome(passed=True)
 
@@ -313,7 +328,74 @@ class VerifyGate:
                     len(unmatched),
                 )
             outcome.passed = True  # shadow 总放行
+
+        # WI-2.3: build GoalAlignment iff goal_text provided (BC: goal_text=None → skip)
+        if goal_text is not None:
+            outcome.goal_alignment = self._build_goal_alignment(
+                goal_text=goal_text,
+                claims=claims,
+                unmatched=unmatched,
+                ledger=ledger,
+            )
+
         return outcome
+
+    def _build_goal_alignment(
+        self,
+        *,
+        goal_text: str,
+        claims: list[Claim],
+        unmatched: list[UnmatchedClaim],
+        ledger: list[ToolReceipt],
+    ) -> GoalAlignment:
+        """WI-2.3: 从 claim/ledger 客观证据构建 GoalAlignment（纯同步，无 LLM）。
+
+        aligned 判定逻辑（客观证据，不读 persona/用户情绪）:
+          - aligned=True  iff 有 claims 且无 unmatched（即所有 claim 都有 receipt 佐证）
+          - aligned=False iff 有 unmatched claim，或 claim 为空但 ledger 也空
+
+        VG-INVARIANT: goal_text 非 None 时，若有 receipt 证据则
+        objective_evidence ≥1 条；若无任何证据则标记 evidence_unavailable 防空证据放行。
+        """
+        # 收集客观证据（receipt 层）
+        objective_evidence: list[str] = []
+        for r in ledger:
+            if r.ok:
+                objective_evidence.append(f"receipt ok: tool={r.tool_name}")
+
+        if not claims:
+            # 无 claim 提取：vacuous pass（未声明 = 未检验），不产生 aligned 判定
+            # 但需遵守 VG-INVARIANT：无证据时标注
+            if not objective_evidence:
+                objective_evidence = ["evidence_unavailable"]
+            # 无 claim 对目标没有信息 → aligned 保守取 True（无假完成风险）
+            return GoalAlignment(
+                goal_text=goal_text,
+                objective_evidence=objective_evidence,
+                aligned=True,
+                gap="",
+            )
+
+        if unmatched:
+            # 有 claim 但未被 receipt 佐证 → 伪完成
+            gap_parts = [
+                f"unmatched claim: {c.raw_text!r} (reason={c.reason})"
+                for c in unmatched[:3]
+            ]
+            return GoalAlignment(
+                goal_text=goal_text,
+                objective_evidence=objective_evidence if objective_evidence else ["evidence_unavailable"],
+                aligned=False,
+                gap="; ".join(gap_parts),
+            )
+
+        # 所有 claim 都有 receipt 佐证 → aligned
+        return GoalAlignment(
+            goal_text=goal_text,
+            objective_evidence=objective_evidence,
+            aligned=True,
+            gap="",
+        )
 
     def _match_claims_against_ledger(
         self,
@@ -391,7 +473,7 @@ class VerifyGate:
         # 未知 pattern → 兜底返空 list（无 hint，按通用 file 工具放行）
         return []
 
-    def consult_ephemeral_subagent(
+    async def consult_ephemeral_subagent(
         self,
         *,
         ledger: list[ToolReceipt],
@@ -415,7 +497,7 @@ class VerifyGate:
             # stub: 无 ephemeral 接入时直接 fail（保守）
             return False
         try:
-            return bool(self.ephemeral_subagent({
+            return bool(await self.ephemeral_subagent({
                 "ledger_size": len(ledger),
                 "failed_claims": [c.__dict__ for c in failed_claims],
                 "assistant_text": assistant_text[:2000],  # truncate
@@ -425,9 +507,103 @@ class VerifyGate:
             return False
 
 
+# ─── WI-2.2 ephemeral verifier factory ──────────────────────────────────────
+
+_EPHEMERAL_VERIFIER_PROMPT_TEMPLATE = (
+    "You are an objective verification assistant. Your job is to determine whether "
+    "unmatched claims are actually covered by tool calls in the ledger.\n\n"
+    "Context:\n"
+    "- Assistant claimed: {assistant_text}\n"
+    "- Ledger has {ledger_size} tool call record(s).\n"
+    "- Unmatched claims (regex did not find receipt): {failed_claims}\n\n"
+    "Question: Are these 'unmatched' claims actually covered by one of the tool calls "
+    "in the ledger, just phrased differently (synonym / paraphrase)?\n\n"
+    "Rules:\n"
+    "1. Be objective — do NOT just agree with the assistant.\n"
+    "2. Only output pass if you are confident a tool call covers the claim.\n"
+    "3. If ledger_size=0, the answer is almost always fail.\n"
+    "4. Output ONLY valid JSON with no extra text.\n\n"
+    'Output format: {{"verdict": "pass"|"fail", "reason": "<one-line explanation>"}}'
+)
+
+_FENCED_JSON_RX = _re.compile(
+    r"```(?:json)?\s*(\{.*?\})\s*```",
+    _re.DOTALL | _re.IGNORECASE,
+)
+_BARE_JSON_RX = _re.compile(r"\{[^{}]*\}", _re.DOTALL)
+
+
+def _extract_json_str(raw: str) -> dict | None:
+    """3-level JSON extraction: direct → fenced block → first {..}."""
+    s = raw.strip()
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
+    m = _FENCED_JSON_RX.search(s)
+    if m:
+        try:
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
+    m = _BARE_JSON_RX.search(s)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return None
+
+
+def make_ephemeral_verifier(
+    llm_call: Callable[[str], Awaitable[str]],
+) -> Callable[[dict[str, Any]], Awaitable[bool]]:
+    """Factory: wraps an async (prompt:str)->str LLM call into a VerifyGate-compatible
+    async ephemeral_subagent callable.
+
+    The returned callable:
+      - accepts payload dict{ledger_size, failed_claims, assistant_text}
+      - returns True (rescue pass) / False (fail)
+      - Anti-sycophancy + objective-only prompt
+      - Safe-fail: any exception / bad JSON → False (conservative)
+
+    Args:
+        llm_call: async callable (prompt: str) -> str  (e.g. _make_str_llm_call result)
+
+    Returns:
+        async callable matching VerifyGate.ephemeral_subagent signature
+    """
+    async def _verifier(payload: dict[str, Any]) -> bool:
+        try:
+            prompt = _EPHEMERAL_VERIFIER_PROMPT_TEMPLATE.format(
+                assistant_text=str(payload.get("assistant_text", ""))[:500],
+                ledger_size=int(payload.get("ledger_size", 0)),
+                failed_claims=str(payload.get("failed_claims", []))[:500],
+            )
+            raw = await llm_call(prompt)
+            obj = _extract_json_str(raw or "")
+            if obj is None:
+                logger.warning("make_ephemeral_verifier: could not parse LLM JSON: %r", (raw or "")[:200])
+                return False
+            verdict = str(obj.get("verdict", "fail")).strip().lower()
+            return verdict == "pass"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("make_ephemeral_verifier: error: %s", exc)
+            return False
+
+    return _verifier
+
+
 __all__ = [
     "UnmatchedClaim",
     "VerifierFailure",
+    "GoalAlignment",
     "VerifyOutcome",
     "ClaimPattern",
     "Claim",
@@ -437,4 +613,5 @@ __all__ = [
     "CascadeExtractor",
     "VerifyGate",
     "load_claim_patterns",
+    "make_ephemeral_verifier",
 ]

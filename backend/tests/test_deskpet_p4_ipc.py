@@ -679,4 +679,8 @@ def test_message_type_membership() -> None:
     assert "memory_facts_list" in p4_ipc.P4_IPC_MESSAGE_TYPES
     assert "memory_forget" in p4_ipc.P4_IPC_MESSAGE_TYPES
     assert "memory_forget_undo" in p4_ipc.P4_IPC_MESSAGE_TYPES
-    assert len(p4_ipc.P4_IPC_MESSAGE_TYPES) == 11
+    assert "model_provision_status" in p4_ipc.P4_IPC_MESSAGE_TYPES
+    # FP-4 WI-3.3：Pin/Unpin IPC verbs。
+    assert "memory_pin" in p4_ipc.P4_IPC_MESSAGE_TYPES
+    assert "memory_unpin" in p4_ipc.P4_IPC_MESSAGE_TYPES
+    assert len(p4_ipc.P4_IPC_MESSAGE_TYPES) == 14

@@ -340,6 +340,31 @@ export interface EmbedderStatusResponse {
   };
 }
 
+// --- Option A (2026-06-05) 首启模型下载进度 ------------------------------
+//
+// 瘦包不内嵌模型 → backend 首启从 hf-mirror 下载缺失的 bge-m3/faster-whisper。
+// 前端轮询 `model_provision_status`，后端 p4_ipc::_handle_model_provision_status
+// 回传进度。state="ready"(或服务未注册) 时前端不显示进度条。
+export interface ModelProvisionStatusResponse {
+  type: "model_provision_status_response";
+  payload: {
+    /** idle | checking | downloading | ready | error */
+    state: string;
+    /** 正在下载的模型子目录名（downloading 时） */
+    current?: string | null;
+    /** 1-based：当前是第几个模型 */
+    index?: number;
+    /** 本次需下载的模型总数（0 = 无需下载） */
+    total?: number;
+    /** 当前模型已下载字节（按磁盘实时大小估） */
+    downloaded_bytes?: number;
+    /** 当前模型预估总字节（0 = 未知） */
+    total_bytes?: number;
+    /** 仅 error 态：失败原因 */
+    error?: string | null;
+  };
+}
+
 // --- Phase 1.1.6 模型上下文配置卡片（context-1m-rearch）-------------------
 //
 // SettingsPanel「模型上下文」卡片 ←→ backend p4_ipc.py。
@@ -465,6 +490,7 @@ export type IncomingMessage =
   | MemoryForgetResponse
   | MemoryForgetUndoResponse
   | EmbedderStatusResponse
+  | ModelProvisionStatusResponse
   | ModelContextGetResponse
   | ModelContextSetAck
   | PermissionRequest

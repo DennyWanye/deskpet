@@ -155,6 +155,40 @@ class ImageGenerationWorker:
     async def _enqueue(self, job: ImageJob) -> None:
         await self._queue.put(job)
 
+    # ---------------- generic background submit ----------------
+
+    @property
+    def notifier(self) -> Notifier:
+        """The out-of-band push callback(session_id, text). Reused by
+        callers that run their own long background job (e.g. 图文 PPT 生成)
+        and want to push the result back to the pet."""
+        return self._notifier
+
+    def alive(self) -> bool:
+        return (
+            self._loop is not None
+            and self._task is not None
+            and not self._task.done()
+        )
+
+    def submit_background(self, coro_factory: Callable[[], Awaitable[None]]) -> bool:
+        """在 worker 的事件循环上调度一个任意后台协程,立即返回。
+
+        给「图文 PPT」这类长任务用: 工具处理器(同步,跑在 executor 线程)
+        把整份 deck 的生成(生图+组装+预览)丢到后台,agent 回合秒回不阻塞,
+        做好后由协程内部用 self.notifier 推回桌宠。成功调度返回 True。
+        从不阻塞、从不抛异常。
+        """
+        if not self.alive():
+            log.warning("submit_background: worker not alive")
+            return False
+        try:
+            asyncio.run_coroutine_threadsafe(coro_factory(), self._loop)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("submit_background failed: %r", exc)
+            return False
+
     # ---------------- run loop ----------------
 
     async def _run_loop(self) -> None:

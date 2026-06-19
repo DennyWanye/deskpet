@@ -29,9 +29,12 @@ export interface CatalogModel {
   label: string;
   caps: ModelCaps;
   /** Real nominal context window (tokens), or null when genuinely
-   * unknown → UI shows "由 provider 决定" instead of a fake number.
-   * Read-only (the model defines it; not user-selectable). */
+   * unknown → UI shows "由 provider 决定" instead of a fake number. */
   context_window?: number | null;
+  /** 2026-06-12: 该型号支持的上下文档位(tokens)。长度 > 1 → 面板渲染
+   * 可选下拉(如 gpt-5.5: 128K/400K/1M),用户选择经 model_context_set
+   * 持久化到 backend 全局 override。空/缺失 → 单档只读。 */
+  supported_windows?: number[] | null;
 }
 
 /** Look up a model's real context window from the catalog. */
@@ -42,6 +45,27 @@ export function contextWindowForModel(
   if (!model_id) return null;
   const hit = catalog.find((m) => m.id === model_id);
   return hit?.context_window ?? null;
+}
+
+/** 上下文长度 → 仅 K/M 单位的紧凑字符串(给模型按钮 + 参数弹框统一用)。
+ *  128000→"128K"  400000→"400K"  1000000→"1M"  1500000→"1.5M"  null→""。 */
+export function formatContextWindow(n: number | null | undefined): string {
+  if (!n || !Number.isFinite(n) || n <= 0) return "";
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${Number.isInteger(m) ? m : +m.toFixed(1)}M`;
+  }
+  return `${Math.round(n / 1000)}K`;
+}
+
+/** 该型号可选的上下文档位(>1 才渲染下拉)。 */
+export function supportedWindowsForModel(
+  model_id: string | null | undefined,
+  catalog: CatalogModel[],
+): number[] {
+  if (!model_id) return [];
+  const hit = catalog.find((m) => m.id === model_id);
+  return (hit?.supported_windows ?? []).filter((w) => Number.isFinite(w) && w > 0);
 }
 
 interface CodeModelsStore {

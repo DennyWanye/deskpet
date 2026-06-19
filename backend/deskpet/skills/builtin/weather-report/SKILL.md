@@ -1,6 +1,8 @@
 ---
 name: weather-report
 description: 查询当前所在城市的天气并播报
+when_to_use: 用户问今天天气怎么样、气温多少、要不要带伞时
+triggers: [天气, 气温, 下雨, 带伞]
 version: 0.1.0
 author: deskpet
 task_types: [task, chat]

@@ -93,3 +93,33 @@ def test_context_manager_v1_rollback_still_uses_legacy_window():
     r = cm.check_budget(_msgs(10), model="claude-sonnet-4.5")
     assert r.verdict is BudgetCheck.OK
     assert r.context_window == 200_000
+
+
+# ---------------------------------------------------------------------------
+# FP-2 TC-2.1 真机暴露 bug:char/4 启发式对 CJK 低估 ~4 倍 →
+# 中文重度会话 real 28k tokens 被估 ~7k,compaction(24k 阈值)永不触发。
+# 修复:CJK 字符按 ≈1 token/字计(等效 4 ASCII chars)。
+# ---------------------------------------------------------------------------
+
+def test_estimate_tokens_cjk_not_underestimated():
+    """1000 个汉字 ≈ 1000 tokens(±30%),旧 char/4 只给 ~250 → 必须修。"""
+    from agent.token_budget import estimate_tokens
+    msgs = [{"role": "user", "content": "会" * 1000}]
+    est = estimate_tokens(msgs)
+    assert est >= 700, f"CJK underestimated: {est} for 1000 hanzi (expect ~1000)"
+
+
+def test_estimate_tokens_ascii_unchanged():
+    """纯 ASCII 仍 ~char/4(4000 chars ≈ 1000 tokens ±20%)。"""
+    from agent.token_budget import estimate_tokens
+    msgs = [{"role": "user", "content": "a" * 4000}]
+    est = estimate_tokens(msgs)
+    assert 800 <= est <= 1300, f"ASCII estimate drifted: {est}"
+
+
+def test_estimate_tokens_mixed_cjk_ascii():
+    """混合:500 汉字 + 2000 ASCII ≈ 500 + 500 = ~1000 tokens(±30%)。"""
+    from agent.token_budget import estimate_tokens
+    msgs = [{"role": "user", "content": "中" * 500 + "x" * 2000}]
+    est = estimate_tokens(msgs)
+    assert 700 <= est <= 1400, f"mixed estimate off: {est}"

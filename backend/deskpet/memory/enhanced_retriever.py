@@ -462,7 +462,10 @@ def _fact_row_to_hit(r: dict, *, source: str) -> Hit:
     """
     fid = int(r["id"])
     synth = _FACT_ID_OFFSET + fid
-    text = f"[fact] {r['key']}: {r['value']}"
+    # FP-4 WI-3.1: category-specific prefix for goal/decision/constraint
+    _cat = str(r.get("category") or "")
+    _tag = _cat if _cat in ("goal", "decision", "constraint") else "fact"
+    text = f"[{_tag}] {r['key']}: {r['value']}"
     if r.get("evidence"):
         text += f"  (来源: {r['evidence']})"
     ts = float(r.get("updated_at") or 0.0)

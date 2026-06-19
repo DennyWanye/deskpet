@@ -14,6 +14,7 @@ mod crash_reports;
 mod device;
 mod diagnostics;
 mod gpu_check;
+mod job_object;
 mod onboarding;
 mod paths;
 mod process_manager;
@@ -246,6 +247,12 @@ pub fn run() {
                 if let Some(state) = window.try_state::<BackendProcess>() {
                     state.kill_child();
                 }
+                // 关闭桌宠主窗 = 退出整个 app。否则启动时一并创建的隐藏窗口
+                // （message-panel / code-panel）会让进程继续存活，python
+                // backend 也跟着不退（即便有 job object 也只在进程真正退出时
+                // 才触发清理），重开时撞 8100 端口占用。显式 exit → 进程结束
+                // → job object 关闭 → backend 被 OS 连带终止。
+                window.app_handle().exit(0);
             }
         })
         .run(tauri::generate_context!())

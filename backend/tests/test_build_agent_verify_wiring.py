@@ -189,6 +189,32 @@ def test_build_agent_passes_all_optional_kwargs(
     assert agent is not None
 
 
+def test_build_agent_passes_tool_path_recorder(cfg_flag_on, mock_receipt_store_getter):
+    """FP-5 缺口 2：build_agent 把 tool_path_recorder 真传给 _AgentLoop（否则
+    WI-1.6 工具路径录制生产 no-op → 技能自创端到端不触发）。"""
+    from main import build_agent
+
+    rec = MagicMock(name="tool_path_recorder")
+    agent = build_agent(
+        cfg_flag_on,
+        llm_registry=MagicMock(),
+        tool_registry=MagicMock(),
+        context_manager=MagicMock(),
+        receipt_store_getter=mock_receipt_store_getter,
+        tool_path_recorder=rec,
+    )
+    assert agent.tool_path_recorder is rec
+    # 默认 None → BC（不录）
+    agent_bc = build_agent(
+        cfg_flag_on,
+        llm_registry=MagicMock(),
+        tool_registry=MagicMock(),
+        context_manager=MagicMock(),
+        receipt_store_getter=mock_receipt_store_getter,
+    )
+    assert agent_bc.tool_path_recorder is None
+
+
 def test_build_agent_receipt_store_getter_failure_disables_gate(
     cfg_flag_on, caplog,
 ):

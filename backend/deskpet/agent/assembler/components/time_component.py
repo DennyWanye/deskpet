@@ -17,6 +17,7 @@ from typing import Optional
 
 from deskpet.agent.assembler.bundle import Slice
 from deskpet.agent.assembler.components.base import Component, ComponentContext
+from deskpet.agent.tokens import count_text_tokens as _ctok
 
 
 class TimeComponent:
@@ -45,7 +46,7 @@ class TimeComponent:
         return Slice(
             component_name=self.name,
             text_content=text,
-            tokens=max(1, len(text) // 4),
+            tokens=_ctok(text),
             priority=10,
             bucket="dynamic",
             meta={"tz": tz_name},

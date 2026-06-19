@@ -92,7 +92,9 @@ jobs:
           # and just invoke tauri-cli directly. Single `--` only — a
           # second `--` turns --bundles into a positional and the build
           # aborts in seconds.
-          npm run tauri -- build --bundles nsis msi
+          # 统一 NSIS(.exe) 作为唯一发行 + 自更新格式（见 docs/RELEASE.md）。
+          # NSIS→NSIS 支持静默就地升级；自更新 latest.json 也指向 NSIS。
+          npm run tauri -- build --bundles nsis
           if ($LASTEXITCODE -ne 0) { throw "tauri build exit=$LASTEXITCODE" }
 
       - name: Verify bundle artifacts exist
@@ -109,9 +111,7 @@ jobs:
           $v = "${{ steps.ver.outputs.version }}"
           $expected = @(
             "$bundle/nsis/DeskPet_${v}_x64-setup.exe",
-            "$bundle/nsis/DeskPet_${v}_x64-setup.exe.sig",
-            "$bundle/msi/DeskPet_${v}_x64_en-US.msi",
-            "$bundle/msi/DeskPet_${v}_x64_en-US.msi.sig"
+            "$bundle/nsis/DeskPet_${v}_x64-setup.exe.sig"
           )
           $missing = @()
           foreach ($f in $expected) {
@@ -122,7 +122,7 @@ jobs:
             $missing | ForEach-Object { Write-Host "  $_" }
             throw "$($missing.Count) expected artifact(s) missing — see bundle tree above."
           }
-          Write-Host "All 4 expected artifacts present."
+          Write-Host "All expected NSIS artifacts present."
 
       - name: Generate latest.json manifest
         shell: pwsh
@@ -154,11 +154,14 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: DeskPet ${{ steps.ver.outputs.tag }}
           draft: false
-          prerelease: ${{ contains(steps.ver.outputs.tag, '-') }}
+          # 自更新 endpoint 用 `releases/latest/download/latest.json`，而 GitHub
+          # 的 "latest" 语义**不含 prerelease**。本项目 beta 阶段每次发布的就是
+          # 用户实际安装/更新的版本，必须让它成为 "Latest" endpoint 才看得到。
+          # 故一律不标 prerelease（含 -beta.N 的 tag 也是）。等真正出 alpha/rc
+          # 这类"不该被自动推送"的预览版时，再按 tag 后缀单独判定。
+          prerelease: false
           generate_release_notes: true
           files: |
             tauri-app/src-tauri/target/release/bundle/nsis/DeskPet_${{ steps.ver.outputs.version }}_x64-setup.exe
             tauri-app/src-tauri/target/release/bundle/nsis/DeskPet_${{ steps.ver.outputs.version }}_x64-setup.exe.sig
-            tauri-app/src-tauri/target/release/bundle/msi/DeskPet_${{ steps.ver.outputs.version }}_x64_en-US.msi
-            tauri-app/src-tauri/target/release/bundle/msi/DeskPet_${{ steps.ver.outputs.version }}_x64_en-US.msi.sig
             latest.json

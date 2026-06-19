@@ -81,8 +81,11 @@ def _v2_default_enabled() -> bool:
 # 调研依据：Claude Code compact ~83% / Cline 80% / DeepSeek-TUI 75% /
 # Codex effective 95%。v1 是按 800K context 同比例 ×4 放大的写死值。
 _LEGACY_TOOL_RESULT_THRESHOLD = 16_000
-_LEGACY_TOOL_RESULT_HEAD = 6_000
-_LEGACY_TOOL_RESULT_TAIL = 2_000
+# 2026-06-13 收紧(治本): head/tail 是「截断后留在历史里的量」,原 6K+2K
+# 每条留 8K+。外置哲学下历史只需结构(头部 schema/正文开头)+收尾(报错/
+# 结论),细节 ref_id 取回 → 2.5K+0.8K,留存量降到 ~1/3。
+_LEGACY_TOOL_RESULT_HEAD = 2_500
+_LEGACY_TOOL_RESULT_TAIL = 800
 _LEGACY_COMPACT_MESSAGE_THRESHOLD = 80
 _LEGACY_COMPACT_CHAR_THRESHOLD = 300_000
 _LEGACY_COMPACT_KEEP_RECENT = 12
@@ -178,12 +181,17 @@ class ContextConfig:
     def tool_result_threshold(self) -> int:
         """B1 单条 tool_result 超过此 char 数才切。
 
-        v2: max(8_000, window // 25)（1M→40K；200K/32K→8K floor）。
-        v1: 写死 16_000。
+        2026-06-13 收紧(上下文外置·治本): 原 v2 公式 window//25 对 400K
+        给 16K/条 —— 真机调研会话一轮 4×web_fetch 就 64K 字符,两三轮即
+        触发压缩。哲学转向「历史只留结构摘要,细节经 fetch_tool_result
+        按需取回」(取回工具 companion 会话也可用,已验证):
+        v2: max(6_000, min(12_000, window // 60))(400K→6.6K;1M→12K;32K→6K)。
+        v1: 写死 16_000(legacy 回退不动)。
         """
         if not self.v2_enabled:
             return _LEGACY_TOOL_RESULT_THRESHOLD
-        return max(8_000, self._resolved_model_info().context_window // 25)
+        win = self._resolved_model_info().context_window
+        return max(6_000, min(12_000, win // 60))
 
     @property
     def compact_message_threshold(self) -> int:

@@ -95,7 +95,11 @@ CREATE TABLE IF NOT EXISTS facts (
     -- 老库由 schema_v2_migrator.ensure_memory_v2_columns 通过 ALTER
     -- 补齐；新库一次到位避免启动后立即再 ALTER。
     superseded_by  INTEGER REFERENCES facts(id),
-    forgotten_at   REAL
+    forgotten_at   REAL,
+    -- FP-4 Task 1：scope（user/session）+ pinned（用户主动钉住，跳过衰减）。
+    -- 老库同样由 schema_v2_migrator._COLUMN_ADDS ALTER 补齐。
+    scope          TEXT    DEFAULT 'user',
+    pinned         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_facts_subject_key ON facts(subject, key, is_active);
 CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category, is_active);
@@ -156,11 +160,70 @@ CREATE TABLE IF NOT EXISTS session_plans (
     awaiting    INTEGER NOT NULL DEFAULT 0,
     ts          REAL    NOT NULL
 );
+
+"""
+
+# ─────────────────────────────────────────────────────────────────────
+# goal-completion FP-1 — 目标持久化（WI-1.1，冻结 §1.3）
+# ─────────────────────────────────────────────────────────────────────
+# ⚠️ 故意 NOT 放进共享 `_DDL`：`ensure_memory_v2_tables` 被 facts /
+# session_plans 等常态调用，若把 session_goals 塞进共享 DDL，则 goal_mode
+# OFF 但 memory_v2 ON（默认）的用户也会被建空表 → 违反护城河「flag-OFF 用户
+# DB 字节不变」（R-T5 字节基线会 FAIL）。改为独立 ensure，只有 goal store
+# 真正落库时（goal_mode ON）才触发建表。多目标物理支持（goal_id PK），API
+# 层 last-write-wins 单活跃目标；criteria 占位列 FP-3(2.3) 用。
+_SESSION_GOALS_DDL = """
+CREATE TABLE IF NOT EXISTS session_goals (
+    goal_id         TEXT    PRIMARY KEY,
+    session_id      TEXT    NOT NULL,
+    text            TEXT    NOT NULL,
+    status          TEXT    NOT NULL DEFAULT 'active',
+    progress        REAL    NOT NULL DEFAULT 0.0,
+    criteria        TEXT,
+    max_iterations  INTEGER NOT NULL DEFAULT 10,
+    iterations_used INTEGER NOT NULL DEFAULT 0,
+    set_at          REAL    NOT NULL,
+    updated_at      REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_goals_sid
+    ON session_goals(session_id, status);
+"""
+
+# ─────────────────────────────────────────────────────────────────────
+# goal-completion FP-2 — task graph（WI-1.2，冻结 §1.3）
+# ─────────────────────────────────────────────────────────────────────
+# ⚠️ 故意 NOT 放进共享 `_DDL`：同 session_goals 理由，flag-OFF 用户
+# DB 字节不变（R-T5 字节基线）。只有 TaskGraphStore 真正落库时
+# （goal_mode ON）才触发建表。
+_GOAL_TASKS_DDL = """
+CREATE TABLE IF NOT EXISTS goal_tasks (
+    task_id     TEXT    PRIMARY KEY,
+    goal_id     TEXT    NOT NULL,
+    session_id  TEXT    NOT NULL,
+    title       TEXT    NOT NULL,
+    status      TEXT    NOT NULL DEFAULT 'pending',
+    depends_on  TEXT    NOT NULL DEFAULT '[]',
+    claimed_by  TEXT,
+    result      TEXT,
+    created_at  REAL    NOT NULL,
+    updated_at  REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_goal_tasks_goal
+    ON goal_tasks(goal_id, status);
 """
 
 # Cache so we don't re-run executescript every call. Keyed by absolute db path.
 _ensured: Set[str] = set()
 _lock = asyncio.Lock()
+
+# Separate cache + lock for the goal-mode-gated session_goals table (see
+# _SESSION_GOALS_DDL above — kept out of the shared _DDL on purpose).
+_goals_ensured: Set[str] = set()
+_goals_lock = asyncio.Lock()
+
+# Separate cache + lock for goal_tasks (FP-2 WI-1.2, same flag-OFF moat).
+_goal_tasks_ensured: Set[str] = set()
+_goal_tasks_lock = asyncio.Lock()
 
 
 async def ensure_memory_v2_tables(db_path: str | Path) -> None:
@@ -208,8 +271,56 @@ async def ensure_memory_v2_tables(db_path: str | Path) -> None:
         log.debug("memory_v2 tables ensured for %s", key)
 
 
+async def ensure_session_goals_table(db_path: str | Path) -> None:
+    """Idempotent CREATE TABLE IF NOT EXISTS for ``session_goals`` only.
+
+    Deliberately separate from :func:`ensure_memory_v2_tables` so the goal
+    table is created ONLY when the goal store actually persists (goal_mode
+    ON). This preserves the "flag-OFF → DB bytes unchanged" moat: a user
+    with goal_mode OFF (even with memory_v2 ON) never gets this table.
+    Per-path cached like the shared ensure. Does NOT bump user_version.
+    """
+    key = str(Path(db_path).resolve())
+    if key in _goals_ensured:
+        return
+    async with _goals_lock:
+        if key in _goals_ensured:
+            return
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            await conn.executescript(_SESSION_GOALS_DDL)
+            await conn.commit()
+        _goals_ensured.add(key)
+        log.debug("session_goals table ensured for %s", key)
+
+
+async def ensure_goal_tasks_table(db_path: str | Path) -> None:
+    """Idempotent CREATE TABLE IF NOT EXISTS for ``goal_tasks`` only.
+
+    Deliberately separate from :func:`ensure_memory_v2_tables` and
+    :func:`ensure_session_goals_table` so the task-graph table is created
+    ONLY when TaskGraphStore actually persists (goal_mode ON).
+    This preserves the "flag-OFF → DB bytes unchanged" moat (R-T5).
+    Per-path cached like the shared ensure. Does NOT bump user_version.
+    """
+    key = str(Path(db_path).resolve())
+    if key in _goal_tasks_ensured:
+        return
+    async with _goal_tasks_lock:
+        if key in _goal_tasks_ensured:
+            return
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            await conn.executescript(_GOAL_TASKS_DDL)
+            await conn.commit()
+        _goal_tasks_ensured.add(key)
+        log.debug("goal_tasks table ensured for %s", key)
+
+
 def _reset_cache_for_tests() -> None:
     """Test helper. Clears the per-path cache so a fresh tmp_path DB
     re-runs DDL. Never call from production code.
     """
     _ensured.clear()
+    _goals_ensured.clear()
+    _goal_tasks_ensured.clear()

@@ -112,7 +112,18 @@ class OpenAIAdapter(BaseLLMAdapter):
             return LLMRateLimitError(str(exc), provider=provider, retry_after=retry_after)
         if status in (401, 403) or "Authentication" in name or "PermissionDenied" in name:
             return LLMAuthError(str(exc), provider=provider)
-        if "Timeout" in name or isinstance(exc, TimeoutError):
+        # 2026-06-06 真机：中转 relay 经代理（Clash Verge 等）间歇掉**流式/长连接**，
+        # httpx 抛 ReadError / ConnectError / RemoteProtocolError（name 不含 "Timeout"）
+        # → 之前落 LLMProviderError(不重试同 provider) → agent turn 立即崩。这类连接级
+        # 瞬时错误本应当 timeout 一样可重试（立即重试常救回）。统一归 LLMTimeoutError。
+        _transient_conn = name in (
+            "ReadError", "ConnectError", "RemoteProtocolError", "ProtocolError",
+            "ConnectionError", "APIConnectionError", "APITimeoutError",
+            "WriteError", "PoolTimeout",
+        )
+        if "Timeout" in name or _transient_conn or isinstance(
+            exc, (TimeoutError, ConnectionError)
+        ):
             return LLMTimeoutError(str(exc), provider=provider)
         return LLMProviderError(str(exc), provider=provider, status_code=status)
 

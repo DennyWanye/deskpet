@@ -24,14 +24,25 @@
  *     the handle (or any toolbar button) re-expands.
  *   • A fresh red error auto-expands the panel + switches to "错误".
  */
-import { useEffect, useMemo, useRef, type CSSProperties } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type CSSProperties,
+} from "react";
+
+// 消息流滚动位置持久键(进入消息界面恢复上次位置,见下 useLayoutEffect)。
+const MSGSTREAM_SCROLL_KEY = "deskpet.msgstream.scroll.v1";
 
 import type { InboxItem } from "../stores/sessionsStore";
 
 export type StreamFilter = "all" | "chat" | "warn" | "err";
 
 export interface ChatStreamMessage {
-  role: "user" | "assistant";
+  // 2026-06-12: 加 "tool" — 工具执行轨迹(调用/结果)进主消息流,
+  // 用户全程可观测(此前派生层把 tool_call/tool_result 滤掉了)。
+  role: "user" | "assistant" | "tool";
   text: string;
   ts: number;
 }
@@ -66,7 +77,7 @@ type StreamRow =
   | {
       kind: "chat";
       ts: number;
-      role: "user" | "assistant";
+      role: "user" | "assistant" | "tool";
       text: string;
       key: string;
     }
@@ -90,13 +101,14 @@ export function MessageStreamPanel({
   chatMessages,
   warnings,
   errors,
-  onSetFilter,
   onDismiss,
-  onDismissAll,
   onJumpToSession,
   onChoice,
   embedded = false,
 }: MessageStreamPanelProps) {
+  // 注：onSetFilter / onDismissAll 仍保留在 MessageStreamPanelProps 类型里
+  // （调用方照常传），但当前 render 未用到——半接线的过滤条特性。先不解构
+  // 以通过 tsc noUnusedParameters；要恢复过滤条 UI 时再接回。
   const rows = useMemo(
     () => buildRows(chatMessages, warnings, errors, filter),
     [chatMessages, warnings, errors, filter],
@@ -117,6 +129,41 @@ export function MessageStreamPanel({
     }
   }, [rows.length]);
 
+  // 进入消息界面时恢复上次滚动位置(关掉消息面板再打开仍回到原处)。
+  // 消息大框是独立 webview,开关可能重建 → 用 localStorage 持久,跨 webview 重建有效。
+  // 上次在底部 → 仍贴底(随新消息跟随);否则恢复到当时的 scrollTop。仅挂载时跑一次。
+  const scrollRestoredRef = useRef(false);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el || scrollRestoredRef.current) return;
+    scrollRestoredRef.current = true;
+    let saved: { top: number; atBottom: boolean } | null = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(MSGSTREAM_SCROLL_KEY) || "null");
+    } catch {
+      saved = null;
+    }
+    if (!saved || saved.atBottom) {
+      el.scrollTop = el.scrollHeight; // 默认/上次贴底 → 底部
+    } else {
+      el.scrollTop = Math.max(0, Math.min(saved.top, el.scrollHeight));
+    }
+  }, []);
+
+  const handleListScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    try {
+      localStorage.setItem(
+        MSGSTREAM_SCROLL_KEY,
+        JSON.stringify({ top: el.scrollTop, atBottom }),
+      );
+    } catch {
+      /* localStorage 不可用时忽略,不影响功能 */
+    }
+  };
+
   return (
     <div
       role="region"
@@ -130,7 +177,7 @@ export function MessageStreamPanel({
           对应 onSetFilter / onDismissAll / FilterChip / sweepBarStyle / pillButton
           变成未使用，但 prop 接口保留以兼容 caller。 */}
 
-      <div ref={listRef} style={listStyle}>
+      <div ref={listRef} style={listStyle} onScroll={handleListScroll}>
         {rows.length === 0 ? (
           <div style={emptyStyle}>
             {emptyMessage(filter)}
@@ -221,10 +268,34 @@ function ChatRow({
   text,
   ts,
 }: {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   text: string;
   ts: number;
 }) {
+  if (role === "tool") {
+    // 工具执行轨迹行: 紧凑、低调(灰底等宽小字),不抢聊天主体视觉。
+    return (
+      <div
+        style={{
+          ...rowBaseStyle,
+          alignSelf: "flex-start",
+          background: "rgba(20, 28, 40, 0.7)",
+          color: "#94a3b8",
+          borderColor: "rgba(103, 232, 249, 0.18)",
+          padding: "4px 10px",
+          fontSize: 11.5,
+          fontFamily: "Consolas, 'Courier New', monospace",
+          maxWidth: "92%",
+        }}
+        data-role="tool"
+      >
+        <div data-bp-selectable="" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+          {text || "(工具)"}
+          <span style={{ marginLeft: 8, opacity: 0.5 }}>{format_relative(ts)}</span>
+        </div>
+      </div>
+    );
+  }
   const tone = role === "user" ? PALETTE.user : PALETTE.asst;
   return (
     <div
@@ -344,44 +415,6 @@ function AlertRow({
   );
 }
 
-function FilterChip({
-  label,
-  active,
-  tone,
-  onClick,
-  testId,
-}: {
-  label: string;
-  active: boolean;
-  tone?: "warn" | "err";
-  onClick: () => void;
-  testId?: string;
-}) {
-  const accent = tone ? PALETTE[tone].accent : "#67e8f9";
-  const border = tone ? PALETTE[tone].border : "rgba(103, 232, 249, 0.40)";
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      onClick={onClick}
-      style={{
-        fontSize: 10.5,
-        fontWeight: active ? 700 : 500,
-        padding: "3px 8px",
-        marginRight: 4,
-        borderRadius: 5,
-        border: `1px solid ${active ? border : "rgba(148, 163, 184, 0.20)"}`,
-        background: active ? (tone ? PALETTE[tone].soft : "rgba(103, 232, 249, 0.18)") : "transparent",
-        color: active ? accent : "#cbd5e1",
-        cursor: "pointer",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {label}
-    </button>
-  );
-}
-
 function pillButton(color: string, border: string): CSSProperties {
   return {
     fontSize: 10.5,
@@ -440,22 +473,6 @@ const embeddedWrapperStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   overflow: "hidden",
-};
-
-const headerStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  flexWrap: "wrap",
-  rowGap: 4,
-  padding: "6px 6px 6px 8px",
-  borderBottom: "1px solid rgba(148, 163, 184, 0.18)",
-};
-
-const sweepBarStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "flex-end",
-  padding: "4px 8px",
-  borderBottom: "1px dashed rgba(148, 163, 184, 0.15)",
 };
 
 const listStyle: CSSProperties = {

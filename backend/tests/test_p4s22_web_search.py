@@ -50,7 +50,7 @@ def test_web_search_parses_results():
         mock_client = MagicMock()
         mock_client.__enter__.return_value = mock_client
         mock_client.__exit__.return_value = False
-        mock_client.post.return_value = _FakeResponse(_FAKE_DDG_HTML)
+        mock_client.request.return_value = _FakeResponse(_FAKE_DDG_HTML)
         mock_client_cls.return_value = mock_client
 
         out = json.loads(web_search({"query": "python", "max_results": 5}))
@@ -68,7 +68,7 @@ def test_web_search_caps_at_max_results():
         mock_client = MagicMock()
         mock_client.__enter__.return_value = mock_client
         mock_client.__exit__.return_value = False
-        mock_client.post.return_value = _FakeResponse(_FAKE_DDG_HTML)
+        mock_client.request.return_value = _FakeResponse(_FAKE_DDG_HTML)
         mock_client_cls.return_value = mock_client
 
         out = json.loads(web_search({"query": "x", "max_results": 1}))
@@ -82,7 +82,7 @@ def test_web_search_caps_at_hard_max():
         mock_client = MagicMock()
         mock_client.__enter__.return_value = mock_client
         mock_client.__exit__.return_value = False
-        mock_client.post.return_value = _FakeResponse(_FAKE_DDG_HTML)
+        mock_client.request.return_value = _FakeResponse(_FAKE_DDG_HTML)
         mock_client_cls.return_value = mock_client
 
         out = json.loads(web_search({"query": "x", "max_results": 999}))
@@ -118,7 +118,7 @@ def test_web_search_handles_empty_html():
         mock_client = MagicMock()
         mock_client.__enter__.return_value = mock_client
         mock_client.__exit__.return_value = False
-        mock_client.post.return_value = _FakeResponse("<html></html>")
+        mock_client.request.return_value = _FakeResponse("<html></html>")
         mock_client_cls.return_value = mock_client
 
         out = json.loads(web_search({"query": "x"}))

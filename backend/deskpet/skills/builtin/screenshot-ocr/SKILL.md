@@ -1,6 +1,8 @@
 ---
 name: screenshot-ocr
 description: 识别图片/截图里的文字（中英文，本地 OCR 引擎）
+when_to_use: 用户要识别图片或截图里的文字、OCR 提取文本时
+triggers: [ocr, OCR, 识别文字, 图里的字, 截图文字, 图片文字]
 version: 0.1.0
 author: deskpet
 task_types: [task]

@@ -1,6 +1,6 @@
 [package]
 name = "deskpet"
-version = "0.6.0-beta.1"
+version = "0.6.0-beta.5"
 description = "A desktop pet application"
 authors = ["you"]
 edition = "2021"
@@ -55,6 +55,14 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
+# 孤儿进程修复：用 Job Object(KILL_ON_JOB_CLOSE) 把 python backend 绑定到
+# deskpet.exe 生命周期，进程退出即连带终止 backend，杜绝 8100 端口残留。
+# 版本对齐 webview2-com 传递引入的 windows 0.61，cargo 统一编译不增负担。
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+] }
 
 [features]
 default = ["custom-protocol"]

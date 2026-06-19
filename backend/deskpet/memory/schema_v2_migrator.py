@@ -31,6 +31,10 @@ _COLUMN_ADDS: dict[str, list[tuple[str, str]]] = {
     "facts": [
         ("superseded_by", "INTEGER REFERENCES facts(id)"),
         ("forgotten_at", "REAL"),
+        # FP-4 Task 1：scope（user/session 打标）+ pinned（跳过衰减）。
+        # 老库 ALTER 补齐；ALTER 失败时 alter_failures() 记录，调用方可降级。
+        ("scope", "TEXT DEFAULT 'user'"),
+        ("pinned", "INTEGER NOT NULL DEFAULT 0"),
     ],
 }
 

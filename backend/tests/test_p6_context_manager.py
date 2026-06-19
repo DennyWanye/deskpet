@@ -75,11 +75,12 @@ def test_default_config_values():
     cfg = ContextConfig()
     assert cfg.v2_enabled is True
 
-    # B1 truncation — v2: max(8_000, 32_000 // 25) = 8_000 floor
-    assert cfg.tool_result_threshold == 8_000
-    # head/tail 两路共用稳定切片量
-    assert cfg.tool_result_head == 6_000
-    assert cfg.tool_result_tail == 2_000
+    # B1 truncation — 2026-06-13 收紧(上下文外置): v2 公式
+    # max(6_000, min(12_000, window//60)); 32K → 6_000 floor
+    assert cfg.tool_result_threshold == 6_000
+    # head/tail 两路共用稳定切片量(外置哲学: 历史只留结构+收尾)
+    assert cfg.tool_result_head == 2_500
+    assert cfg.tool_result_tail == 800
     # B1 self-awareness — G1 fix core
     assert cfg.skip_truncation_for_tools == {"fetch_tool_result"}
 
@@ -98,8 +99,9 @@ def test_legacy_v1_config_values_when_v2_disabled():
     """Strangler-Fig 回退闸：v2_enabled=False → 2026-05-15 stop-gap 绝对值。"""
     cfg = ContextConfig(v2_enabled=False)
     assert cfg.tool_result_threshold == 16_000
-    assert cfg.tool_result_head == 6_000
-    assert cfg.tool_result_tail == 2_000
+    # head/tail 是"两路共用经验值"(2026-06-13 收紧到 2500/800),v1 同享
+    assert cfg.tool_result_head == 2_500
+    assert cfg.tool_result_tail == 800
     assert cfg.compact_message_threshold == 80
     assert cfg.compact_char_threshold == 300_000
     assert cfg.compact_keep_recent == 12
@@ -134,9 +136,9 @@ def test_config_is_overridable():
     cfg2 = ContextConfig()  # defaults → _default 32K
 
     # 注入 sonnet：compact_at = 200_000*0.83 = 166_000；
-    # tool_result = max(8_000, 200_000//25)=8_000
+    # tool_result = max(6_000, min(12_000, 200_000//60))=6_000
     assert cfg1.compact_at_tokens == 166_000
-    assert cfg1.tool_result_threshold == 8_000
+    assert cfg1.tool_result_threshold == 6_000
     assert cfg1.budget_warn_pct == 0.7
     assert "my_special_tool" in cfg1.skip_truncation_for_tools
 

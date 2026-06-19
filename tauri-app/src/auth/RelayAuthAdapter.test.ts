@@ -421,6 +421,52 @@ describe("RelayAuthAdapter refresh-on-401", () => {
     expect(providers.length).toBe(1);
   });
 
+  it("keeps session when refresh fails transiently (504) — bug#4 强杀丢登录真因", async () => {
+    // relay 是实锤 flaky(504 间歇)。重启后 access 过期 → boot 即 refresh →
+    // relay 恰好 504 → 原实现对任何 !res.ok 都 localLogout 擦 keychain →
+    // 弹 Token Relay 重登。瞬时失败(5xx/408/429)必须保留 refresh token。
+    const bindings = makeBindings();
+    const fetchImpl = vi.fn(
+      queueFetch([
+        mkResponse({ body: { ...SAMPLE_TOKENS, user: SAMPLE_USER } }), // login
+        // protected → 401(access 过期)
+        mkResponse({
+          status: 401,
+          body: { code: "EXPIRED_TOKEN", message: "exp", request_id: "r" },
+        }),
+        // refresh → 504 网关瞬时故障
+        mkResponse({
+          status: 504,
+          body: { code: "UPSTREAM_TIMEOUT", message: "gw timeout", request_id: "r" },
+        }),
+        // 调用方稍后重试:再 401 → refresh 用「同一个」保留下来的 token 成功
+        mkResponse({
+          status: 401,
+          body: { code: "EXPIRED_TOKEN", message: "exp", request_id: "r" },
+        }),
+        mkResponse({
+          body: { access_token: "access_v2", refresh_token: "refresh_v2" },
+        }),
+        mkResponse({
+          body: { plan: "prepaid", balance: { amount_minor: 7, currency: "CNY" } },
+        }),
+      ]),
+    );
+
+    const adapter = new RelayAuthAdapter({ fetchImpl, bindings });
+    await adapter.login({ email: "a@b.c", password: "min8chars" });
+
+    // 第一次:瞬时失败向上抛(调用方可见),但不擦 session
+    await expect(adapter.getUsage()).rejects.toBeTruthy();
+    expect(bindings.clearAllRelaySecrets).not.toHaveBeenCalled();
+    expect(adapter.isAuthenticated()).toBe(true);
+
+    // 第二次:保留的 refresh token 直接复活
+    const usage = await adapter.getUsage();
+    expect(usage?.balance?.amount_minor).toBe(7);
+    expect(bindings.setRelayRefreshToken).toHaveBeenLastCalledWith("refresh_v2");
+  });
+
   it("clears state when refresh itself fails", async () => {
     const bindings = makeBindings();
     const fetchImpl = vi.fn(

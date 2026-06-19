@@ -5,8 +5,9 @@
  * multi-provider-management Phase 5 — SessionGridView per-session provider
  * dropdown tests.
  *
- * Vitest runs under the `node` environment (see vitest.config.ts) — no DOM,
- * no React renderer. We therefore test the *behavior* of the dropdown by:
+ * Most cases stay pure-helper/store focused, while targeted dashboard
+ * regressions use jsdom + Testing Library when the visible control matters.
+ * We therefore test the *behavior* of the dropdown by:
  *
  *   1. Pure-function helpers exported from SessionGridView.tsx / providersStore.ts
  *      (option building, label formatting, message construction).
@@ -15,11 +16,15 @@
  *
  * Each "test_*" name is the verbatim task pointer from the lead-agent brief.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 
 import {
+  SessionGridView,
   buildSetProviderMessage,
   buildSetModelMessage,
+  buildSkillCandidateConfirmMessage,
+  findAwaitingSkillCandidate,
   resolveCardDropdownDisplay,
   pickProviderRemovedFallback,
 } from "./SessionGridView";
@@ -35,8 +40,13 @@ import {
   useProvidersStore,
   type ProviderEntry,
 } from "./providersStore";
-import { __test_dispatch } from "./ws";
-import { useSessionsStore } from "../stores/sessionsStore";
+import { __test_dispatch, codePanelWS } from "./ws";
+import { type Message, useSessionsStore } from "../stores/sessionsStore";
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function resetStores() {
   useSessionsStore.setState((s) => ({
@@ -131,6 +141,89 @@ describe("test_select_provider_emits_ws_set_message", () => {
       type: "code_session_set_provider",
       payload: { session_id: "session-x", provider_id: null },
     });
+  });
+});
+
+// ----- FP-5 task_01be24af: skill candidate card in dashboard tile ---------
+
+describe("test_tile_skill_candidate_confirm", () => {
+  it("findAwaitingSkillCandidate returns the latest awaiting skill candidate", () => {
+    const messages = [
+      {
+        id: "old",
+        role: "skill_candidate",
+        skill_candidate_id: 4,
+        skill_candidate_name: "old",
+        skill_candidate_awaiting: true,
+      },
+      {
+        id: "done",
+        role: "skill_candidate",
+        skill_candidate_id: 5,
+        skill_candidate_name: "done",
+        skill_candidate_awaiting: false,
+      },
+      {
+        id: "new",
+        role: "skill_candidate",
+        skill_candidate_id: 6,
+        skill_candidate_name: "meeting-minutes-to-ppt",
+        skill_candidate_description: "turn repeated meeting notes into PPT",
+        skill_candidate_steps: ["extract agenda", "create deck"],
+        skill_candidate_awaiting: true,
+      },
+    ] as Message[];
+
+    const candidate = findAwaitingSkillCandidate(messages);
+
+    expect(candidate?.skill_candidate_id).toBe(6);
+    expect(candidate?.skill_candidate_name).toBe("meeting-minutes-to-ppt");
+  });
+
+  it("buildSkillCandidateConfirmMessage emits backend reject shape", () => {
+    expect(buildSkillCandidateConfirmMessage(5, false)).toEqual({
+      type: "skill_candidate_confirm",
+      payload: { candidate_id: 5, accept: false },
+    });
+  });
+
+  it("dashboard tile renders the skill candidate card and ignore resolves it", () => {
+    resetStores();
+    const send = vi.spyOn(codePanelWS, "send").mockImplementation(() => {});
+    useSessionsStore.getState().ensure("code-skill", {
+      base_session_id: "code-skill",
+      code_session_id: "code-1",
+      project_name: "Skill Project",
+      project_root: "G:/projects/deskpet",
+      messages: [
+        {
+          id: "candidate-msg",
+          role: "skill_candidate",
+          skill_candidate_id: 5,
+          skill_candidate_name: "meeting-minutes-to-ppt",
+          skill_candidate_description: "turn meeting notes into a deck",
+          skill_candidate_steps: ["extract decisions", "create PPT"],
+          skill_candidate_awaiting: true,
+        } as Message,
+      ],
+    });
+
+    render(<SessionGridView onSelectSession={() => {}} />);
+
+    expect(screen.getByTestId("skill-candidate-card").textContent).toContain(
+      "meeting-minutes-to-ppt",
+    );
+    fireEvent.click(screen.getByTestId("skill-candidate-ignore"));
+
+    expect(send).toHaveBeenCalledWith({
+      type: "skill_candidate_confirm",
+      payload: { candidate_id: 5, accept: false },
+    });
+    const msg = useSessionsStore
+      .getState()
+      .sessions["code-skill"].messages[0];
+    expect(msg.skill_candidate_awaiting).toBe(false);
+    expect(msg.skill_candidate_accepted).toBe(false);
   });
 });
 

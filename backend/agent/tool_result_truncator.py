@@ -50,9 +50,13 @@ Design choices
 """
 from __future__ import annotations
 
+import logging
 import secrets
 from collections import OrderedDict
+from pathlib import Path
 from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # Defaults tuned to the empirical thresholds we saw in production:
@@ -88,12 +92,36 @@ def get_global_ref_store() -> "ToolResultRefStore":
     return _GLOBAL_REF_STORE
 
 
-class ToolResultRefStore:
-    """LRU-backed store of full tool_result bodies keyed by ref_id.
+def _spill_dir() -> Optional[Path]:
+    """落盘目录 <user_data>/cache/tool_refs/。paths 不可用(独立脚本) → None。
 
-    Tiny in-memory store (no SQLite, no asyncio). The agent loop calls
-    ``put(content)`` during truncation and ``get(ref_id, start, end)``
-    when the LLM (via a future fetch tool) wants to read more.
+    pytest 进程内默认禁用(防全套测试把假数据写进真实用户 cache 目录);
+    落盘专项测试 monkeypatch 本函数注入 tmp 目录。
+    """
+    try:
+        import os as _os
+
+        if _os.environ.get("PYTEST_CURRENT_TEST"):
+            return None
+        from paths import user_cache_dir  # type: ignore[import-not-found]
+
+        d = Path(user_cache_dir()) / "tool_refs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_SPILL_MAX_FILES = 400  # 目录文件数上限,超出按 mtime 清最老
+
+
+class ToolResultRefStore:
+    """LRU 内存 + 磁盘 spill 的全文 tool_result 存储,按 ref_id 取。
+
+    2026-06-13 上下文外置(治本): put() 同时落盘
+    ``<user_data>/cache/tool_refs/<ref>.txt`` —— 内存 LRU 淘汰/进程重启
+    后 ref 仍可经 fetch_tool_result 取回(压缩摘要里的 ref_id 不再失效)。
+    get() 内存 miss 时读盘回填。落盘失败静默退化为纯内存(行为同旧版)。
     """
 
     def __init__(self, *, max_entries: int = DEFAULT_MAX_ENTRIES) -> None:
@@ -107,12 +135,12 @@ class ToolResultRefStore:
         # Edge case: if cap is 0, refuse to store but still return a ref so
         # callers don't crash. The marker will be in the truncated message,
         # the body is just unavailable.
-        if self._cap <= 0:
-            return ref
-        if len(self._store) >= self._cap:
-            # popitem(last=False) drops least-recently-used.
-            self._store.popitem(last=False)
-        self._store[ref] = content
+        if self._cap > 0:
+            if len(self._store) >= self._cap:
+                # popitem(last=False) drops least-recently-used.
+                self._store.popitem(last=False)
+            self._store[ref] = content
+        self._spill_write(ref, content)
         return ref
 
     def get(
@@ -129,16 +157,57 @@ class ToolResultRefStore:
         """
         content = self._store.get(ref_id)
         if content is None:
-            return None
+            # 内存 miss(LRU 淘汰/重启) → 读盘回填
+            content = self._spill_read(ref_id)
+            if content is None:
+                return None
+            if self._cap > 0:
+                if len(self._store) >= self._cap:
+                    self._store.popitem(last=False)
+                self._store[ref_id] = content
         # Touch — promote to most-recently-used so subsequent calls keep
         # this ref hot.
-        self._store.move_to_end(ref_id)
+        if ref_id in self._store:
+            self._store.move_to_end(ref_id)
         if start is None and end is None:
             return content
         s = max(0, start if start is not None else 0)
         e = end if end is not None else len(content)
         e = max(s, min(len(content), e))
         return content[s:e]
+
+    # ── disk spill ──────────────────────────────────────────────
+
+    @staticmethod
+    def _spill_write(ref: str, content: str) -> None:
+        try:
+            d = _spill_dir()
+            if d is None:
+                return
+            (d / f"{ref}.txt").write_text(content, encoding="utf-8")
+            # 容量管理: 超上限按 mtime 清最老(best-effort)
+            files = sorted(d.glob("*.txt"), key=lambda p: p.stat().st_mtime)
+            for old in files[: max(0, len(files) - _SPILL_MAX_FILES)]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("tool_ref spill write failed: %s", exc)
+
+    @staticmethod
+    def _spill_read(ref: str) -> Optional[str]:
+        try:
+            d = _spill_dir()
+            if d is None:
+                return None
+            f = d / f"{ref}.txt"
+            if not f.is_file():
+                return None
+            return f.read_text(encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("tool_ref spill read failed: %s", exc)
+            return None
 
     def _new_ref_id(self) -> str:
         # 6 bytes → 8 URL-safe chars. Collision rate negligible for our

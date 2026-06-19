@@ -75,6 +75,10 @@ VALID_EVENTS = frozenset({
     "team_task_created",
     "team_task_claimed",
     "team_task_done",
+    # R-T3 §15.4 LLM 失败降级矩阵事件（goal completion verify path）.
+    "goal_check_skipped",           # GoalChecker 超时/失败 → 仅客观证据判定信号
+    "reflection_parse_failed",      # 结构化反思 JSON 畸形 → 降级机械 nudge
+    "evaluator_conservative_block", # ExternalEvaluator 超时/失败 + 高后果 → 保守拦
 })
 
 # Whitelisted ``detail`` keys. A caller can ONLY write these fields —
@@ -115,6 +119,8 @@ _ALLOWED_DETAIL_KEYS = frozenset({
     # WI-G1 Companion+Code v2 Multi-Agent Team — team_task_* detail keys.
     "team_id",         # team_task_*: caller-supplied short id (uuid hex)
     "teammate_id",     # team_task_claimed/done: who did the work
+    # R-T3 §15.4 LLM 降级矩阵 detail keys.
+    "degradation_type",  # which LLM dependency point degraded
 })
 
 # Max length of any *surviving* string value — defence-in-depth second

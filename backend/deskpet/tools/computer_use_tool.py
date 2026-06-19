@@ -586,12 +586,23 @@ def _handle_screen_scroll(args: dict[str, Any], task_id: str) -> str:
 # ---------------------------------------------------------------------
 _TOOLSET = "computer_use"
 
+# 2026-06-14: 误路由根治 —— computer_use 工具(screen_click 等)此前【无条件
+# 注册且永远暴露在 LLM 的工具 schema 里】,只在 handler 运行时检查 flag 返回
+# "disabled"。后果:污染的会话上下文一诱导,LLM 就去调 screen_click 撞 disabled
+# 墙(真机实测:一个电池调研 query 被带偏成"按坐标点击")。修法:flag OFF(默认)
+# 时给这些工具挂一个【永不设置的 sentinel env】→ schemas() 的 requires_env 过滤
+# 把它们从 LLM 视野里隐藏(LLM 看不到就不可能误调),而 dispatch() 不查 env →
+# 万一被强行调用仍走 handler 返回 disabled(保留 disabled 测试 + 纵深防御)。
+# flag ON(code_e2e 真测)时 requires_env=[] → 正常可见可用。
+_CU_HIDE_ENV: list[str] = [] if _computer_use_enabled() else ["__DESKPET_COMPUTER_USE_DISABLED__"]
+
 registry.register(
     "screen_capture",
     _TOOLSET,
     _SCHEMA_CAPTURE,
     _handle_screen_capture,
     permission_category="read_file",
+    requires_env=_CU_HIDE_ENV,
 )
 registry.register(
     "screen_click",
@@ -600,6 +611,7 @@ registry.register(
     _handle_screen_click,
     permission_category="shell",
     dangerous=True,
+    requires_env=_CU_HIDE_ENV,
 )
 registry.register(
     "screen_move",
@@ -607,6 +619,7 @@ registry.register(
     _SCHEMA_MOVE,
     _handle_screen_move,
     permission_category="shell",
+    requires_env=_CU_HIDE_ENV,
 )
 registry.register(
     "screen_type",
@@ -615,6 +628,7 @@ registry.register(
     _handle_screen_type,
     permission_category="shell",
     dangerous=True,
+    requires_env=_CU_HIDE_ENV,
 )
 registry.register(
     "screen_key",
@@ -623,6 +637,7 @@ registry.register(
     _handle_screen_key,
     permission_category="shell",
     dangerous=True,
+    requires_env=_CU_HIDE_ENV,
 )
 registry.register(
     "screen_scroll",
@@ -630,4 +645,5 @@ registry.register(
     _SCHEMA_SCROLL,
     _handle_screen_scroll,
     permission_category="shell",
+    requires_env=_CU_HIDE_ENV,
 )

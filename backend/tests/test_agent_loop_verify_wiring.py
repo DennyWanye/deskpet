@@ -67,10 +67,11 @@ def test_verify_gate_strict_blocks_fake_claim():
     assert o.unmatched_claims[0].reason == "no_receipt"
 
 
-def test_ephemeral_rescue_pass_path():
+@pytest.mark.asyncio
+async def test_ephemeral_rescue_pass_path():
     """failure_count 达上限 + ephemeral 判 pass → 整体放行（救援链）。"""
 
-    def _eph(ctx: dict) -> bool:
+    async def _eph(ctx: dict) -> bool:
         # 模拟 ephemeral 看到 ledger 后判断"这其实有据，regex 漏抓"
         return True
 
@@ -80,7 +81,7 @@ def test_ephemeral_rescue_pass_path():
     )
     gate = VerifyGate(extractor=RegexExtractor([pat]), mode="strict",
                       ephemeral_subagent=_eph)
-    verdict = gate.consult_ephemeral_subagent(
+    verdict = await gate.consult_ephemeral_subagent(
         ledger=[],
         failed_claims=[UnmatchedClaim(
             pattern_id="zh_gen", raw_text="已生成 x.pptx",

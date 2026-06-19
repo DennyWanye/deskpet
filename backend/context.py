@@ -50,8 +50,25 @@ _VALID_SERVICES = frozenset({
     # whitelist 里。
     "session_goal_store",  # SessionGoalStore — companion+code goal tracking
     "goal_checker",        # GoalChecker — LLM-based goal completion check
+    # --- goal-completion FP-5 WI-4.0 — compaction 接通 AgentLoop ---------------
+    # 2026-06-05 真机 bug fix：main.py:1189 无条件 register("context_compressor")，
+    # 缺白名单 → 启动 register 抛 ValueError(被 boot try/except 吞成 warning)，
+    # 但 chat 派发处 get("context_compressor") 抛 "Unknown service" → code-mode
+    # 任务全崩。flag OFF 时仍 register(None) 占位，故必须在白名单里。
+    "context_compressor",  # ContextCompressor — WI-4.0 loop 内 compaction
+    # --- goal-completion FP-5 接线修复 (2026-06-06) — 5 处跨层 wiring 断裂 -----
+    # 独立验收发现 codify hook (main.py:5836/5838/5859) + remount 接线引用了 3 个
+    # 未白名单的 service → get() 抛 ValueError("Unknown service") → 被 boot/chat
+    # try/except 吞成 debug log → WI-4.1/4.2/4.3 真机完全 no-op。flag OFF（默认）
+    # 时 lifespan 仍 register(None) 占位（保 BC + 让 get() 不抛），故必须在白名单里。
+    "tool_path_recorder",  # ToolPathRecorder (WI-1.6) — 录工具路径喂 4.3 自创
+    "skill_candidate_store",  # SkillCandidateStore (WI-4.3) — pending 候选持久化
+    "llm_registry",        # OpenAICompatibleAgentLLM — codify hook 的 chat_with_fallback
+    "skill_matcher",       # SkillMatcher (WI-4.1) — embedding 相似度披露 + remount
     # --- superpowers Layer 1B — 偏好记忆（计划/意图，BGE-M3 语义匹配）---------
     "preference_memory",   # PreferenceMemory — plan-confirm 自动确认 + 意图记忆
+    # --- Option A (2026-06-05) — 瘦包首启模型下载 ----------------------------
+    "model_provisioner",   # ModelProvisioner — 首启从 hf-mirror 下载缺失模型
 })
 
 @dataclass
@@ -93,6 +110,13 @@ class ServiceContext:
     goal_checker: Any | None = None
     # --- superpowers Layer 1B ------------------------------------------------
     preference_memory: Any | None = None
+    # --- Option A — 瘦包首启模型下载 -----------------------------------------
+    model_provisioner: Any | None = None
+    # --- goal-completion FP-5 接线修复 (2026-06-06) -------------------------
+    tool_path_recorder: Any | None = None
+    skill_candidate_store: Any | None = None
+    llm_registry: Any | None = None
+    skill_matcher: Any | None = None
 
     def register(self, name: str, provider: Any) -> None:
         if name not in _VALID_SERVICES:

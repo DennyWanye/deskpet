@@ -373,6 +373,8 @@ def test_list_skills_shape_for_ui(dirs: tuple[Path, Path]) -> None:
         "meta",
         # P4-S20: v1 surface (always present, defaults for legacy)
         "when_to_use",
+        # TC-5.1 (2026-06-11): 混合匹配触发词
+        "triggers",
         "disable_model_invocation",
         "user_invocable",
         "allowed_tools",

@@ -1,6 +1,8 @@
 ---
 name: web-read
 description: 读一个网页/文章并给出结构化摘要（轻量版，单页，非深度调研）
+when_to_use: 用户给出一个网页链接要读内容、给摘要时（单页轻量，非深度调研）
+triggers: [读网页, 这个网页, 网页摘要, 看看这个链接, 读链接]
 version: 0.1.0
 author: deskpet
 task_types: [task, chat]

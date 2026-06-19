@@ -82,14 +82,42 @@ class OpenAICompatibleAgentLLM:
         max_tokens = int(kwargs.get("max_tokens", 2048))
         temperature = kwargs.get("temperature")
         response_format = kwargs.get("response_format")
-        async for ev in self._provider.chat_stream_with_tools(
-            messages,
-            tools=tools,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            response_format=response_format,
-        ):
-            yield ev
+        # 2026-06-06 真机：中转 relay 经代理（Clash Verge 等）间歇掉**流式连接**，
+        # httpx 抛 ReadError/ConnectError → 整个 agent turn 立即崩（这是真机 TC-5.3
+        # 等多工具任务跑不到 ≥5 工具的根因）。加重试：流在**产出任何事件前**掉链
+        # （典型代理在连接建立/首字节阶段掉链）→ 干净重试整个流（带 backoff）。
+        # 已 yield 过事件则不重试（避免前端 MessageStream delta 重复），抛给上层
+        # ErrorEvent + 方案 B codify 处理。
+        import asyncio as _aio
+        _max_retries = 3
+        for _attempt in range(1, _max_retries + 1):
+            _yielded_any = False
+            try:
+                async for ev in self._provider.chat_stream_with_tools(
+                    messages,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                ):
+                    _yielded_any = True
+                    yield ev
+                return  # 流正常完成
+            except Exception as exc:  # noqa: BLE001
+                _name = type(exc).__name__
+                _transient = (
+                    "Timeout" in _name
+                    or _name in (
+                        "ReadError", "ConnectError", "RemoteProtocolError",
+                        "ProtocolError", "ConnectionError", "APIConnectionError",
+                        "APITimeoutError", "WriteError", "PoolTimeout",
+                    )
+                    or isinstance(exc, (TimeoutError, ConnectionError))
+                )
+                if _yielded_any or not _transient or _attempt >= _max_retries:
+                    raise
+                await _aio.sleep(0.5 * (2 ** (_attempt - 1)))
+                # 重入循环重新 stream
 
 
 def _raw_to_response(raw: dict) -> ChatResponse:

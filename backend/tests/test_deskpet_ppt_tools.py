@@ -200,6 +200,40 @@ def test_ppt_create_each_theme(out_path: Path) -> None:
 
 
 @pytestmark_pptx
+def test_ppt_visual_contract_modern_theme_and_sandwich(out_path: Path) -> None:
+    """Generated decks should use modern palettes and deep/light/deep structure."""
+    outline = [
+        {"layout": "title", "title": "AI 教育洞察", "subtitle": "2026 趋势"},
+        {"layout": "bullet", "title": "关键发现", "bullets": ["72% 教师使用 AI 辅助备课", "效率提升 3.2x"]},
+        {"layout": "section", "title": "结论", "subtitle": "从工具试点走向体系化能力"},
+    ]
+    result = ppt_create(outline, theme="minimal", output_path=str(out_path))
+    assert result["ok"] is True
+
+    from pptx import Presentation
+
+    prs = Presentation(str(out_path))
+    assert str(prs.slides[0].background.fill.fore_color.rgb) != "FFFFFF"
+    assert str(prs.slides[1].background.fill.fore_color.rgb) == "FFFFFF"
+    assert str(prs.slides[2].background.fill.fore_color.rgb) != "FFFFFF"
+
+    playful = get_theme("playful")
+    assert playful.background_rgb == (255, 255, 255)
+
+    content_slide = prs.slides[1]
+    for shape in content_slide.shapes:
+        assert not (
+            shape.left <= ppt.Inches(0.05)
+            and shape.width <= ppt.Inches(0.25)
+            and shape.height >= ppt.Inches(4.5)
+        ), "content slides must not use left-edge color bands"
+        assert not (
+            shape.width >= ppt.Inches(9.5)
+            and shape.height <= ppt.Inches(0.15)
+        ), "content slides must not use full-width decorative strips"
+
+
+@pytestmark_pptx
 def test_ppt_create_each_layout(out_path: Path) -> None:
     """All 7 layouts must render without raising."""
     outline = [
@@ -307,14 +341,15 @@ def test_ppt_create_unknown_theme_uses_minimal(out_path: Path) -> None:
 
 
 @pytestmark_pptx
-def test_ppt_create_default_output_path_lands_in_temp(tmp_path: Path, monkeypatch) -> None:
-    # Force tempdir into our pytest tmp_path
-    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+def test_ppt_create_default_output_path_lands_in_output_dir(tmp_path: Path, monkeypatch) -> None:
+    # 默认输出落 <user_data>/OutPut/PPT/(用户好找);user_data 重定向进 tmp。
+    monkeypatch.setenv("DESKPET_USER_DATA_DIR", str(tmp_path))
     outline = [{"layout": "title", "title": "X"}]
     result = ppt_create(outline)
     assert result["ok"] is True
     assert Path(result["path"]).is_file()
     assert str(tmp_path) in result["path"]
+    assert ("OutPut" in result["path"]) and ("PPT" in result["path"])
 
 
 @pytestmark_pptx

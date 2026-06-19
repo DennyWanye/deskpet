@@ -36,6 +36,11 @@ import {
 } from "../components/MessageStreamPanel";
 import { InputBar } from "../code-panel/InputBar";
 import { ChangeModelModal } from "../code-panel/ChangeModelModal";
+import {
+  useCodeModelsStore,
+  contextWindowForModel,
+  formatContextWindow,
+} from "../code-panel/codeModelsStore";
 import { codePanelWS } from "../code-panel/ws";
 import { useAudioChannel } from "../hooks/useAudioChannel";
 import { BACKEND_PORT } from "../backendPort";
@@ -59,6 +64,10 @@ export function MessagePanelRoot() {
   const model_params = useSessionsStore(
     (s) => s.sessions[SID]?.model_params ?? null,
   );
+  // 模型按钮显示「模型-上下文长度(K/M)」: 从 catalog 取当前模型上下文窗口。
+  const modelCatalog = useCodeModelsStore((s) => s.models);
+  const ctx_window = contextWindowForModel(preferred_model, modelCatalog);
+  const ctx_label = formatContextWindow(ctx_window);
 
   // ── Voice pipeline (parity with the pet's main mic) ──────────────
   // The panel is its own window, so it runs its own audio channel +
@@ -136,10 +145,33 @@ export function MessagePanelRoot() {
     }
   }, [audioMessage, isPlaying, resetPlaybackBuffer, bargeIn]);
 
-  // Same companion-stream derivation as App.tsx (strip <think>/tool
-  // trace via forPet; synth ts since the store has none).
+  // Companion-stream derivation (strip <think> via forPet; synth ts
+  // since the store has none)。2026-06-12: 工具执行轨迹(tool_call/
+  // tool_result)不再丢弃 —— 用户要求「我让它生成PPT 和 它生成完之间
+  // 的工具调用」在主消息流全程可观测(此前只有桌宠小气泡显示)。
+  // 「隐藏工具消息」开关: 开=只看对话(隐藏 🔧/✅ 工具轨迹行),
+  // 关=全程可观测。localStorage 持久化,重开面板记住选择。
+  const [hideTools, setHideTools] = useState<boolean>(
+    () => {
+      try {
+        return localStorage.getItem("msgpanel.hideTools") === "1";
+      } catch {
+        return false;
+      }
+    },
+  );
+  const toggleHideTools = () => {
+    setHideTools((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem("msgpanel.hideTools", next ? "1" : "0");
+      } catch { /* 忽略 */ }
+      return next;
+    });
+  };
+
   const chatMessages = useMemo(() => {
-    type ChatItem = { role: "user" | "assistant"; text: string; ts: number };
+    type ChatItem = { role: "user" | "assistant" | "tool"; text: string; ts: number };
     const out: ChatItem[] = [];
     messages.forEach((m, i) => {
       const ts = Date.now() - (messages.length - i) * 1000;
@@ -147,11 +179,33 @@ export function MessagePanelRoot() {
         out.push({ role: "user", text: m.text ?? "", ts });
         return;
       }
+      if (hideTools && ((m.role as string) === "tool_call" || (m.role as string) === "tool_result")) {
+        return;
+      }
+      if ((m.role as string) === "tool_call") {
+        const args = m.tool_args
+          ? JSON.stringify(m.tool_args).slice(0, 120)
+          : "";
+        out.push({
+          role: "tool",
+          text: `🔧 调用 ${m.tool_name || "(工具)"}${args ? ` ${args}${args.length >= 120 ? "…" : ""}` : ""}`,
+          ts,
+        });
+        return;
+      }
+      if ((m.role as string) === "tool_result") {
+        out.push({
+          role: "tool",
+          text: `${m.tool_ok === false ? "❌" : "✅"} ${m.tool_name || "(工具)"} 完成`,
+          ts,
+        });
+        return;
+      }
       const clean = forPet(m.text);
       if (clean) out.push({ role: "assistant", text: clean, ts });
     });
     return out;
-  }, [messages]);
+  }, [messages, hideTools]);
   const warnings = useMemo<InboxItem[]>(
     () => collect_inbox(sessions, "yellow"),
     [sessions],
@@ -258,9 +312,28 @@ export function MessagePanelRoot() {
                 whiteSpace: "nowrap",
               }}
             >
-              {preferred_model || "默认模型"}
+              {preferred_model
+                ? ctx_label
+                  ? `${preferred_model}-${ctx_label}`
+                  : preferred_model
+                : "默认模型"}
             </span>
             <Icon name="edit" size={11} style={{ flexShrink: 0 }} />
+          </button>
+          {/* 隐藏/显示工具消息(🔧 调用轨迹行) */}
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={toggleHideTools}
+            title={hideTools ? "显示工具消息" : "隐藏工具消息"}
+            aria-label={hideTools ? "显示工具消息" : "隐藏工具消息"}
+            aria-pressed={hideTools}
+            style={{
+              ...iconBtnStyle,
+              color: hideTools ? "#64748b" : "#67e8f9",
+            }}
+          >
+            <span style={{ fontSize: 12, lineHeight: 1 }}>🔧</span>
           </button>
           {/* 2026-05-31 restore — context ring in header */}
           <span

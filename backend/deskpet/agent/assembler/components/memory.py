@@ -214,7 +214,10 @@ def _approx_tokens(text: str) -> int:
     """
     if not text:
         return 0
-    return max(1, len(text) // 4)
+    if not text:
+        return 0
+    from deskpet.agent.tokens import count_text_tokens
+    return count_text_tokens(text)
 
 
 # For structural typing / Protocol conformance checking in tests.

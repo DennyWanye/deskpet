@@ -81,6 +81,9 @@ class SkillMeta:
     meta: dict[str, Any] = field(default_factory=dict)
     # P4-S20 v1 fields
     when_to_use: str = ""
+    # TC-5.1 (2026-06-11)：显式触发词表 — query 含任一触发词即视为强匹配
+    # （混合匹配的 lexical 路，embedding 兜 paraphrase）。
+    triggers: list[str] = field(default_factory=list)
     disable_model_invocation: bool = False
     user_invocable: bool = True
     allowed_tools: list[str] = field(default_factory=list)
@@ -108,6 +111,7 @@ class SkillMeta:
             "meta": dict(self.meta),
             # P4-S20 v1 fields
             "when_to_use": self.when_to_use,
+            "triggers": list(self.triggers),
             "disable_model_invocation": self.disable_model_invocation,
             "user_invocable": self.user_invocable,
             "allowed_tools": list(self.allowed_tools),
@@ -356,11 +360,16 @@ class SkillLoader:
                 error=f"missing required fields: {missing}",
             )
             return None
-        known = set(_REQUIRED_FIELDS) | {"task_types", "requires_script"}
+        known = set(_REQUIRED_FIELDS) | {
+            "task_types", "requires_script", "when_to_use", "triggers"
+        }
         extra = {k: v for k, v in fm.items() if k not in known}
         task_types = fm.get("task_types") or []
         if not isinstance(task_types, list):
             task_types = []
+        triggers = fm.get("triggers") or []
+        if not isinstance(triggers, list):
+            triggers = []
         return SkillMeta(
             name=str(fm["name"]),
             description=str(fm["description"]),
@@ -371,6 +380,12 @@ class SkillLoader:
             task_types=[str(t) for t in task_types],
             requires_script=bool(fm.get("requires_script", False)),
             meta=extra,
+            # TC-5.1 (2026-06-11)：legacy 格式原本不解析 when_to_use → builtin
+            # skill 的 embedding 文本只有 description，短中文 query 相似度区分
+            # 度差(on-target 0.45~0.55 vs off-target 0.57)。提升到一等字段,
+            # SkillMatcher embed description+when_to_use。
+            when_to_use=str(fm.get("when_to_use", "") or ""),
+            triggers=[str(t) for t in triggers if str(t).strip()],
             source_format="deskpet-legacy",
         )
 
@@ -394,6 +409,9 @@ class SkillLoader:
                 error=str(exc),
             )
             return None
+        raw_triggers = cm.raw_frontmatter.get("triggers") or []
+        if not isinstance(raw_triggers, list):
+            raw_triggers = []
         return SkillMeta(
             name=cm.name,
             description=cm.description,
@@ -405,6 +423,7 @@ class SkillLoader:
             requires_script=False,
             meta=dict(cm.raw_frontmatter),
             when_to_use=cm.when_to_use,
+            triggers=[str(t) for t in raw_triggers if str(t).strip()],
             disable_model_invocation=cm.disable_model_invocation,
             user_invocable=cm.user_invocable,
             allowed_tools=list(cm.allowed_tools),
@@ -482,6 +501,33 @@ class SkillLoader:
                 seen.add(meta.name)
 
         return ordered
+
+    # ------------------------------------------------------------------
+    # Body read (WI-4.1 — no arg substitution)
+    # ------------------------------------------------------------------
+    def read_body(self, name: str) -> str:
+        """Return the raw body of a skill's SKILL.md **without** any
+        ``${args[N]}`` substitution.
+
+        Unlike ``execute()``, this is synchronous and does **not** perform
+        argument substitution — intended for the auto-disclosure path where
+        the body is inlined verbatim into the context prelude.
+
+        Raises :class:`KeyError` if the skill is unknown.
+        """
+        meta = self.get(name)
+        if meta is None:
+            raise KeyError(name)
+        try:
+            text = Path(meta.path).read_text(encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("skill.read_body_failed", name=name, error=str(exc))
+            raise
+        try:
+            _fm, body = _split_frontmatter(text)
+        except Exception:  # noqa: BLE001
+            body = text
+        return body.strip("\n")
 
     # ------------------------------------------------------------------
     # Execution

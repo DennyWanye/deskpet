@@ -89,7 +89,6 @@ import {
   shyAwayUpdate,
   circleDizzyUpdate,
   circleDizzySample,
-  tapBurstAdd,
   regionAwareClassify,
   longPressBegin,
   longPressEnd,

@@ -812,15 +812,52 @@ class ToolRegistry:
                     # WI-T2.3 v3 P0 修：用真实 _started_at（dispatch 开始时记
                     # 录）+ now() 算 duration_ms。原 v2.1 用两次 now() 间隔仅
                     # 微秒，导致 receipt duration_ms ~0 → p95 监控失效。
+                    receipt_args = {
+                        k: v for k, v in dict(merged_params or {}).items()
+                        if not (isinstance(k, str) and k.startswith("_"))
+                    }
+                    try:
+                        receipt_args = json.loads(json.dumps(
+                            receipt_args, ensure_ascii=False, default=str
+                        ))
+                    except (TypeError, ValueError):
+                        receipt_args = {
+                            str(k): str(v) for k, v in receipt_args.items()
+                        }
+                    # Bug#3 子问题修 (2026-06-11)：envelope 有 artifacts 时把
+                    # 产物 sha256 抄进 receipt（原从不传 → receipt.artifacts
+                    # 恒 []，verify gate 无法对账「声称产物 vs 真产物」）。
+                    # 仅 file 产物且文件可读才算；失败静默跳过不破 dispatch。
+                    _artifact_shas: Optional[list[str]] = None
+                    _env_arts = envelope.get("artifacts")
+                    if isinstance(_env_arts, list) and _env_arts:
+                        import hashlib as _hashlib
+                        _shas: list[str] = []
+                        for _a in _env_arts:
+                            _p = _a.get("path") if isinstance(_a, dict) else None
+                            if not _p:
+                                continue
+                            try:
+                                _h = _hashlib.sha256()
+                                with open(_p, "rb") as _f:
+                                    for _chunk in iter(
+                                        lambda: _f.read(65536), b""
+                                    ):
+                                        _h.update(_chunk)
+                                _shas.append(_h.hexdigest())
+                            except OSError:
+                                continue
+                        _artifact_shas = _shas or None
                     emit_receipt(
                         store,
                         tool_name=name,
-                        args=dict(merged_params or {}),
+                        args=receipt_args,
                         started_at=_started_at,
                         ended_at=_dt.now(_tz.utc),
                         ok=envelope_ok,
                         session_id=session_id,
                         iteration=iteration,
+                        artifact_shas=_artifact_shas,
                     )
             except Exception as _exc:  # noqa: BLE001 — never break dispatch
                 logger.warning(

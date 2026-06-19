@@ -68,7 +68,7 @@ _TEAM_CHARTER_TEMPLATE = """\
 
 You are teammate **{teammate_id}** on team **{team_id}**.
 
-## Workflow
+{parent_goal_block}## Workflow
 
 1. Call `team_task_claim()` to atomically grab the next pending task.
 2. If the response `task` is null, the pool is empty — **stop**: write a
@@ -97,12 +97,23 @@ def _build_charter(
     team_id: str,
     teammate_id: str,
     initial_pool_summary: str,
+    parent_goal_text: str | None = None,
 ) -> str:
     """Render the Team Charter for one teammate. Pure — exported for tests."""
+    if parent_goal_text:
+        parent_goal_block = (
+            "## Parent Goal (do not drift)\n"
+            f"本团队服务于用户的总目标：{parent_goal_text}\n"
+            "你领取的每个任务都是该目标的子步骤。完成任务前自检：这个产出是否真的推进了上述目标？\n"
+            "若发现任务与总目标无关或冲突，在 result 里标注 \"[off-goal]\" 并说明。\n\n"
+        )
+    else:
+        parent_goal_block = ""
     return _TEAM_CHARTER_TEMPLATE.format(
         team_id=team_id,
         teammate_id=teammate_id,
         initial_pool_summary=initial_pool_summary,
+        parent_goal_block=parent_goal_block,
     )
 
 
@@ -156,6 +167,9 @@ async def spawn_team(
     llm_shim: Any = None,
     parent_session_id: str = "default",
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+    parent_goal_text: str | None = None,
+    parent_goal_id: str | None = None,
+    task_graph_store: Any = None,
 ) -> dict[str, Any]:
     """Orchestrate a multi-teammate team.
 
@@ -174,9 +188,18 @@ async def spawn_team(
             is supplied.
         timeout_seconds: Wall-clock cap on the whole team. On timeout
             we return what's done so far + ``timed_out=True``.
+        parent_goal_text: Optional user-level goal text injected into each
+            teammate's charter as a drift-prevention anchor.
+        parent_goal_id: Optional goal ID threaded into build_teammate_tools
+            as ``goal_id`` so sub-agents can read/write the shared task graph.
+        task_graph_store: Optional :class:`TaskGraphStore` instance.
+            When provided together with ``parent_goal_id``, the two extra
+            ``goal_task_list``/``goal_task_update`` tools are added to each
+            teammate's tool set (BC: None → original 5-tool set).
 
     Returns:
-        ``{ok, team_id, elapsed_ms, results: [task_dict, ...], timed_out}``.
+        ``{ok, team_id, elapsed_ms, results: [task_dict, ...], timed_out,
+        aligned: [...], flagged: [...]}``.
     """
     if not _MIN_TEAMMATES <= num_teammates <= _MAX_TEAMMATES:
         return {
@@ -220,9 +243,14 @@ async def spawn_team(
             team_id=team_id,
             teammate_id=tm_id,
             initial_pool_summary=pool_summary,
+            parent_goal_text=parent_goal_text,
         )
         tool_set = build_teammate_tools(
-            store=store, team_id=team_id, teammate_id=tm_id
+            store=store,
+            team_id=team_id,
+            teammate_id=tm_id,
+            task_graph_store=task_graph_store,
+            goal_id=parent_goal_id,
         )
         teammate_coros.append(
             _run_teammate(teammate_runner, charter, tm_id, tool_set)
@@ -243,13 +271,38 @@ async def spawn_team(
     # 4. Collect final state.
     final_tasks = await store.list_tasks(team_id)
     elapsed_ms = int((time.time() - start_ts) * 1000)
+    results = [t.to_dict() for t in final_tasks]
+    classified = _classify_by_goal(results)
     return {
         "ok": True,
         "team_id": team_id,
         "elapsed_ms": elapsed_ms,
         "timed_out": timed_out,
-        "results": [t.to_dict() for t in final_tasks],
+        "results": results,
+        "aligned": classified["aligned"],
+        "flagged": classified["flagged"],
     }
+
+
+def _classify_by_goal(tasks: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Split task dicts into aligned vs flagged based on the [off-goal] marker.
+
+    A task is *flagged* if its ``result`` field (str) contains the literal
+    substring ``"[off-goal]"``.  All other tasks are *aligned*.
+
+    No data is dropped: every element in *tasks* appears in exactly one of
+    the two output lists.  The ``results`` key in the ``spawn_team`` return
+    value still carries the full unfiltered list.
+    """
+    aligned: list[dict[str, Any]] = []
+    flagged: list[dict[str, Any]] = []
+    for t in tasks:
+        result_val = t.get("result")
+        if isinstance(result_val, str) and "[off-goal]" in result_val:
+            flagged.append(t)
+        else:
+            aligned.append(t)
+    return {"aligned": aligned, "flagged": flagged}
 
 
 def _make_default_runner(
@@ -406,6 +459,7 @@ __all__ = [
     "spawn_team",
     "TeammateRunner",
     "_build_charter",
+    "_classify_by_goal",
     "_summarise_pool",
     "_TeamSubsetRegistry",
 ]

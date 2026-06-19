@@ -210,3 +210,121 @@ def test_t2_regression_shorthand_string_still_works(tmp_path: Path):
     texts = [p.text for p in doc.paragraphs if p.text.strip()]
     assert "简写标题" in texts and "简写正文" in texts, texts
     assert not any("{" in t for t in texts), texts
+
+
+# --- 复杂 Word 升级 (list / mixed runs / color / image / header-footer-page#) ---
+
+def test_t2_14_bullet_list(tmp_path: Path):
+    path = _make_doc(tmp_path, [
+        {"type": "list", "items": ["第一点", "第二点", "第三点"]},
+    ])
+    from docx import Document
+
+    doc = Document(path)
+    bullets = [p for p in doc.paragraphs if p.text in ("第一点", "第二点", "第三点")]
+    assert len(bullets) == 3, [p.text for p in doc.paragraphs]
+    assert any("List" in (p.style.name or "") for p in bullets), \
+        [p.style.name for p in bullets]
+
+
+def test_t2_15_numbered_list(tmp_path: Path):
+    path = _make_doc(tmp_path, [
+        {"type": "list", "ordered": True, "items": ["步骤A", "步骤B"]},
+    ])
+    from docx import Document
+
+    doc = Document(path)
+    items = [p for p in doc.paragraphs if p.text in ("步骤A", "步骤B")]
+    assert len(items) == 2
+    assert any("Number" in (p.style.name or "") for p in items), \
+        [p.style.name for p in items]
+
+
+def test_t2_16_mixed_runs_and_color(tmp_path: Path):
+    path = _make_doc(tmp_path, [
+        {"type": "paragraph", "runs": [
+            {"text": "红色加粗", "bold": True, "color": "#FF0000"},
+            {"text": "普通"},
+        ]},
+    ])
+    from docx import Document
+
+    doc = Document(path)
+    para = next(p for p in doc.paragraphs if "红色加粗" in p.text)
+    assert len(para.runs) >= 2
+    r0 = para.runs[0]
+    assert r0.bold is True
+    assert str(r0.font.color.rgb) == "FF0000"
+    # 第二个 run 不应继承加粗
+    assert para.runs[1].bold in (None, False)
+
+
+def test_t2_17_paragraph_color_shorthand(tmp_path: Path):
+    path = _make_doc(tmp_path, [
+        {"type": "paragraph", "text": "蓝字", "color": "#0000FF", "font_size": 14},
+    ])
+    from docx import Document
+
+    doc = Document(path)
+    para = next(p for p in doc.paragraphs if p.text == "蓝字")
+    assert str(para.runs[0].font.color.rgb) == "0000FF"
+
+
+def test_t2_18_table_header_shaded(tmp_path: Path):
+    path = _make_doc(tmp_path, [
+        {"type": "table", "header": True,
+         "rows": [["列1", "列2"], ["a", "b"]]},
+    ])
+    from docx import Document
+
+    doc = Document(path)
+    cell = doc.tables[0].cell(0, 0)
+    # <w:shd w:fill="1F4E78"> 注入到表头单元格
+    tcpr_xml = cell._tc.get_or_add_tcPr().xml
+    assert "shd" in tcpr_xml and "1F4E78" in tcpr_xml
+
+
+def test_t2_19_image_element(tmp_path: Path):
+    from PIL import Image as _PILImage
+
+    img_path = tmp_path / "pic.png"
+    _PILImage.new("RGB", (20, 20), (0, 128, 0)).save(img_path)
+    path = _make_doc(tmp_path, [
+        {"type": "heading", "text": "带图文档", "level": 1},
+        {"type": "image", "path": str(img_path), "width_in": 2.0},
+    ])
+    from docx import Document
+
+    doc = Document(path)
+    # 图片落进 document → inline_shapes 至少 1
+    assert len(doc.inline_shapes) == 1
+
+
+def test_t2_20_header_footer_pagenumber(tmp_path: Path):
+    out = tmp_path / "hf.docx"
+    r = dt.doc_create({
+        "header": "公司机密",
+        "footer": "第 X 页",
+        "page_number": True,
+        "elements": [{"type": "paragraph", "text": "正文"}],
+    }, output_path=str(out))
+    assert r["ok"], r
+    from docx import Document
+
+    doc = Document(r["path"])
+    sec = doc.sections[0]
+    assert sec.header.paragraphs[0].text == "公司机密"
+    # 页码字段 { PAGE } 注入到页脚 XML
+    footer_xml = sec.footer._element.xml
+    assert "PAGE" in footer_xml
+
+
+def test_t2_21_default_path_under_output_doc(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DESKPET_USER_DATA_DIR", str(tmp_path))
+    r = dt.doc_create({"elements": [{"type": "paragraph", "text": "x"}]})
+    assert r["ok"], r
+    p = Path(r["path"])
+    assert p.exists()
+    assert p.parent.name == "Doc"
+    assert p.parent.parent.name == "OutPut"
+    p.unlink(missing_ok=True)

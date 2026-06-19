@@ -620,12 +620,17 @@ export class RelayAuthAdapter implements AuthAdapter {
           body: JSON.stringify({ refresh_token: this.refreshToken }),
         });
         if (!res.ok) {
-          // Refresh failed → session is dead. Clear local state so
-          // subsequent calls don't keep retrying with a known-bad
-          // refresh token (the relay's rotation logic means even one
-          // failed refresh permanently invalidates the chain).
-          await this.localLogout();
-          throw await RelayApiError.fromResponse(res);
+          const err = await RelayApiError.fromResponse(res);
+          // Bug#4 修复 (2026-06-11)：只有鉴权性失败(400/401/403 = relay 明确
+          // 判 refresh token 无效)才算 session 死、擦本地状态。5xx/408/429
+          // 是 relay 瞬时故障(504 间歇有实锤)——原实现对任何 !res.ok 都
+          // localLogout 擦 keychain → 重启后 access 过期 boot 即 refresh、
+          // 撞上 504 就弹 Token Relay 重登(「强杀丢登录」真因)。瞬时失败
+          // 保留 refresh token,把错误抛给调用方下次重试。
+          if (res.status === 400 || res.status === 401 || res.status === 403) {
+            await this.localLogout();
+          }
+          throw err;
         }
         const data = (await res.json()) as AuthTokenResponse;
         await this.persistTokens(data);

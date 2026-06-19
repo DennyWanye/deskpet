@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+import config as _config_mod
 from config import (
     AppConfig,
     ConfigError,
@@ -20,6 +21,20 @@ from config import (
     ToolsVerifierConfig,
     load_config,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_load_config_cache():
+    """清 load_config 的 process-wide cache，消除测试间顺序依赖。
+
+    load_config 缓存键含 (path, mtime, size)。本组多个用例对同一 tmp config.toml
+    连续重写后重读（如 test_t1_11 先写空 model 再写 unknown model），warm 进程下
+    两次写可能落同一 mtime tick；config.py 已用 size 兜底，这里再加 cache 还原作为
+    隔离纵深，防其它测试遗留的 _cfg_cache 串进来。
+    """
+    _config_mod._reset_load_config_cache()
+    yield
+    _config_mod._reset_load_config_cache()
 
 
 def _write(tmp_path, body: str):

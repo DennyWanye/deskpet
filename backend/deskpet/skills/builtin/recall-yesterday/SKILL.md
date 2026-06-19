@@ -1,6 +1,8 @@
 ---
 name: recall-yesterday
 description: 回忆昨天聊过的亮点（调用 memory_recall 查询昨日会话）
+when_to_use: 用户问昨天聊了什么、想回忆昨天对话的亮点和内容时
+triggers: [昨天聊, 昨天说, 昨天我们, 昨天的对话]
 version: 0.1.0
 author: deskpet
 task_types: [recall, chat]

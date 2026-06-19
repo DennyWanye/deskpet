@@ -218,6 +218,13 @@ fn spawn_once(launch: &BackendLaunch) -> Result<(Child, String), String> {
         .spawn()
         .map_err(|e| format!("Failed to spawn backend: {e}"))?;
 
+    // 孤儿进程修复：把刚 spawn 的 backend 绑定到全局 Job Object
+    // (KILL_ON_JOB_CLOSE)。这样无论 deskpet.exe 如何退出（正常 / panic /
+    // 被 taskkill），OS 都会连带终止这个 python 子进程，避免它残留占用 8100
+    // 端口。supervisor respawn 路径也走 spawn_once，所以每次重启的新 backend
+    // 同样受保护。详见 crate::job_object 模块文档。
+    crate::job_object::assign_to_global(&child);
+
     let stdout = child
         .stdout
         .take()

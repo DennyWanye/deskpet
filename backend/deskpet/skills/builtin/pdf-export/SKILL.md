@@ -1,6 +1,8 @@
 ---
 name: pdf-export
 description: 把 Word/PPT/Excel 文档导出为 PDF（本地 LibreOffice 引擎，排版还原）
+when_to_use: 用户要把 Word、PPT、Excel 文档导出或转换成 PDF 时
+triggers: [pdf, PDF]
 version: 0.1.0
 author: deskpet
 task_types: [task]

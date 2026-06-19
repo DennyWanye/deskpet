@@ -244,16 +244,17 @@ def test_strict_check_flags_unmatched_when_no_receipt():
     assert outcome.unmatched_claims[0].reason == "no_receipt"
 
 
-def test_ephemeral_consult_passes_when_subagent_returns_true():
+@pytest.mark.asyncio
+async def test_ephemeral_consult_passes_when_subagent_returns_true():
     """nudge 耗尽 → consult_ephemeral_subagent；ephemeral 判 True → 放行。"""
     called = {}
 
-    def ephemeral(payload):
+    async def ephemeral(payload):
         called["payload"] = payload
         return True
 
     gate = _gate(ephemeral=ephemeral)
-    verdict = gate.consult_ephemeral_subagent(
+    verdict = await gate.consult_ephemeral_subagent(
         ledger=[],
         failed_claims=[_failed_claim()],
         assistant_text="我已生成 PPT 文件",
@@ -264,10 +265,11 @@ def test_ephemeral_consult_passes_when_subagent_returns_true():
     assert len(called["payload"]["failed_claims"]) == 1
 
 
-def test_ephemeral_consult_fails_when_subagent_none():
+@pytest.mark.asyncio
+async def test_ephemeral_consult_fails_when_subagent_none():
     """ephemeral_subagent=None（未接入）→ 保守 fail(False)。"""
     gate = _gate(ephemeral=None)
-    verdict = gate.consult_ephemeral_subagent(
+    verdict = await gate.consult_ephemeral_subagent(
         ledger=[],
         failed_claims=[_failed_claim()],
         assistant_text="我已生成 PPT 文件",
@@ -275,14 +277,15 @@ def test_ephemeral_consult_fails_when_subagent_none():
     assert verdict is False
 
 
-def test_ephemeral_consult_fails_when_subagent_raises():
+@pytest.mark.asyncio
+async def test_ephemeral_consult_fails_when_subagent_raises():
     """ephemeral 抛异常 → 吞掉返 False（保守，不让异常冒泡崩 verify 链）。"""
 
-    def boom(payload):
+    async def boom(payload):
         raise RuntimeError("ephemeral subagent crashed")
 
     gate = _gate(ephemeral=boom)
-    verdict = gate.consult_ephemeral_subagent(
+    verdict = await gate.consult_ephemeral_subagent(
         ledger=[],
         failed_claims=[_failed_claim()],
         assistant_text="x",
@@ -290,11 +293,15 @@ def test_ephemeral_consult_fails_when_subagent_raises():
     assert verdict is False
 
 
-def test_ephemeral_consult_fails_when_ledger_none():
+@pytest.mark.asyncio
+async def test_ephemeral_consult_fails_when_ledger_none():
     """N1 防护：ledger=None（caller bug）→ False，不崩。"""
 
-    gate = _gate(ephemeral=lambda p: True)
-    verdict = gate.consult_ephemeral_subagent(
+    async def _async_lambda(p):
+        return True
+
+    gate = _gate(ephemeral=_async_lambda)
+    verdict = await gate.consult_ephemeral_subagent(
         ledger=None,  # type: ignore[arg-type]
         failed_claims=[_failed_claim()],
         assistant_text="x",
@@ -302,7 +309,8 @@ def test_ephemeral_consult_fails_when_ledger_none():
     assert verdict is False
 
 
-def test_ephemeral_consult_passes_when_subagent_returns_truthy_receipt():
+@pytest.mark.asyncio
+async def test_ephemeral_consult_passes_when_subagent_returns_truthy_receipt():
     """ephemeral 在 ledger 有匹配 receipt 时确认通过（真值即放行）。"""
     receipt = ToolReceipt(
         receipt_id="r1",
@@ -314,12 +322,12 @@ def test_ephemeral_consult_passes_when_subagent_returns_truthy_receipt():
         ok=True,
     )
 
-    def ephemeral(payload):
+    async def ephemeral(payload):
         # 救援逻辑：ledger 非空就放行
         return payload["ledger_size"] > 0
 
     gate = _gate(ephemeral=ephemeral)
-    verdict = gate.consult_ephemeral_subagent(
+    verdict = await gate.consult_ephemeral_subagent(
         ledger=[receipt],
         failed_claims=[_failed_claim()],
         assistant_text="我已生成 PPT 文件",

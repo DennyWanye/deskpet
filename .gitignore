@@ -79,6 +79,8 @@ debug/assembler_trace_*.json
 backend/.tmp-pytest-root/
 backend/.pytest-basetemp/
 backend/temp/
+# goal-completion 手测/运行产物（含 userdata: state.db/device_id/llm_runtime/密钥）— 永不入库
+.tmp/
 
 # P4-S20+: PyInstaller MSI-target dist (7.7 GB, regeneratable).
 backend/dist-msi/
@@ -191,3 +193,6 @@ plans/fun-diag/
 # 工具层手测 CDP 截图产物（二进制、每次跑新生成）；testcase/ 的 helper .py
 # 入库（_cdp/_send/_approve），截图不入。
 testcase/screenshots/
+
+# ─── 2026-06-13 PPT 模板资产（~2.8GB 二进制，用户本地素材，绝不入库）───
+resources/PPT_Template/

@@ -145,11 +145,18 @@ async def compact_messages(
     message_threshold: int = DEFAULT_MESSAGE_THRESHOLD,
     char_threshold: int = DEFAULT_CHAR_THRESHOLD,
     keep_recent: int = DEFAULT_KEEP_RECENT,
+    goal_text: str | None = None,
 ) -> list[dict[str, Any]]:
     """High-level entry point — checks threshold, selects range, asks
     ``summarize_fn`` for a summary, and returns the rewritten list.
 
     On any failure, returns the original list unchanged (safe fallback).
+
+    ``goal_text`` (WI-1.3): when non-empty, appends a ``[目标锚定]`` system
+    message after the rewritten history so the model stays anchored to the
+    active goal even after context compaction.  Appended only on the success
+    path (summarize succeeded, inject_summary returned a modified list).
+    BC: ``goal_text=None`` (default) → output byte-identical to old behaviour.
     """
     if not should_compact(
         messages,
@@ -178,7 +185,22 @@ async def compact_messages(
     if not summary or not summary.strip():
         return list(messages)
 
-    return inject_summary(messages, (start, end), summary.strip())
+    rewritten = inject_summary(messages, (start, end), summary.strip())
+
+    # WI-1.3 goal anchor: after a successful compaction, if there is an
+    # active goal, append a system message reminding the model of the goal
+    # so it doesn't drift after losing the middle context.
+    if goal_text and goal_text.strip():
+        anchor_msg: dict[str, Any] = {
+            "role": "system",
+            "content": (
+                "[目标锚定] 当前目标：" + goal_text.strip()
+                + "\n请确保接下来的动作仍服务于上述目标，不要被中间步骤带偏。"
+            ),
+        }
+        rewritten = list(rewritten) + [anchor_msg]
+
+    return rewritten
 
 
 def _format_for_summarize(messages: list[dict[str, Any]]) -> str:

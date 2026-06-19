@@ -36,18 +36,19 @@ def test_v2_compaction_trigger_scales_with_model_window():
 
 
 def test_v2_tool_result_threshold_scales_by_window():
-    """D2: tool_result_threshold = max(8_000, window // 25)。
+    """2026-06-13 收紧(上下文外置): max(6_000, min(12_000, window//60))。
 
-    1M → 40_000；200K → 8_000（floor 命中）；32K _default → 8_000 floor。
+    1M → 12_000 cap；200K → 6_000 floor；32K _default → 6_000 floor。
+    原 window//25(1M→40K)留存太宽,是真机调研会话上下文爆炸主因。
     """
     deepseek = resolve("deepseek-v4-pro", project_root=None)
-    assert ContextConfig(model_info=deepseek).tool_result_threshold == 40_000
+    assert ContextConfig(model_info=deepseek).tool_result_threshold == 12_000
 
     sonnet = resolve("claude-sonnet-4-5", project_root=None)
-    assert ContextConfig(model_info=sonnet).tool_result_threshold == 8_000
+    assert ContextConfig(model_info=sonnet).tool_result_threshold == 6_000
 
     fallback = resolve("unknown-7b", project_root=None)  # _default 32K
-    assert ContextConfig(model_info=fallback).tool_result_threshold == 8_000
+    assert ContextConfig(model_info=fallback).tool_result_threshold == 6_000
 
 
 def test_v2_budget_warn_block_still_present_and_ratio_based():
@@ -95,10 +96,11 @@ def test_v1_legacy_falls_back_to_absolute_thresholds():
 def test_v1_legacy_default_when_no_model_info_and_v2_off():
     """v2_enabled=False 时 model_info 可选，缺省走 legacy 常量。"""
     cfg = ContextConfig(v2_enabled=False)
-    # legacy 绝对值（2026-05-15 stop-gap 值）
+    # legacy 绝对值（threshold 不动;head/tail 是两路共用经验值,
+    # 2026-06-13 收紧到 2500/800,v1 同享）
     assert cfg.tool_result_threshold == 16_000
-    assert cfg.tool_result_head == 6_000
-    assert cfg.tool_result_tail == 2_000
+    assert cfg.tool_result_head == 2_500
+    assert cfg.tool_result_tail == 800
     assert cfg.compact_message_threshold == 80
     assert cfg.compact_char_threshold == 300_000
     assert cfg.compact_keep_recent == 12
@@ -109,7 +111,7 @@ def test_v2_default_is_enabled_when_model_info_injected():
     """注入 model_info 时 v2_enabled 默认 True（per-model 是默认路径）。"""
     cfg = ContextConfig(model_info=resolve("deepseek-v4-pro"))
     assert cfg.v2_enabled is True
-    # head/tail 仍可用（v2 也要切 tool_result），保留稳定默认
-    assert cfg.tool_result_head == 6_000
-    assert cfg.tool_result_tail == 2_000
+    # head/tail 仍可用（v2 也要切 tool_result），保留稳定默认(2500/800)
+    assert cfg.tool_result_head == 2_500
+    assert cfg.tool_result_tail == 800
     assert cfg.skip_truncation_for_tools == {"fetch_tool_result"}

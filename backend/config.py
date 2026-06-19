@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 from __future__ import annotations
+import json
 import logging
 import os
 import shutil
@@ -193,6 +194,24 @@ class MemoryV2Config:
     memory_forget: bool = False           # WI-S2.1a 显式遗忘工具
     entity_path: bool = False             # WI-S2.2 entity 索引检索路
     episodic_to_semantic: bool = False    # WI-S2.4 summary 抽 facts
+    # FP-4 WI-3.1：goal / decision / constraint 类别抽取
+    goal_facts: bool = False              # WI-3.1 goal/decision/constraint 记忆抽取
+    # FP-4 WI-3.3：PreferenceMemory 半衰期衰减（默认 False，不改变现行为）
+    pref_decay: bool = False              # WI-3.3 preference_memory recency decay
+    # FP-4 WI-3.4：写入分级 light 快路（默认 False）
+    # False → skip_embed 强制 False，所有消息都进 L3 向量（当前行为不变）。
+    # True  → 调用方可传 skip_embed=True 跳过 L3 embedding，仅走 L2（消息
+    #         仍入 messages 表 + FTS5 trigger；embedding IS NULL；FTS/recency
+    #         仍可召回）。适用于语音 VAD tick / 截屏低信息判定等高频低信息流。
+    # 实际生效取决于调用方是否传 skip_embed=True；flag 关闭时任何 skip_embed=True
+    # 应被调用方屏蔽（有效 skip_embed = flag AND caller_intent）。
+    light_write: bool = False             # WI-3.4 light 快路开关
+    # FP-4 WI-3.2：人格画像主动注入 Component（默认 False，dev 先开）。
+    # False → PreferenceProfileComponent 返回空 Slice → bundle 字节级等同当前（BC）。
+    persona_inject: bool = False          # WI-3.2 preference profile injection
+    # FP-4 B-10：goal→facts 双写钩（默认 False）。
+    # False → bind_on_goal_set 不接电 → goal_store.set() BC。
+    goal_facts_hook: bool = False         # B-10 goal→facts double-write hook
     facts: MemoryV2FactsConfig = field(default_factory=MemoryV2FactsConfig)
     forget: MemoryV2ForgetConfig = field(
         default_factory=MemoryV2ForgetConfig,
@@ -257,6 +276,16 @@ class ToolsVerifierConfig:
     # （PRD §3 D6：failure_count == 3 时调度 ephemeral；默认 2 表示连续 2 次
     # unmatched 才触发救援）
     max_verify_nudges: int = 2
+    # WI-2.1 structured reflection: when True, _REFLECTION_INSTRUCTION is
+    # appended to verify-gate rebound + selfcheck tier2/tier3 system messages.
+    # Default False = BC (flag-off path is byte-identical to pre-WI-2.1).
+    structured_reflection: bool = False
+    # WI-2.4 external evaluator: cross-persona quality judge for high-consequence
+    # goals (prod off / dev on). Default False = BC (0 extra LLM calls).
+    external_evaluator: bool = False
+    # Provider key to use for the evaluator (default = reuse main LLM provider).
+    # "default" means: reuse build_agent's local_llm with evaluator system persona.
+    evaluator_provider: str = "default"
 
 
 @dataclass
@@ -323,6 +352,43 @@ class BillingConfig:
 
 
 @dataclass
+class SkillsAutoDisclosureConfig:
+    """``[skills.auto_disclosure]`` — WI-4.1 二级披露 feature flag + tuning.
+
+    Default ``enabled=False`` → byte-identical to pre-WI-4.1 behavior.
+    Set ``enabled=True`` in config.toml (or ``[features] …``) to activate
+    automatic skill body inlining.
+    """
+    enabled: bool = False
+    strong_threshold: float = 0.55   # cos-sim threshold for "strong match"
+    budget_tokens: int = 8000        # total token budget for inlined bodies
+    per_skill_max_tokens: int = 2000  # single-skill body truncation cap
+
+
+@dataclass
+class SkillsCodifyConfig:
+    """``[skills.codify]`` — WI-4.3 技能自创闭环 feature flag + rate-limit.
+
+    Default ``enabled=False`` (dev on / prod off).
+    Set ``[skills.codify] enabled = true`` in config.toml to activate.
+    ``max_candidates_per_day`` caps how many pending candidates can be
+    generated per calendar day (防打扰).
+    """
+    enabled: bool = False
+    max_candidates_per_day: int = 3
+
+
+@dataclass
+class SkillsConfig:
+    """``[skills]`` top-level config table (WI-4.1+)."""
+    auto_disclosure: SkillsAutoDisclosureConfig = field(
+        default_factory=SkillsAutoDisclosureConfig
+    )
+    # WI-4.3 技能自创闭环 — dev on / prod off by default.
+    codify: SkillsCodifyConfig = field(default_factory=SkillsCodifyConfig)
+
+
+@dataclass
 class FeaturesConfig:
     """``[features]`` 父表 — Companion + Code 升级 v1 (plans/2026-05-25-...).
 
@@ -348,6 +414,15 @@ class FeaturesConfig:
     agent_parallel: bool = False
     plan_confirm_gate: bool = False
     preference_memory: bool = False
+    # WI-4.0 compaction: wire ContextCompressor into AgentLoop.
+    # WI-6 (compaction-bestpractice-upgrade, 2026-06-16): 默认翻 True。
+    # gate 已满足: P-B 修复(窗口按有效出站模型解析) + 第1/2期单测全绿 + 小窗口长
+    # 会话真机 case ② 通过(24×microcompact+2×完整摘要后桌宠仍记得任务,任务连续性
+    # 保住)。compaction 级联(microcompact→结构化摘要→截断兜底)对长 agentic 任务
+    # 平滑续跑、防 BLOCK gate 中断。可设 [features] compaction_enabled = false 关闭。
+    # 已知 caveat: haiku 摘要层偶发反射(把元指令当任务,issue #46602 式),microcompact
+    # (最高频、不调模型层)无此问题;后续可继续强化防反射。
+    compaction_enabled: bool = True
 
 
 @dataclass
@@ -366,6 +441,8 @@ class AppConfig:
     # Companion + Code 升级 v1 — slash_commands / goal_mode / agent_parallel.
     # 全 flag 默认 OFF（详 FeaturesConfig docstring）.
     features: FeaturesConfig = field(default_factory=FeaturesConfig)
+    # WI-4.1 Skills 分级披露.  全 flag 默认 OFF（字节级 BC）.
+    skills: SkillsConfig = field(default_factory=SkillsConfig)
     # P4-S15: capture the raw TOML so layers that don't have a dataclass
     # yet (P4 [mcp], [agent], [context.assembler], [memory.l3], [tools.web])
     # can read their config without us having to migrate all of them at once.
@@ -690,6 +767,91 @@ def resolve_config_path() -> Path:
     return _paths.user_data_dir() / "config.toml"
 
 
+def effective_llm_model(cfg: "AppConfig") -> str:
+    """有效出站 LLM 模型名。优先 dataclass(运行时覆盖已应用) → raw → 种子默认。
+    cfg 可能是部分构造/None-字段，全程空安全，绝不抛。
+    """
+    try:
+        model = cfg.llm.local.model
+        if isinstance(model, str) and model:
+            return model
+    except Exception:
+        pass
+
+    try:
+        raw = cfg.raw or {}
+        if isinstance(raw, dict):
+            llm = raw.get("llm", {}) or {}
+            if isinstance(llm, dict):
+                model = llm.get("model")
+                if isinstance(model, str) and model:
+                    return model
+    except Exception:
+        pass
+
+    return "gemma4:e4b"
+
+
+def effective_llm_model_standalone() -> str:
+    """工具进程内取有效出站模型，不依赖 main 的 config 单例(那个单例工具拿不到)。
+    优先直读 <user_data>/llm_runtime.json 的 model → 回落磁盘 config → 种子默认。失败静默。
+    """
+    try:
+        rt = _paths.user_data_dir() / "llm_runtime.json"
+        if rt.exists():
+            data = json.loads(rt.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                model = data.get("model")
+                if isinstance(model, str) and model:
+                    return model
+    except Exception:
+        pass
+
+    try:
+        cfg = load_config(resolve_config_path())
+        raw = cfg.raw or {}
+        if isinstance(raw, dict):
+            llm = raw.get("llm", {}) or {}
+            if isinstance(llm, dict):
+                model = llm.get("model")
+                if isinstance(model, str) and model:
+                    return model
+    except Exception:
+        pass
+
+    return "gemma4:e4b"
+
+
+def standalone_config_section(section: str) -> dict:
+    """工具进程内读 config.toml 某段(dict),不依赖 main 的 config 单例。
+
+    历史 bug(真机 UI 测 TC-P2-05): 各工具用
+    ``import config as _cfg; _cfg.config.raw.get("<section>")`` 读配置,但
+    ``config`` 模块**并无** ``config`` 属性 —— 已加载的 ``AppConfig`` 是
+    ``main.py`` 的 ``main.config`` 全局,工具 import 的 ``config`` 模块拿不到。
+    于是 ``_cfg.config`` 恒抛 ``AttributeError`` 被外层 except 吞掉 → 用户在
+    config.toml 配的开关(``[image] model/quality/...``、``[research] ...`` 等)
+    **从未生效**,恒取代码里的默认值。
+
+    本 helper 正确解析磁盘上的 config 并返回指定段。借 :func:`load_config`
+    的进程级 mtime 缓存,重复调用是廉价的(用户改 config.toml 会自动失效重读)。
+    读不到 / 段不存在 / 段非 dict → 一律返回 ``{}``,全程不抛。
+
+    See also :func:`effective_llm_model_standalone`(同样的「工具拿不到单例」
+    根因,只是它针对 ``[llm].model``)。
+    """
+    try:
+        cfg = load_config(resolve_config_path())
+        raw = cfg.raw or {}
+        if isinstance(raw, dict):
+            val = raw.get(section)
+            if isinstance(val, dict):
+                return val
+    except Exception:  # noqa: BLE001 — 配置缺失/损坏一律回落默认
+        pass
+    return {}
+
+
 def _resolve_memory_db_path(raw: str) -> Path:
     """Map a MemoryConfig.db_path value to an absolute Path.
 
@@ -719,9 +881,18 @@ def _resolve_memory_db_path(raw: str) -> Path:
 #   - mtime 改变 / path 不同 → invalidate + 重读
 #   - 文件不存在 → 不缓存（保持每次重建默认 AppConfig，方便 test fixture
 #     反复 monkeypatch _resolve_memory_db_path）
+#
+# WI-T5.1 v3.1 — cache key 同时纳入 st_size（不只 mtime）：
+# Windows 文件系统 mtime 精度有限，**同一路径在同一 mtime tick 内连续重写两次**
+# （rsync/make 同款陷阱）会让 mtime-only 比对误判"未变"→ 返回 stale config。
+# 这正是 test_t1_11 在 warm 进程下偶发 "DID NOT RAISE VG-INVARIANT-5" 的根因：
+# 它对同一 tmp config.toml 先写空 model（合法）再写 unknown_model（应报错），
+# 两次写常落同一 tick → 第二次 load_config 命中 cache 返回第一次的合法对象，
+# 校验路径被旁路。size 不同即可强制失效（mtime+size 是标准稳健启发式）。
 _cfg_cache: Optional["AppConfig"] = None
 _cfg_cache_path: Optional[Path] = None
 _cfg_cache_mtime: Optional[float] = None
+_cfg_cache_size: Optional[int] = None
 
 
 def _load_config_uncached(path: Path) -> "AppConfig":
@@ -736,25 +907,32 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     unchanged since last call. Reload happens automatically when the user
     edits config.toml (mtime bumps) or when called with a different path.
     """
-    global _cfg_cache, _cfg_cache_path, _cfg_cache_mtime
+    global _cfg_cache, _cfg_cache_path, _cfg_cache_mtime, _cfg_cache_size
     path = Path(path)
     if path.exists():
         try:
-            cur_mtime = path.stat().st_mtime
+            st = path.stat()
+            cur_mtime: Optional[float] = st.st_mtime
+            cur_size: Optional[int] = st.st_size
         except OSError:
             cur_mtime = None
+            cur_size = None
         if (
             _cfg_cache is not None
             and _cfg_cache_path == path
             and _cfg_cache_mtime is not None
             and cur_mtime is not None
             and abs(cur_mtime - _cfg_cache_mtime) < 1e-6
+            # size 一并比对：挡 mtime 精度内同路径重写（见上方注释 / test_t1_11）
+            and _cfg_cache_size is not None
+            and cur_size == _cfg_cache_size
         ):
             return _cfg_cache
         cfg = _load_config_impl(path)
         _cfg_cache = cfg
         _cfg_cache_path = path
         _cfg_cache_mtime = cur_mtime
+        _cfg_cache_size = cur_size
         return cfg
     # 文件不存在 — 不缓存（保留每次重建默认 AppConfig 的语义）
     return _load_config_impl(path)
@@ -762,10 +940,11 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
 
 def _reset_load_config_cache() -> None:
     """Test helper：清缓存（避免 fixture 间状态泄漏）。"""
-    global _cfg_cache, _cfg_cache_path, _cfg_cache_mtime
+    global _cfg_cache, _cfg_cache_path, _cfg_cache_mtime, _cfg_cache_size
     _cfg_cache = None
     _cfg_cache_path = None
     _cfg_cache_mtime = None
+    _cfg_cache_size = None
 
 
 def _load_config_impl(path: str | Path = "config.toml") -> AppConfig:
@@ -913,6 +1092,19 @@ def _load_config_impl(path: str | Path = "config.toml") -> AppConfig:
     # 包含 slash_commands / goal_mode / agent_parallel 3 flag（默认 OFF）.
     if "features" in raw:
         config.features = _load_section(FeaturesConfig, raw["features"])
+    # WI-4.1 skills 分级披露 + WI-4.3 技能自创配置加载（[skills.auto_disclosure]
+    # / [skills.codify] 子表）.
+    # 2026-06-06 真机手测抓 bug：原加载器只 pop auto_disclosure，**从不解析 codify**
+    # → `[skills.codify] enabled=true` 被丢弃 → config.skills.codify 恒默认(enabled=
+    # False) → lifespan codify 接线跳过 → tool_path_recorder/skill_candidate_store
+    # 全 None → 技能自创确认卡生产永不弹（boot 无 fp5_codify_wiring_ready 印证）。
+    if "skills" in raw:
+        raw_skills = dict(raw["skills"])
+        raw_ad = dict(raw_skills.pop("auto_disclosure", {}) or {})
+        ad = _load_section(SkillsAutoDisclosureConfig, raw_ad)
+        raw_cd = dict(raw_skills.pop("codify", {}) or {})
+        cd = _load_section(SkillsCodifyConfig, raw_cd)
+        config.skills = SkillsConfig(auto_disclosure=ad, codify=cd)
     # P4-S15: stash the raw parsed TOML so consumers (MCP bootstrap, agent
     # bootstrap, etc.) can pick out their sections without us bolting on
     # a dataclass for each one.

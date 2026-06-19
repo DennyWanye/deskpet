@@ -1,6 +1,8 @@
 ---
 name: summarize-day
 description: 总结今天的对话要点
+when_to_use: 用户要总结今天的对话要点、今日聊天回顾时
+triggers: [总结今天, 今天聊了, 今日总结, 今天的对话]
 version: 0.1.0
 author: deskpet
 task_types: [recall, chat]

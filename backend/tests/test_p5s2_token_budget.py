@@ -114,8 +114,9 @@ _FIXED_WINDOW = 64_000
 
 
 def test_above_warn_below_block_returns_warn():
-    # warn at 80% = ~51k tokens → ~220k chars lands between warn & block.
-    msgs = [{"role": "user", "content": "x" * 220_000}]
+    # warn at 80% = ~51k tokens → ~190k chars lands between warn & block.
+    # (FP-2 真机校准后 ASCII ≈3.5 char/token,样本同步从 220k 调 190k)
+    msgs = [{"role": "user", "content": "x" * 190_000}]
     result = check_budget(
         msgs, model="deepseek-v4-pro", context_window=_FIXED_WINDOW
     )

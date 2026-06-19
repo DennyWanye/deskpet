@@ -242,9 +242,23 @@ class LLMRegistry:
                     logger.warning("llm %s auth failed, removing from registry", provider_name)
                     break
                 except LLMTimeoutError as exc:
-                    errors.append(f"{provider_name}: timeout ({exc})")
+                    # 2026-06-06：timeout / 连接级瞬时掉链（ReadError 等，见
+                    # openai_adapter._map_error）→ **重试同 provider**（带 backoff），
+                    # 仿 RateLimit。单 provider（中转 relay）经代理间歇掉连接时，立即
+                    # 重试常能救回；之前直接 break 切下一 provider，单 provider 时即崩。
                     last_exc = exc
-                    break
+                    if attempt >= max_retries:
+                        errors.append(
+                            f"{provider_name}: timeout/conn-drop after {attempt} retries ({exc})"
+                        )
+                        break
+                    wait_s = backoff * (2 ** (attempt - 1))
+                    logger.warning(
+                        "llm %s timeout/conn-drop (attempt %d/%d); retrying same provider in %.2fs",
+                        provider_name, attempt, max_retries, wait_s,
+                    )
+                    await asyncio.sleep(wait_s)
+                    continue
                 except LLMProviderError as exc:
                     errors.append(f"{provider_name}: {exc}")
                     last_exc = exc

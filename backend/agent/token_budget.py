@@ -36,6 +36,7 @@ Design
 from __future__ import annotations
 
 import enum
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -126,41 +127,40 @@ class BudgetCheckResult:
     advice: str = ""
 
 
-def estimate_tokens(messages: list[dict[str, Any]]) -> int:
-    """Char/4 heuristic. Counts content strings + tool_call payloads.
+# CJK 字符(汉字/假名/全角符号)在主流 BPE 里 ≈1 token/字,而 char/4 会低估
+# ~4 倍。FP-2 真机实测:中文会话 real prompt_tokens=28k 被估 ~7k,导致
+# compaction(24k 阈值)永不触发、直到撑爆 32k 窗口。CJK 字符按等效 4 个
+# ASCII 字符计入,使最终 //4 后 ≈1 token/字。
+_CJK_RE = re.compile(
+    r"[　-ヿ㐀-䶿一-鿿豈-﫿＀-￯]"
+)
 
-    Tradeoff: we used to consider importing tiktoken, but it's ~30 MB
-    of model files and only matches OpenAI's BPE — not deepseek's,
-    not Anthropic's, etc. The char/4 estimate is within 15% on
-    mixed-language content, which is enough for an 80% WARN threshold.
+
+def _weighted_chars(s: str) -> int:
+    """Return ASCII-equivalent char count: CJK chars weigh 4× (≈1 token each).
+
+    真机校准(FP-2 TC-2.1 第二刀): markdown/路径/代码密集的英文实测
+    ~3 char/token(relay prompt_tokens=34008 vs 旧估 <24000,低估 30%+),
+    纯散文才接近 4。ASCII 部分按 ×8/7 上调(等效 ~3.5 char/token),
+    宁可早压不可爆窗。
+    """
+    cjk = len(_CJK_RE.findall(s))
+    ascii_part = len(s) - cjk
+    return ascii_part + ascii_part // 7 + cjk * 4
+
+
+def estimate_tokens(messages: list[dict[str, Any]]) -> int:
+    """CJK-aware token 估算。**统一委托** ``deskpet.agent.tokens.count_messages_tokens``
+    (同一口径,可选 tiktoken 精度),消除散落 ``len//4`` 不一致(优化 #1+#3)。
+
+    历史取舍仍成立: 默认不上 tiktoken(~30MB BPE + 中国网络 + 跨 provider 不准),
+    启发式 CJK-aware + 安全偏上 + relay 真实反馈三刀制实战足够;tiktoken 仅
+    ``DESKPET_TIKTOKEN=1`` 时作精度增强。``_weighted_chars`` 保留供 BC。
     """
     if not messages:
         return 0
-
-    chars = 0
-    for m in messages:
-        # `content` may be a string or absent (assistant tool-only turns)
-        content = m.get("content")
-        if isinstance(content, str):
-            chars += len(content)
-        elif content is not None:
-            chars += len(str(content))
-
-        # tool_calls payload — args may be a JSON string or pre-parsed dict
-        tool_calls = m.get("tool_calls")
-        if tool_calls:
-            for tc in tool_calls:
-                if isinstance(tc, dict):
-                    args = tc.get("args") or tc.get("arguments")
-                    if args is not None:
-                        chars += len(args if isinstance(args, str) else str(args))
-                    name = tc.get("name") or ""
-                    chars += len(str(name))
-
-    # Each ~4 chars ≈ 1 token; add a small per-message overhead for
-    # role tag + delimiters that the wire protocol adds.
-    per_msg_overhead = 4 * len(messages)
-    return max(0, chars // 4 + per_msg_overhead)
+    from deskpet.agent.tokens import count_messages_tokens
+    return count_messages_tokens(messages)
 
 
 def get_context_window(model_name: str) -> int:

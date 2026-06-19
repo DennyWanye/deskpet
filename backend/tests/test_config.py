@@ -207,3 +207,36 @@ def test_load_config_tts_non_legacy_value_unchanged(tmp_path, caplog):
 
     assert cfg.tts.model_dir == "cosyvoice2"
     assert not any("legacy" in r.message.lower() for r in caplog.records)
+
+
+def test_load_config_parses_skills_codify_flag(tmp_path: Path) -> None:
+    """2026-06-06 真机手测抓 bug 回归：load_config 必须解析 [skills.codify]
+    子表（原加载器只 pop auto_disclosure，丢了 codify → flag enabled=true 被忽略
+    → 技能自创确认卡生产永不弹）。同时校验 auto_disclosure 仍正常。"""
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        dedent(
+            """
+            schema_version = 1
+
+            [skills.auto_disclosure]
+            enabled = true
+
+            [skills.codify]
+            enabled = true
+            """
+        ).strip()
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.skills.auto_disclosure.enabled is True
+    assert cfg.skills.codify.enabled is True, (
+        "[skills.codify] enabled=true 未被解析 → 技能自创生产 dead（真机抓的 bug）"
+    )
+
+
+def test_load_config_skills_codify_defaults_off(tmp_path: Path) -> None:
+    """无 [skills.codify] 段时默认 enabled=False（BC，flag-OFF 字节契约）。"""
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text("schema_version = 1\n")
+    cfg = load_config(cfg_path)
+    assert cfg.skills.codify.enabled is False

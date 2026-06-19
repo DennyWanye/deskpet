@@ -178,13 +178,22 @@ def build_teammate_tools(
     store: TeamStore,
     team_id: str,
     teammate_id: str,
+    task_graph_store: Any = None,
+    goal_id: str | None = None,
 ) -> list[tuple[str, dict[str, Any], TeammateHandler]]:
-    """Build the 5 teammate-tool ``(name, schema, handler)`` triples
+    """Build the teammate-tool ``(name, schema, handler)`` triples
     for ``(team_id, teammate_id)``.
 
     Returns a list (not a dict) so caller registers each into whatever
     subset-registry shape they're using. Names match the ``"name"``
     key in each tool's schema for ease of lookup.
+
+    When both ``task_graph_store`` and ``goal_id`` are provided, two
+    extra triples are appended (``goal_task_list`` + ``goal_task_update``)
+    so sub-agents can read/write the shared goal task graph.
+    These tools are NOT in FORBIDDEN_TEAMMATE_TOOLS — explicitly allowed.
+
+    BC: when either is None, the returned list is the original 5 triples.
     """
 
     async def _h_create(args: dict[str, Any], task_id: str = "") -> str:
@@ -278,13 +287,23 @@ def build_teammate_tools(
             return _envelope_err("send_message returned False")
         return _envelope_ok({"sent": True})
 
-    return [
+    base = [
         (_SCHEMA_CREATE["name"], _SCHEMA_CREATE, _h_create),
         (_SCHEMA_CLAIM["name"], _SCHEMA_CLAIM, _h_claim),
         (_SCHEMA_UPDATE["name"], _SCHEMA_UPDATE, _h_update),
         (_SCHEMA_LIST["name"], _SCHEMA_LIST, _h_list),
         (_SCHEMA_SEND_MSG["name"], _SCHEMA_SEND_MSG, _h_send_msg),
     ]
+
+    if task_graph_store is not None and goal_id is not None:
+        from deskpet.tools.task_graph_tools import build_goal_task_tools
+        extra = build_goal_task_tools(
+            task_graph_store=task_graph_store,
+            goal_id=goal_id,
+        )
+        base = base + extra
+
+    return base
 
 
 __all__ = [

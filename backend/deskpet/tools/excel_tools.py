@@ -47,14 +47,22 @@ log = logging.getLogger(__name__)
 
 try:  # openpyxl is a hard dep for this skill, but degrade gracefully.
     from openpyxl import Workbook
+    from openpyxl.cell.cell import Cell
     from openpyxl.chart import BarChart, LineChart, PieChart, Reference
     from openpyxl.formatting.rule import ColorScaleRule, DataBarRule, CellIsRule
-    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
     _HAS_OPENPYXL = True
 except Exception:  # noqa: BLE001
     _HAS_OPENPYXL = False
+
+try:  # image embedding needs Pillow under the hood; degrade if absent.
+    from openpyxl.drawing.image import Image as _XLImage
+
+    _HAS_XLIMAGE = True
+except Exception:  # noqa: BLE001
+    _HAS_XLIMAGE = False
 
 
 _HEADER_FILL = "FF1F4E78"
@@ -156,6 +164,141 @@ def _add_chart(ws, chart_spec: dict[str, Any]) -> None:
     ws.add_chart(chart, anchor)
 
 
+def _hex_argb(c: Any) -> Optional[str]:
+    """'#1F4E78' / '1F4E78' / 'FF1F4E78' → 8-hex ARGB; bad input → None."""
+    if not c:
+        return None
+    s = str(c).lstrip("#").upper()
+    if len(s) == 6:
+        return "FF" + s
+    if len(s) == 8:
+        return s
+    return None
+
+
+def _iter_cells(ws, rng: str):
+    """Flatten ws[rng] into a flat cell iterator (handles single cell,
+    a 1-D row/col tuple, and a 2-D tuple-of-tuples uniformly)."""
+    try:
+        sel = ws[rng]
+    except Exception:  # noqa: BLE001 — bad range string
+        return
+    if isinstance(sel, Cell):
+        yield sel
+        return
+    for item in sel:
+        if isinstance(item, Cell):
+            yield item
+        else:  # nested tuple (multi-row range)
+            for cell in item:
+                yield cell
+
+
+def _thin_border() -> "Border":
+    side = Side(style="thin", color="FFBFBFBF")
+    return Border(left=side, right=side, top=side, bottom=side)
+
+
+def _apply_number_formats(ws, specs: Any, nrows: int) -> None:
+    """specs: list of {range:'B2:B9', format:'#,##0.00'} or
+    {col:'B', format:'0.0%', from_row?:2}. Column form applies to data
+    rows (default from row 2, i.e. skipping a header)."""
+    if not isinstance(specs, list):
+        return
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        fmt = spec.get("format")
+        if not fmt:
+            continue
+        rng = spec.get("range")
+        col = spec.get("col")
+        if rng:
+            for cell in _iter_cells(ws, str(rng)):
+                cell.number_format = str(fmt)
+        elif col:
+            start = int(spec.get("from_row", 2) or 2)
+            for r in range(start, nrows + 1):
+                ws[f"{col}{r}"].number_format = str(fmt)
+
+
+def _apply_cell_styles(ws, styles: Any) -> None:
+    """styles: list of {range, bold?, italic?, font_color?, fill?, align?,
+    font_size?, border?, wrap?}. Each applies to every cell in the range."""
+    if not isinstance(styles, list):
+        return
+    for st in styles:
+        if not isinstance(st, dict) or not st.get("range"):
+            continue
+        font_kw: dict[str, Any] = {}
+        if st.get("bold"):
+            font_kw["bold"] = True
+        if st.get("italic"):
+            font_kw["italic"] = True
+        fc = _hex_argb(st.get("font_color"))
+        if fc:
+            font_kw["color"] = fc
+        if st.get("font_size"):
+            try:
+                font_kw["size"] = float(st["font_size"])
+            except (ValueError, TypeError):
+                pass
+        fill = _hex_argb(st.get("fill"))
+        align = st.get("align")
+        wrap = bool(st.get("wrap"))
+        border = _thin_border() if st.get("border") else None
+        for cell in _iter_cells(ws, str(st["range"])):
+            if font_kw:
+                cell.font = Font(**font_kw)
+            if fill:
+                cell.fill = PatternFill("solid", fgColor=fill)
+            if align in ("left", "center", "right") or wrap:
+                cell.alignment = Alignment(
+                    horizontal=align if align in ("left", "center", "right") else None,
+                    vertical="center",
+                    wrap_text=wrap,
+                )
+            if border is not None:
+                cell.border = border
+
+
+def _apply_merges(ws, merges: Any) -> None:
+    """merges: list of A1 ranges ('A1:C1'). Excel keeps the top-left
+    cell's value; we merge after rows/styles so the anchor is styled."""
+    if not isinstance(merges, list):
+        return
+    for m in merges:
+        try:
+            ws.merge_cells(str(m))
+        except Exception as exc:  # noqa: BLE001 — bad range is non-fatal
+            log.warning("excel merge skipped %r: %s", m, exc)
+
+
+def _add_images(ws, images: Any) -> None:
+    """images: list of {path, anchor?, width?, height?}. Needs Pillow."""
+    if not isinstance(images, list):
+        return
+    if not _HAS_XLIMAGE:
+        log.warning("excel images skipped: Pillow/openpyxl image support missing")
+        return
+    for im in images:
+        if not isinstance(im, dict):
+            continue
+        p = im.get("path")
+        if not p or not Path(str(p)).exists():
+            log.warning("excel image path missing: %r", p)
+            continue
+        try:
+            img = _XLImage(str(p))
+            if im.get("width"):
+                img.width = int(im["width"])
+            if im.get("height"):
+                img.height = int(im["height"])
+            ws.add_image(img, str(im.get("anchor") or "H2"))
+        except Exception as exc:  # noqa: BLE001 — image is non-critical
+            log.warning("excel image skipped: %s", exc)
+
+
 def _build_sheet(wb, sheet_spec: dict[str, Any], first: bool) -> None:
     name = str(sheet_spec.get("name") or "Sheet")[:31]  # Excel 31-char cap
     if first:
@@ -194,12 +337,31 @@ def _build_sheet(wb, sheet_spec: dict[str, Any], first: bool) -> None:
     if isinstance(cf, dict):
         _apply_conditional_format(ws, cf)
 
+    # 数字格式(货币/百分比/千分位/日期) → 逐格样式(底色/字色/边框/合并)。
+    # 顺序: number_format 先,merges 后(让合并锚点带样式),cell_styles 最后
+    # 覆盖(用户显式样式优先级最高)。
+    nrows = len(rows)
+    _apply_number_formats(ws, sheet_spec.get("number_formats"), nrows)
+    _apply_merges(ws, sheet_spec.get("merge_cells"))
+    _apply_cell_styles(ws, sheet_spec.get("cell_styles"))
+
+    # 单图表(BC)+ 多图表(charts 列表)。
     chart = sheet_spec.get("chart")
     if isinstance(chart, dict):
         try:
             _add_chart(ws, chart)
         except Exception as exc:  # noqa: BLE001 — chart is non-critical
             log.warning("excel chart skipped: %s", exc)
+    charts = sheet_spec.get("charts")
+    if isinstance(charts, list):
+        for cs in charts:
+            if isinstance(cs, dict):
+                try:
+                    _add_chart(ws, cs)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("excel chart skipped: %s", exc)
+
+    _add_images(ws, sheet_spec.get("images"))
 
 
 def excel_create(
@@ -229,7 +391,8 @@ def excel_create(
 
     try:
         out_path = office_paths.resolve_for_write(
-            output_path, default_prefix="deskpet-excel", default_suffix=".xlsx"
+            output_path, default_prefix="deskpet-excel", default_suffix=".xlsx",
+            default_kind="Excel",
         )
     except office_paths.PathError as exc:
         return {"ok": False, "error": str(exc), "retriable": False}
@@ -267,26 +430,36 @@ _SCHEMA = {
     "description": (
         "Generate a professional .xlsx spreadsheet locally from a structured "
         "spec. Supports multiple sheets, live formulas (any cell value "
-        "starting with '='), charts (bar/line/pie), conditional formatting, "
-        "header styling, frozen panes and column widths. Returns the file "
-        "path. Decide the data layout first, then call this."
+        "starting with '='), charts (bar/line/pie, single or many per sheet), "
+        "conditional formatting, header styling, frozen panes, column widths, "
+        "number formats (currency/percent/thousands/date), merged cells, "
+        "per-cell styling (fill/font color/border/align) and embedded images. "
+        "Returns the file path (default 桌宠/OutPut/Excel) — tell the user the "
+        "full path. Decide the data layout first, then call this."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "spec": {
                 "description": (
-                    "Dict (or JSON string of a dict) with a 'sheets' list. "
-                    "Each sheet: {name, rows (list of row lists), header_row, "
-                    "column_widths, freeze_panes, conditional_format, chart}. "
-                    "A cell value like '=SUM(B2:B5)' becomes a live formula."
+                    "Dict (or JSON string of a dict) with a 'sheets' list. Each "
+                    "sheet supports: name, rows (list of row lists), header_row, "
+                    "column_widths, freeze_panes, conditional_format, chart, "
+                    "charts (list), number_formats (list of {range|col, format} "
+                    "e.g. {col:'B',format:'#,##0.00'} or {col:'C',format:'0.0%'}),"
+                    " merge_cells (list of 'A1:C1'), cell_styles (list of "
+                    "{range, bold, italic, font_color:'#RRGGBB', fill:'#RRGGBB', "
+                    "align, font_size, border, wrap}), images (list of {path, "
+                    "anchor, width, height}). A cell value like '=SUM(B2:B5)' "
+                    "becomes a live formula."
                 ),
             },
             "output_path": {
                 "type": "string",
                 "description": (
-                    "Absolute .xlsx path. Omit to auto-create in the temp dir. "
-                    "A non-temp directory must have been picked by the user."
+                    "Absolute .xlsx path. Omit to auto-save under "
+                    "桌宠/OutPut/Excel. A non-temp directory must have been "
+                    "picked by the user."
                 ),
             },
         },

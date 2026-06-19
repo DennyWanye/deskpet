@@ -317,3 +317,20 @@ def test_screen_scroll_magnitude_capped(
     assert out["capped"] is True
     assert out["amount"] == cu._MAX_SCROLL
     assert ("scroll", cu._MAX_SCROLL) in fake_backends.calls
+
+
+# --- 误路由根治回归 (2026-06-14): disabled 时从 LLM schema 隐藏 ---
+
+def test_computer_use_tools_hidden_from_schema_when_disabled():
+    """flag OFF(默认)→ 6 个 screen_* 工具挂 sentinel requires_env →
+    registry.schemas() 不返回它们 → LLM 看不到 → 不可能误路由调用。
+    (注册仍在、dispatch 仍返回 disabled —— 见上面 disabled 测试。)"""
+    sc = [s for s in cu.registry.all_specs() if s.name.startswith("screen_")]
+    assert len(sc) == 6, [s.name for s in sc]
+    # 都挂了永不满足的 sentinel env
+    for s in sc:
+        assert s.requires_env == ["__DESKPET_COMPUTER_USE_DISABLED__"], s.name
+    # schemas() 全部过滤掉
+    schema_names = {f["function"]["name"] for f in cu.registry.schemas()}
+    for s in sc:
+        assert s.name not in schema_names, f"{s.name} 不该出现在 LLM schema"

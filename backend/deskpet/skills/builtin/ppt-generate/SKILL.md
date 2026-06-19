@@ -1,6 +1,8 @@
 ---
 name: ppt-generate
 description: 把一个主题或一段研究报告变成一份专业的 .pptx 演示文稿（本地生成，支持二次编辑）
+when_to_use: 用户要做 PPT、演示文稿、幻灯片，或把主题、报告内容变成 pptx 时
+triggers: [ppt, PPT, 演示文稿, 幻灯片, pptx]
 version: 0.1.0
 author: deskpet
 task_types: [task, plan, code]
@@ -16,6 +18,16 @@ requires_script: false
 3. 一份已经结构化的 JSON outline（直接用就行）
 
 执行步骤（**严格按顺序**）：
+
+## 0. 先判定视觉模式（三选一，不混用）
+
+| 用户说法里出现 | 模式 | 怎么做 |
+|---|---|---|
+| 「AI 配图 / 惊艳 / 电影感 / 视觉冲击 / 海报感 / 配图要 AI 生成」 | **AI 整页生图** | 每页 `layout="image_full"` + 英文 `image_prompt`；**不传** `template`。封面只给 title+caption；内容页给 title+3~4 条精炼 bullets(每条≤24字)。生图每张 1~2 分钟,工具会秒回「在做了」,后台完成自动推回,**不要**等待或重复调用。 |
+| 「模板 / 专业 / 正式 / 商务 / 可编辑 / 高级感」 | **模板填充** | 传 `template=<精选模板名>` —— **只能**从 schema 里列出的精选模板按主题选最贴的(教育/文化/政务→商务深蓝-水墨;科技/商业/产品→高级感-蓝;设计/品牌/高端→简约高级-灰),**别自己编模板名**。页面**不要**写 image_prompt。 |
+| 都没说 | **朴素主题** | 不传 template、不写 image_prompt,用 `theme` 三选一。 |
+
+用户两种都要(「分别用模板和 AI 配图各做一份」)→ 调 `ppt_create` **两次**,一次一种模式。
 
 ## 1. 拿到大纲
 - 如果用户给的是「主题」或「markdown 大纲」：用你自己的能力把它转成结构化 JSON outline（见下方 schema），**不要**调任何 web 工具。
@@ -35,6 +47,10 @@ JSON outline schema（list of slide dicts，**每一页一个 dict**）：
                             "right_title": "B 方案", "right": ["..."]},
   {"layout": "quote",      "quote": "原句", "cite": "出处"},
   {"layout": "image",      "title": "...", "image_path": "/abs/path.png", "caption": "图说"},
+  {"layout": "image_full", "title": "...", "caption": "一句副标题",
+                            "image_prompt": "English scene description, cinematic..."},
+  {"layout": "image_full", "title": "...", "bullets": ["要点1", "要点2", "要点3"],
+                            "image_prompt": "English scene description..."},
   {"layout": "chart",      "title": "季度营收",
                             "chart": {"type": "bar",
                                       "categories": ["Q1", "Q2", "Q3"],
@@ -61,7 +77,8 @@ bullet —— `type` 选 `bar`(对比) / `line`(趋势) / `pie`(占比)。数据
 - `theme`: 用户指定就用用户的；否则 `minimal`（最稳）。商务/学术=`minimal`，技术/Demo=`dark`，营销/儿童=`playful`。
 - `title`: 文档标题（落到 .pptx core properties）
 - `author`: 默认 `DeskPet`，除非用户给了名字
-- `output_path`: 用户没指定就不传，工具会生成到系统 temp 目录
+- `output_path`: 用户没指定就不传，工具会生成到 `<用户数据>/OutPut/PPT/`
+- `template`: 仅「模板填充」模式传(bundled 模板名或 .pptx 绝对路径)
 
 **🚨 内容一致性硬约束（防漂移）**：
 
@@ -90,7 +107,8 @@ outline 替换成了"深海探险"凭空主题。本约束就是为了压制这�
 
 ## 3. 回复用户
 
-- ✅ 成功：告诉用户「PPT 已生成: `<path>`」+ 用一句话总结生成了几页、什么主题。
+- ✅ 成功：**必须**告诉用户完整保存路径「PPT 已生成: `<path>`」+ 一句话总结几页、什么主题。
+- 🎨 AI 生图模式返回 `status:"generating"` 时：告诉用户在后台做了、约几分钟、做好自动打开并发路径——然后**结束本回合**，不要轮询不要重调。
 - ❌ 失败：返回 `markdown_fallback` 里的内容（一份可读的 markdown 大纲），并解释原因（一般是 python-pptx 没装）。**永远不要假装成功**。
 
 ## 4. 与 deep-research 串联（可选）
