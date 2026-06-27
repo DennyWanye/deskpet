@@ -1,0 +1,167 @@
+name: Release
+
+# Fires on git tag push like `v0.2.0`. Builds the Windows installer,
+# signs it with the Tauri updater key, and uploads the bundle +
+# `latest.json` to a GitHub Release so the updater plugin can pick
+# it up.
+#
+# ─── For forks: read this before tagging a release ────────────────────
+# This workflow is set up for the upstream repo (DennyWanye/deskpet).
+# If you forked DeskPet and want to ship your own builds, you MUST:
+#   1. Generate your OWN minisign keypair (do NOT reuse upstream's):
+#        npx @tauri-apps/cli signer generate --ci --password "" \
+#            -w $HOME/.tauri/yourname.key
+#   2. Paste the PRINTED PUBLIC KEY into tauri-app/src-tauri/tauri.conf.json
+#      under `plugins.updater.pubkey`. The pubkey IS expected to be public.
+#   3. Add the PRIVATE KEY contents as repo secret TAURI_SIGNING_PRIVATE_KEY
+#      (Settings > Secrets and variables > Actions).
+#   4. Change the updater `endpoints` in tauri.conf.json to point at YOUR
+#      releases (NOT upstream's), otherwise your users' DeskPet installs
+#      will fetch the upstream `latest.json` and try to auto-update there.
+# See RELEASE.md "Fork release guide" section for details.
+#
+# Required repo secrets (Settings > Secrets and variables > Actions):
+#   TAURI_SIGNING_PRIVATE_KEY           — contents of ~/.tauri/<name>.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — optional; only if the key has a passphrase
+#
+# Private key is generated locally with:
+#   npx @tauri-apps/cli signer generate --ci --password "" -w %USERPROFILE%\.tauri\deskpet.key
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: ver
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-app/src-tauri -> target
+
+      - name: Install frontend deps
+        working-directory: tauri-app
+        run: npm ci
+
+      - name: Build signed release bundle
+        working-directory: tauri-app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: pwsh
+        run: |
+          # PowerShell does not propagate native command non-zero exits by
+          # default. Opt into native error propagation (PS 7.3+) AND keep
+          # an explicit LASTEXITCODE check as a belt-and-braces fallback.
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+            throw "TAURI_SIGNING_PRIVATE_KEY secret is not set on this repo."
+          }
+          # Versions are already synced on the tagged commit (see bump
+          # commit for the tag), so skip release.ps1's version-edit block
+          # and just invoke tauri-cli directly. Single `--` only — a
+          # second `--` turns --bundles into a positional and the build
+          # aborts in seconds.
+          # 统一 NSIS(.exe) 作为唯一发行 + 自更新格式（见 docs/RELEASE.md）。
+          # NSIS→NSIS 支持静默就地升级；自更新 latest.json 也指向 NSIS。
+          npm run tauri -- build --bundles nsis
+          if ($LASTEXITCODE -ne 0) { throw "tauri build exit=$LASTEXITCODE" }
+
+      - name: Verify bundle artifacts exist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = "tauri-app/src-tauri/target/release/bundle"
+          Write-Host "--- bundle tree ---"
+          if (Test-Path $bundle) {
+            Get-ChildItem -Recurse $bundle | Select-Object FullName, Length
+          } else {
+            Write-Host "(bundle directory does not exist)"
+          }
+          $v = "${{ steps.ver.outputs.version }}"
+          $expected = @(
+            "$bundle/nsis/DeskPet_${v}_x64-setup.exe",
+            "$bundle/nsis/DeskPet_${v}_x64-setup.exe.sig"
+          )
+          $missing = @()
+          foreach ($f in $expected) {
+            if (-not (Test-Path $f)) { $missing += $f }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "MISSING:"
+            $missing | ForEach-Object { Write-Host "  $_" }
+            throw "$($missing.Count) expected artifact(s) missing — see bundle tree above."
+          }
+          Write-Host "All expected NSIS artifacts present."
+
+      - name: Generate latest.json manifest
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          $bundle = "tauri-app/src-tauri/target/release/bundle"
+          $exe    = "DeskPet_${env:VERSION}_x64-setup.exe"
+          $sig    = Get-Content "$bundle/nsis/$exe.sig" -Raw
+          $manifest = @{
+            version   = $env:VERSION
+            notes     = "See GitHub Release notes for ${env:TAG}."
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $sig.Trim()
+                url       = "https://github.com/${env:REPO}/releases/download/${env:TAG}/$exe"
+              }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content "latest.json" -Encoding UTF8
+          Get-Content "latest.json"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: DeskPet ${{ steps.ver.outputs.tag }}
+          draft: false
+          # 自更新 endpoint 用 `releases/latest/download/latest.json`，而 GitHub
+          # 的 "latest" 语义**不含 prerelease**。本项目 beta 阶段每次发布的就是
+          # 用户实际安装/更新的版本，必须让它成为 "Latest" endpoint 才看得到。
+          # 故一律不标 prerelease（含 -beta.N 的 tag 也是）。等真正出 alpha/rc
+          # 这类"不该被自动推送"的预览版时，再按 tag 后缀单独判定。
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            tauri-app/src-tauri/target/release/bundle/nsis/DeskPet_${{ steps.ver.outputs.version }}_x64-setup.exe
+            tauri-app/src-tauri/target/release/bundle/nsis/DeskPet_${{ steps.ver.outputs.version }}_x64-setup.exe.sig
+            latest.json

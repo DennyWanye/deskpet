@@ -1,0 +1,588 @@
+schema_version = 1
+
+[backend]
+host = "127.0.0.1"
+port = 8100
+log_level = "INFO"
+
+# P4-S20-LLM-Unified: 单一 LLM endpoint 配置。
+# Ollama / Sealos / OpenAI / Anthropic-compat 等任何 OpenAI 兼容 API 都用这一段。
+# 不再区分 local 和 cloud — 想用本地 Ollama 就配 localhost:11434/v1，
+# 想用云端就改 base_url + 设环境变量 DESKPET_LLM_API_KEY。
+#
+# 2026-05-22 beta-100 默认模型：中转站 + gpt-5.5。内置办公技能
+# （excel/doc/ppt/file-organize/...）依赖稳定的 function-calling —— 本地
+# 小模型（gemma:4b 等）做不到，故内测包默认走 中转站上的 gpt-5.5。
+# api_key 留空：由用户登录后从中转站下发并写入 keyring（见 backend/llm/
+# keys.py）—— 按设计**绝不**把真实 key 明文写进本文件。
+[llm]
+model = "gpt-5.5"
+base_url = "https://your-llm-relay.example.com/v1"
+api_key = ""
+temperature = 0.7
+# 2026-05-15: 2048 token 输出对 code mode write_file 6KB+ 文件不够（~2000 token
+# 直接被截断成 malformed JSON）。agent_loop.py 已 hardcode 提到 8192，这里同步
+# 让 config.toml 不再误导。8192 对 deepseek-v4-pro / claude-sonnet / gpt-5 都安全；
+# 本地小模型（gemma:4b 等）实际上限通常 4096，按需调低即可。
+max_tokens = 8192
+daily_budget_cny = 10.0
+# 2026-05-17 deepseek-inline-cot-dsml-sanitize (Strangler-Fig, 默认开)：
+# 中转站的 deepseek-v4-pro 有时把思维链 <｜begin▁of▁thinking｜>…
+# <｜end▁of▁thinking｜> 和原生 <｜｜DSML｜｜tool_calls> 工具协议内联进
+# content（而非结构化 reasoning_content / tool_calls 字段），未清洗会
+# 泄漏进 write_file 内容污染目标文件。开启 → provider 在唯一 chokepoint
+# 剥离内联 CoT + 把内联 DSML 提取为结构化 tool_calls。设 false 立即回退
+# 旧的原样透传（demo 回滚用，无需重启逻辑改动）。
+sanitize_inline_cot_dsml = true
+# 当 base_url 不是 localhost 时，BillingLedger 会按 daily_budget_cny 限额；
+# localhost 调用始终免费不计费。
+
+[billing]
+# Daily spend cap (CNY). HybridRouter refuses cloud calls once exceeded;
+# local calls stay free and unaffected.
+daily_budget_cny = 10.0
+# Fallback price for models not in [billing.pricing] (CNY per 1M tokens,
+# prompt+completion combined). Intentionally pessimistic so unknown models
+# don't silently burn budget.
+unknown_model_price_cny_per_m_tokens = 20.0
+# IANA timezone name used for daily rollover. Defaults to Asia/Shanghai
+# (product targets Chinese users — UTC rollover would reset the budget
+# at 08:00 Beijing, right in the active-user window). Override if you're
+# running the pet outside China, e.g. tz = "America/Los_Angeles".
+tz = "Asia/Shanghai"
+
+[billing.pricing]
+# Per-1M-token price (CNY). Cover the models listed in [llm.cloud]; unknown
+# models fall back to `unknown_model_price_cny_per_m_tokens` above.
+"qwen3.6-plus" = 8.0
+"deepseek-chat" = 1.0
+
+
+# ────────────────────────────────────────────────────────────────
+# 工具调用 last-mile 升级（2026-05-23）— 测试阶段全 100% 启用
+# 详见 plans/2026-05-23-tool-last-mile-upgrade/00-PRD.md
+# 不走灰度（用户决策：测试阶段所有用户立即可用）。如需收回某项 flag，
+# 把对应值改为 false 重启 backend 即可。
+# ────────────────────────────────────────────────────────────────
+
+[tools.last_mile]
+# D1 envelope 包装 — 工具 result 加 artifacts[] 字段供前端用
+artifact_envelope = true
+# D2 前端 ArtifactCard 新卡片（取代旧 ToolResultCard 的纯 JSON 显示）
+frontend_artifact_card = true
+# D3 Tauri 4 commands（打开/在文件夹中显示/复制路径/另存为）
+tauri_artifact_ops = true
+# D4 默认保存路径 — 空字符串触发 main.py 启动期 fallback 到
+# <user_data>/artifacts/<YYYY-MM-DD>/<tool_name>/<slug>-<hash>.<ext>
+default_artifact_dir = ""
+# D9 outline 预览 — 默认 false，让 LLM 自由决定（用户体验更顺畅）
+outline_preview_default = false
+# 产物保留天数（启动期自动清理）
+artifact_dir_retention_days = 30
+
+[tools.verifier]
+# D5 receipt 写盘 — HMAC 签名 + DPAPI/Keychain 包装
+emit_receipts = true
+# D6 verify 模式 — "shadow" 仅 warn log 不阻断，先收集 1-2 周 metric
+# 验证 fake_completion_caught_rate ≥ 95% 后再升 "strict"（真拦截）
+verify_gate_mode = "shadow"
+# 小 LLM fallback（regex 漏抓时兜底）
+extractor_fallback_enabled = true
+# 第 3 次失败救援用的 ephemeral subagent 模型
+ephemeral_subagent_model = "haiku"
+# D7 outcome verifier — 用户机不一定有 npm/pytest，默认 false
+# dev/CI 环境单独开 true
+run_build = false
+run_tests = false
+# Claim 短语规则文件（regex + ReDoS 拒）
+claim_patterns_file = "verify/claim_patterns.yaml"
+# D8 高后果异体评分（cross-persona quality judge）。2026-06-27 测试阶段点亮。
+external_evaluator = true
+
+# 2026-06-27 测试阶段全量点亮：Companion 主线能力开关全开（不灰度）。dataclass 默认已同步翻 True。
+# 注意：TOML 里裸 [features] 键必须排在 [features.problem_pipeline] 子表之前，否则会被归到子表。
+[features]
+slash_commands = true            # / 命令解析
+goal_mode = true                 # /goal 长期目标 + 末轮 goal_checker
+agent_parallel = true            # agent_parallel 多子代理工具
+plan_confirm_gate = true         # plan 确认门
+preference_memory = true         # BGE-M3 语义偏好记忆（plan 自动确认）
+subagent_driver = true           # 子代理并发驱动总开关
+agent_team = true                # spawn_team 工具 + TeamStore
+subagent_nonblocking = true      # 非阻塞 spawn/await + completion queue
+ctx_observability = true         # 压缩可观测（toast）
+adaptive_compact_pct = true      # 自适应 compact 触发线
+summary_quality_loop = true      # 摘要质量回路
+microcompact_size_aware = true   # size-aware microcompact
+# plan_read_only 仍 OFF（B 表：归 WI-1.2 自治档统一处理）
+
+# 2026-06-27 测试阶段点亮：技能能力栈。
+[skills]
+knowledge_enabled = true         # 触发式背景知识注入
+
+[skills.auto_disclosure]
+enabled = true                   # 语义自动披露（skill body inline）
+
+[skills.codify]
+enabled = true                   # 技能自创闭环
+
+[features.problem_pipeline]
+# 七步问题处理流水线（毛选方法论锚，仅 Companion 主线）。决策1：测试环境出厂即开全量验证。
+# flag 仅作 kill-switch + 单步调试：出问题时关某步（如 evidence_gate=false）或整条 enabled=false 一键回退。
+# 不做 shadow→light→strict 灰度档；self_check 是 bool，严格度由内部按 problem_type 选。
+# 决策3：analysis_model / self_check_model 留空=复用主 LLM gpt-5.5（不硬依赖 haiku）。
+enabled = true
+intent_triage = true             # Step1+3 合并预分析（意图 + 主要矛盾，1 次 LLM）
+intent_clarify_threshold = 0.7
+evidence_gate = true
+evidence_max_nudges = 2
+# evidence_investigative_tools = ["search","read","grep","inspect","web_search","deepresearch"]
+plan_companion_enabled = true    # 为 Companion 主线新增 plan（code 模式不动）
+analysis_model = ""              # 留空=主 LLM gpt-5.5
+self_check = true                # 自检总开关（bool；严格度内部按 problem_type 选）
+self_check_model = ""            # 留空=主 LLM gpt-5.5
+self_check_heterogeneous = true
+convergence_report_on_stop = true
+observability_events = true
+
+[asr]
+provider = "faster-whisper"
+model = "large-v3-turbo"
+# P3-S1: subfolder under paths.model_root() containing the bundled
+# faster-whisper checkpoints. In dev mode resolves to backend/models/<this>;
+# under PyInstaller it resolves to <_MEIPASS>/models/<this>.
+model_dir = "faster-whisper-large-v3-turbo"
+device = "cuda"
+compute_type = "float16"
+# P2-2-F1: 热词偏置 —— 对这些常用短语的 logit 加权，减轻短音频
+# (< 3s) 上的拼音近似幻觉（典型：讲个笑话 → 一个消化）。
+# 空列表 = 不加偏置（与旧行为一致）。配合 transcribe() 里的
+# 300ms 静音 pad 使用。
+hotwords = [
+    # 2026-04-22 修订：hotwords 必须是"短消歧词"（生僻字/专名/高混淆短词），
+    # 不能塞整句。之前把"请给我讲一个笑话"整句塞进来，导致 Whisper 在弱/短
+    # 音频上直接把 hotwords 当 transcript 吐出来（decoder 的 prefix bias
+    # 在 no-speech 边界会回退到 prompt tokens 本身）。
+    # 规则：每条 ≤4 字、只含真正易混淆的字词。
+    "笑话",
+    "散文",
+    "故事",
+    "你好",
+    "谢谢",
+    "再见",
+]
+
+[tts]
+provider = "edge-tts"
+voice = "zh-CN-XiaoyiNeural"
+model_dir = "cosyvoice2"  # P3-S1: subfolder under paths.model_root() (backend/models/ in dev, sys._MEIPASS/models/ frozen)
+
+[vad]
+threshold = 0.5
+min_speech_ms = 250
+# P2-2 hot-fix (2026-04-20): 回归到 500ms —— Whisper 侧删 initial_prompt
+# + no_speech_threshold=0.4 之后，短片段不再会幻觉成"谢谢大家"，可以
+# 换更低的句末感知延迟（800ms 等近 1 秒才反应，太拖）。
+min_silence_ms = 500
+
+[voice]
+# P2-2-M3: TTS-phase barge-in overrides. Normal VAD threshold / min_speech_ms
+# live in [vad] above — these apply only while TTS is actively playing, so
+# speaker echo is less likely to retrigger speech_start.
+vad_threshold_during_tts = 0.65
+min_speech_ms_during_tts = 400
+# After TTS ends, ignore speech_start for this many ms — covers the tail
+# of the audio being played out the speakers.
+tts_cooldown_ms = 300
+
+# P5-S1: pet supervisor — Watchdog + LLM self-check for stuck Code-mode
+# sessions. Disabled = no scan loop, no LLM calls, no broadcasts (degrades
+# DeskPet to its P4 behaviour). When enabled, scan_interval_seconds caps
+# the watchdog tick rate; stuck_threshold_seconds is the inactivity
+# trigger; max_hints_per_session caps queued supervisor hints to prevent
+# context bloat.
+[supervisor]
+enabled = true
+scan_interval_seconds = 60
+stuck_threshold_seconds = 900
+dedup_seconds = 720
+startup_grace_seconds = 30
+max_hints_per_session = 3
+# llm_provider = "default" reuses the main [llm] endpoint; "main" is an
+# alias. Future: "cheap" routes to a smaller model (gpt-5-mini etc.) to
+# minimise supervisor cost. Schema kept open for future provider IDs.
+llm_provider = "default"
+# Hard timeout per supervisor LLM call. 30s tracks the spec — anything
+# longer and the supervisor itself is suspect.
+llm_timeout_seconds = 30
+
+# ─── P5-S2: self-healing harness knobs ───────────────────────────────
+# When `auto_resume_enabled = true`, the AutoResumeOrchestrator closes
+# the supervisor → main-agent loop: on max_iterations / circuit_open /
+# permanent_tool_error / hallucination, it asks the supervisor for a
+# hint and (if action=nudge) automatically spawns a fresh chat task on
+# the same sid — no user click required. Capped by
+# `max_auto_resume_attempts` per user-initiated turn (counter resets on
+# the next user message). Set false to fall through to the P5-S1 popup
+# path.
+auto_resume_enabled = true
+max_auto_resume_attempts = 2
+
+# Per-(session, tool) circuit breaker (CLOSED → OPEN → HALF_OPEN). The
+# tool registry checks `can_call(sid, name)` before every dispatch and
+# records the outcome after. `circuit_breaker_threshold` consecutive
+# failures opens the breaker; subsequent calls return
+# `{ok: false, error: "circuit_open", available_alternatives: [...]}`
+# without invoking the handler. After
+# `circuit_breaker_cooldown_seconds`, a single probe is allowed
+# (HALF_OPEN). Per-session isolation means one bad sid doesn't blow
+# up the same tool for everyone else.
+circuit_breaker_threshold = 3
+circuit_breaker_cooldown_seconds = 60
+
+# AgentLoop in-loop death-loop suppression: if the LLM emits the same
+# (tool_name, args_hash) signature this many consecutive times, the
+# loop suppresses the dispatch and injects a system nudge instead, so
+# the LLM gets a chance to change tactics. Watchdog rule (d) reuses
+# this same threshold to fire the supervisor mid-flight.
+tool_signature_repeat_threshold = 3
+
+# P5-S2 Hook B knob (already in use): when status flips to `idle` but
+# code todos are still incomplete, watchdog fires the supervisor after
+# the session sits silent for this many seconds. Shorter than
+# stuck_threshold_seconds because "idle with work pending" is a stronger
+# signal than "running but quiet".
+idle_with_todos_threshold_seconds = 60
+
+# OpenSpec 2026-05-16-companion-context-isolation: 修复实测严重 bug
+# （用户在 default 陪伴 session 说"生成海报图片"，agent 却翻出 8 天前
+# code session 的 VPN 项目记忆，建了 17 个 vpn-cli 文件）。三个开关均
+# Strangler-Fig 可回退；code session 全程不受影响。
+[companion]
+# D1: companion session 召回 *其它 code session* 的"项目/任务类"记忆时
+# 的降权系数。0.15 = 强降权（默认，防劫持，人物/偏好类仍保留 0.8）；
+# 1.0 = 不降权（完全退回旧召回行为）。
+memory_cross_session_decay = 0.15
+# D2: 无对应工具能完成的请求（生成图片/视频/语音/3D 等）→ graceful
+# refuse + 建议，不进 agent loop 漂移。false = 旧行为（啥都进 loop）。
+# 这不是沙箱/弹窗，是诚实直接答复；新增图像工具后自动放行。
+capability_gate_enabled = true
+# D3: companion(default) session 写盘类工具限定在 workspace 根，不允许
+# 写任意仓库路径（code session 绑定 project_root 不受影响）。false =
+# 旧行为（自由写盘）。session 类型语义，非权限墙。
+write_scope_enforced = true
+
+# 2026-05-16: generate_image 工具（文生图）。用户说"生成图片"时 agent
+# 调用，走 llm_runtime.json 的 base_url+api_key（同 中转站端点）的
+# POST /v1/images/generations，存到 workspace 并用系统看图器打开。
+# model 缺省 gpt-image-2；要换别的图像模型改这里即可（端点不支持时
+# 工具返回 ok:false 不崩）。
+[image]
+# 2026-06-24：relay 下线 gpt-image-2。真链路实测 doubao-seedream-4.0 可用
+# （返回 b64，接受 1024x1024 / 1536x1024 / 1792x1024，落在 300s 读超时内）。
+# 同库 seedream-4.5 / 5.0-lite 也活着但拒绝 1024、强制 ≥2K，会打断现有侧栏
+# 1024 出图路径，故不选默认。换模型只改这一行即可（工具走 [image].model）。
+model = "doubao-seedream-4.0"
+# OpenSpec 2026-05-16-async-image-gen：true（默认）→ generate_image 秒
+# 返回，ImageGenerationWorker 后台出图、画好自动推回桌宠（agent 回合
+# 不阻塞 60-240s）。false → 退回旧同步阻塞实现（Strangler-Fig 回退）。
+async_enabled = true
+# 后台 worker 最大并发出图数（防同时太多打爆 the relay + 控成本 $0.15/张）。
+max_concurrent = 2
+
+[memory]
+# P3-S7: leave db_path empty to use the OS-standard user data directory
+# (%AppData%\deskpet\data\memory.db on Windows). Set an absolute path
+# here to override; relative paths are anchored under %AppData%\deskpet\.
+db_path = ""
+embedding_model = "bge-m3"
+
+# P4-S4: L1 file memory — %APPDATA%\deskpet\data\MEMORY.md (pet-side
+# observations) and USER.md (user profile). Entries are separated by
+# `\n§\n`. When a file exceeds its size cap, lowest-salience entries are
+# evicted until back under the cap.
+[memory.l1]
+memory_md_max_kb = 50
+user_md_max_kb = 20
+separator = "\n§\n"
+
+# P4-S1: L2 session DB (SQLite + FTS5). WAL mode lets the backend and
+# optional worker process read/write concurrently; application-level
+# retry handles SQLITE_BUSY (exponential jitter, up to `retry_max` tries).
+[memory.l2]
+wal_enabled = true
+fts5_enabled = true
+retry_max = 5
+
+# P4-S2: L3 vector memory (sqlite-vec + BGE-M3). 1024-dim cosine, async
+# worker flushes embeddings every `flush_interval_s` OR every `batch_size`
+# rows (whichever first). `decay_lambda` governs daily salience decay
+# (exp(-lambda * days_since_touch)); `salience_boost_on_recall` nudges hits
+# so frequently-recalled memories stay sticky.
+[memory.l3]
+vector_dim = 1024
+embedder = "bge-m3"
+batch_size = 8
+flush_interval_s = 2
+decay_lambda = 0.02
+salience_boost_on_recall = 0.05
+
+# P4-S3: Reciprocal Rank Fusion weights for hybrid recall. Sum is not
+# required to be 1.0 — RRF fuses via rank, not raw score, so these
+# behave as relative importance knobs across the four signals.
+[memory.rrf]
+vec_weight = 0.5
+fts_weight = 0.3
+recency_weight = 0.15
+salience_weight = 0.05
+
+# 记忆系统升级 — memory-v2 各模块 feature flag。全部默认 false → 行为与
+# 第一代"三层 + RRF"逐字节一致。每个 flag 单独控制一个 v2 模块的接入
+# （Strangler-Fig：关 flag 即回退第一代）。详见
+# plans/2026-05-22-memory-system-upgrade/00-PRD.md。
+[memory.v2]
+# 2026-06-02 记忆审计 #4：点亮核心语义事实记忆栈（facts_extract +
+# enhanced_retriever + cross_key_merge）。此前全暗装 → 用户拿到的"长期记忆"
+# 只有 message 级召回 + 会话摘要，没有结构化语义事实。冲突消解机制（mem0 式
+# merge/supersede + Zep 式软失效 + 跨键治理 + 时序链）早已建好且 37 测试全绿，
+# 只差出厂开关。dataclass 默认仍全 False（保字节级契约，G4 测试仍绿）；这里是
+# 出厂运行配置。代价：每条用户消息后台 LLM 抽取（asyncio.create_task 不阻塞回复）。
+# 2026-06-27 测试阶段全量点亮：语义事实记忆栈全开（不灰度）。dataclass 默认已同步翻 True。
+feedback_loop      = true    # WI-M1.1 用户 thumbs-up 回路（测试阶段点亮）
+facts_extract      = true    # WI-M1.2 写入端事实抽取（审计 #4 出厂开）
+rerank             = true    # WI-M1.3 cross-encoder 重排（测试阶段点亮；无 GPU 时 CPU 跑慢但不崩，出问题可单条关）
+enhanced_retriever = true    # WI-M1.4 facts 进 RRF（审计 #4 出厂开，依赖 facts_extract）
+chunking           = true    # WI-M1.5 长消息切块（测试阶段点亮）
+query_rewrite      = true    # WI-M1.5 短查询改写（测试阶段点亮）
+workspace_memory   = true    # WI-M1.6 code 工作记忆（F4 2026-05-31: 出厂默认开，code 模式读文件进 workspace_state 供跨轮召回。dataclass 默认仍 False 保字节级契约）
+reflection         = true    # WI-M1.7 反思 / skill memory（测试阶段点亮）
+goal_facts         = true    # WI-3.1 goal/decision/constraint 记忆抽取（测试阶段点亮）
+light_write        = true    # WI-3.4 light 快路（测试阶段点亮；实际生效仍需调用方传 skip_embed）
+persona_inject     = true    # WI-3.2 人格画像注入（测试阶段点亮）
+goal_facts_hook    = true    # B-10 goal→facts 双写钩（测试阶段点亮）
+memory_forget      = true    # WI-S2.1a 显式遗忘工具（fact_id 模式；NL 模式仍由下方 forget.enable_natural_language 守门）
+entity_path        = true    # WI-S2.2 entity 索引检索路（测试阶段点亮）
+episodic_to_semantic = true  # WI-S2.4 summary 抽 facts（测试阶段点亮）
+cross_key_merge    = true    # WI-S2.1a 跨 key 矛盾治理（审计 #4 出厂开，需 superseded_by 列；ALTER 失败时 main.py 自动降级关闭）
+# WI-OH-4 + WI-CC-5（2026-06-23 出厂开）：记忆 self-curation nudge。dataclass
+# 默认仍 False 保字节级契约；此前能力已建 + 12 单测全绿但**出厂 flag 漏配** →
+# lifespan(main.py:2648) 的 if 在 flag=False 处短路 → curator 永不构造 → 生产死链
+# （windows-mcp 真测抓出）。这里点亮出厂开关。every_n=2 = 每 2 回合 fire-and-forget
+# 一次（异步不挡主回合）；嫌频可调高到 8（plan 默认）。auto_learnings 依赖 OH-4。
+curation_nudge               = true   # WI-OH-4 记忆自策展 nudge（agent 主动判断该不该记）
+curation_nudge_every_n_turns = 2      # 每 N 回合触发一次；2 = 验收可见，prod 可调高
+auto_learnings               = true   # WI-CC-5 auto-memory learnings（procedural，慢衰减），强依赖 OH-4
+
+[memory.v2.facts]
+min_user_chars = 8           # 字数采样门（取代 facts.py 硬编码 <8）
+facts_weight   = 0.2         # facts 路进 RRF 的权重
+model_override = ""          # 留空 = 用主 LLM
+
+# P4-S6 + P4-S7: DeskPet agent loop knobs. `max_iterations` caps the
+# ReAct while-loop; `context_window_tokens` feeds the ContextAssembler
+# budget allocator. `interrupt_enabled` hooks ASR hot-words ("等一下/停")
+# to cancel an in-flight turn; `tts_pre_narration` triggers the TTS
+# pre-utterance on the first stream chunk (design.md D2 / task 12.14).
+#
+# 2026-05-15 调研 Claude Code / Codex / Aider / Cline / DeepSeek-TUI 之后修正：
+# - deepseek-v4-pro 名义支持 1M，但论文 Figure 9 实测召回 256K=0.76 / 1M=0.59，
+#   context 越大利用率越差。DeepSeek-TUI 自己也只用到 768K 就触发 cycle restart。
+# - 这里设 800_000 给上层 budget 用 + ContextManager 阈值同比例 ×4
+#   （配套常量改在 backend/agent/context_manager.py::ContextConfig）。
+# - 切到 claude-sonnet/opus (200K) 或本地 ollama (32K) 时需要降这个值，
+#   后续应改成 per-model map（参考 codex-rs/models-manager/src/model_info.rs）。
+[agent]
+max_iterations = 20
+# code-session-model-params (Strangler-Fig): code-mode sessions with no
+# explicit per-session model use this; pet/companion/supervisor keep
+# their own model (deepseek-v4-pro via the relay). "" = revert to legacy
+# shared model. the relay is OpenAI-compatible so only the wire model id
+# changes. Per-session overrides + params (thinking/fast/context/effort)
+# are set live from the code panel picker.
+code_model = "gpt-5.5"
+context_window_tokens = 800000
+interrupt_enabled = true
+tts_pre_narration = true
+
+# Phase 1.1（2026-05-15 context-1m-rearch）— ContextManager per-model 化。
+#
+# v2_enabled=true（默认）：ContextManager 阈值（B1 truncate / B2 compact /
+#   B3 budget）按 *每个模型* 的上下文窗口比例自动伸缩，窗口由三层 resolve
+#   决定：内置表 ← %APPDATA%/deskpet/model_overrides.toml ← 项目
+#   <root>/.deskpet/context.toml（仅 code mode）。切模型零配置编辑。
+#   此时上面的 [agent].context_window_tokens 降级为 ContextAssembler 的
+#   fallback only，ContextManager 不再读它。
+#
+# v2_enabled=false：Strangler-Fig 回退闸 —— 退回 2026-05-15 stop-gap 的
+#   绝对值 ContextConfig（tool_result 16K / compact 800K×0.95），忽略
+#   per-model map。仅在 per-model 路径出问题需快速回滚时设 false。
+#
+# 内置模型表见 backend/llm/model_info.py::BUILTIN；用户/项目覆盖通过
+# SettingsPanel「模型上下文」卡片就地编辑写回对应 TOML。
+[context.manager]
+v2_enabled = true
+
+# P4-S7: ContextAssembler v1 (see openspec/changes/p4-poseidon-agent-harness
+# /specs/context-assembler/spec.md). Runs once before every agent loop:
+# classifies task_type → fans out components in parallel → budget-allocates
+# → emits a cache-friendly ContextBundle. Flip `enabled=false` for the
+# emergency rollback path (legacy full-registry + prefetch-all mode).
+[context.assembler]
+enabled = true
+policy_file = "deskpet/agent/assembler/policies/default.yaml"
+# User override lives under roaming AppData so it survives re-installs
+# and doesn't get overwritten by shipped defaults.
+user_overrides = "%APPDATA%/deskpet/policies/overrides.yaml"
+# BudgetAllocator cap = context_window_tokens * budget_ratio.
+budget_ratio = 0.6
+# TaskClassifier cascade: rule (<2ms) → embed (~15ms) → llm (≤300ms).
+classifier_mode = "rule+embed+llm"
+# ~100 hand-labelled exemplars for the embed tier (BGE-M3 cosine).
+classifier_exemplars = "deskpet/agent/assembler/policies/exemplars.jsonl"
+# D8 decision: haiku-class model for the LLM tier fallback.
+llm_classifier_model = "claude-haiku-4-5"
+# Unknown task_type (LLM hallucinates a label outside the enum) ⇒ chat.
+fallback_task_type = "chat"
+# Per-turn decisions trace for the Context Trace UI (P4-S11).
+trace_enabled = true
+
+# P4-S5: zero-cost web toolset (web_fetch / web_crawl /
+# web_extract_article / web_read_sitemap). No paid search APIs — all four
+# tools lean on httpx + trafilatura + selectolax (D5 decision).
+[tools.web]
+user_agent = "DeskPet/0.6 (+https://github.com/DennyWanye/deskpet)"
+respect_robots_txt = true
+# BFS crawl rate-limit knobs (per domain, not global).
+per_domain_max_concurrency = 2
+request_interval_ms = 500
+crawl_default_max_pages = 20
+crawl_default_max_depth = 2
+# `preferred_sources` is injected into the agent system prompt via
+# PersonaComponent / ToolComponent so the LLM knows where to crawl by
+# topic. Inline tables keep the list readable on one line each.
+preferred_sources = [
+    { domain = "stackoverflow.com", topic = "code" },
+    { domain = "docs.python.org", topic = "python" },
+    { domain = "developer.mozilla.org", topic = "web" },
+    { domain = "en.wikipedia.org", topic = "general" },
+    { domain = "zh.wikipedia.org", topic = "general-zh" },
+    { domain = "github.com", topic = "code" },
+]
+
+# P4-S9: MCP (Model Context Protocol) client config. Each [[mcp.servers]]
+# entry is spawned / connected at startup when `enabled=true`. Tools are
+# namespaced `mcp_{server}_{tool}` when injected into the ToolRegistry.
+[mcp]
+enabled = true
+
+[[mcp.servers]]
+name = "filesystem"
+command = "npx"
+# Filesystem server is scoped to the workspace dir only — NOT the full
+# profile, so agents cannot touch arbitrary user files.
+args = ["@modelcontextprotocol/server-filesystem", "%APPDATA%/deskpet/workspace"]
+transport = "stdio"
+enabled = true
+
+[[mcp.servers]]
+name = "weather"
+# Weather wrapper (open-meteo-based) ships in P4-S9; command/args left as
+# placeholders here so the schema is present — config validation in
+# task 14.2 only tries to spawn servers with `enabled=true`.
+command = ""
+args = []
+transport = "stdio"
+enabled = false
+
+# 2026-05-18: Playwright MCP — code-mode session agents get browser_*
+# tools (navigate/click/type/snapshot/tabs) for simulated-human E2E
+# testing. Accessibility-tree based (no vision model needed; works
+# with deepseek-v4-pro AND gpt-5.5). `--isolated` = fresh in-memory
+# profile per run; `--allowed-origins` locks the test agent to the
+# project's localhost dev server (footgun guard — must NOT roam the
+# internet). MCP manager auto-connects from this entry (same path as
+# the filesystem server). Set enabled=false to fully revert.
+[[mcp.servers]]
+name = "playwright"
+command = "npx"
+args = ["@playwright/mcp@latest", "--isolated", "--browser", "chromium", "--allowed-origins", "http://localhost;http://127.0.0.1"]
+transport = "stdio"
+enabled = true
+
+# Strangler-Fig flags for the code-mode E2E capabilities. Tools/servers
+# stay dark unless their flag is true (revert = set false).
+[code_e2e]
+playwright_mcp_enabled = true
+browser_use_enabled = false
+computer_use_enabled = false
+
+# ─────────────────────────────────────────────────────────────────
+# P4-S6: multi-provider LLM layer (Anthropic / OpenAI / Gemini).
+#
+# Spec-compliant namespace (`[llm.providers]` + `[llm.fallback_chain]`)
+# per openspec/changes/p4-poseidon-agent-harness/specs/llm-providers/spec.md.
+# The agent_loop / registry MUST read from here. The legacy `[llm_p4.*]`
+# namespace below is kept temporarily because the S6 adapter currently
+# reads that — follow-up task S12.pre-ship migrates S6 adapter code to
+# the spec-compliant namespace and removes [llm_p4.*].
+#
+# API keys are resolved via env / keyring (see backend/llm/keys.py).
+# MUST NOT be written into this file — commits would leak them.
+# ─────────────────────────────────────────────────────────────────
+# P4-S6: provider selection + global knobs shared by every adapter.
+# `main_model` is the default chat model; `classifier_model` is used by
+# the ContextAssembler LLM tier. `daily_usd_cap` is the hard budget cap
+# enforced by billing layer (80% warning IPC, 100% block).
+[llm.providers]
+main_model = "claude-sonnet-4-5"
+classifier_model = "claude-haiku-4-5"
+daily_usd_cap = 10.0
+streaming_enabled = true
+
+# P4-S6: fallback chain tried in order on adapter failure. Each entry is
+# `<provider>:<model>`. Max 2 retries across providers (task 10.6).
+[llm.fallback_chain]
+chain = [
+    "anthropic:claude-sonnet-4-5",
+    "openai:gpt-4o",
+    "gemini:gemini-1.5-pro",
+]
+
+# ─── legacy [llm_p4.*] namespace (kept until S12 pre-ship migration) ───
+# S6's backend/llm/registry.py currently reads these keys verbatim. When
+# it's refactored to read [llm.providers]/[llm.fallback_chain] above, this
+# block can be deleted. Values MUST mirror [llm.providers]+[llm.fallback_chain].
+[llm_p4]
+main_model = "anthropic:claude-sonnet-4-5"
+classifier_model = "anthropic:claude-haiku-4-5"
+daily_usd_cap = 10.0
+fallback_chain = [
+    "anthropic:claude-sonnet-4-5",
+    "openai:gpt-4o",
+    "gemini:gemini-1.5-pro",
+]
+
+[llm_p4.providers.anthropic]
+default_model = "claude-sonnet-4-5"
+timeout = 60.0
+
+[llm_p4.providers.openai]
+default_model = "gpt-4o"
+timeout = 60.0
+
+[llm_p4.providers.gemini]
+default_model = "gemini-1.5-pro"
+timeout = 60.0
+
+# deep-research 抓取/检索增强开关(真实默认在代码 research_tools._research_raw(),此处为文档)。
+[research]
+# JS 渲染抓取兜底:治 trafilatura 抓到的 JS/SPA 空壳站。默认关(opt-in)。中国可用(本地渲染)。
+js_render = false
+# 渲染引擎:
+#   "cdp-edge" = 连系统已装 Edge 无头 + CDP(纯后端,零下载,Windows 可用;Mac/Linux 默认无 Edge)
+#   "webview"  = 复用 Tauri 自带 WebView 隐藏窗(三端零体积零安装,下一期主线,本期未实现→降级)
+#   "crawl4ai" = Crawl4AI/Playwright+Chromium(~100-160MB,仅 dev/源码模式;冻结正式包不可用)
+# 未配置时按平台自动:Windows→cdp-edge(已落地),其它→webview(本期降级)。
+js_render_engine = "cdp-edge"
+# 单页渲染超时(秒),超时优雅降级到 jina/原结果
+js_render_timeout = 20

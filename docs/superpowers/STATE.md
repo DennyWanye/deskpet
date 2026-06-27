@@ -1,0 +1,168 @@
+# DeskPet — Current State
+
+> **Purpose:** Minimal "rehydration" document for any new Claude session. Read
+> this first before touching anything. Last updated at the close of each sprint
+> or at major inflection points.
+
+**Last updated:** 2026-04-23 (P3-S8 ~ P3-S11 一次性推完；splash+错误 UI + 完全卸载 + installer runbook + v0.5.0-phase3-rc1 版本号；cargo 35/35 + pytest 317/321 + frozen smoke 4.3s；UI E2E + VM 手测待用户)
+**Current version:** `v0.5.0-phase3-rc1` (RC，未打 tag；等 VM smoke 通过再上 GitHub Release)
+**Active branch:** `p3-s8-s11-release`（pending merge 到 master）
+**Active tag:** `v0.2.0` at commit `718d70a`; `p2-2-verified` at `f91e264`
+
+---
+
+## Just shipped
+
+- **v0.2.0 public beta** — GitHub Release published, 5 assets uploaded, all
+  signatures verified.
+  <https://github.com/DennyWanye/deskpet/releases/tag/v0.2.0>
+- **CI release pipeline** — `.github/workflows/release.yml` is production-ready
+  after 3 debug iterations. Key guardrails in place:
+  - `$LASTEXITCODE` check + `$PSNativeCommandUseErrorActionPreference = $true`
+    prevent PowerShell silent-success on native command failures.
+  - "Verify bundle artifacts exist" step dumps the full bundle tree + names
+    missing files on failure (turns silent failures into loud ones).
+  - `bundle.createUpdaterArtifacts: true` in `tauri.conf.json` required for
+    `.sig` emission — this was the blocker that killed CI runs #1 and #2.
+- **Changelog** — `CHANGELOG.md` covers every P2-0 slice. Keep a Changelog
+  format, SemVer.
+
+## Phase / Sprint progress
+
+| Phase | Sprint | Status | Notes |
+|-------|--------|--------|-------|
+| 1 — MVP loop | — | ✅ complete | v0.1.0 internal milestone |
+| 2 — Polish & distribute | **P2-0** | ✅ complete | S1–S7 all shipped; v0.2.0 public; HANDOFF finalized 2026-04-15 |
+| 2 — Polish & distribute | **P2-1** | ✅ complete (local) | S1 ✅ OpenAI-compat provider; S2 ✅ HybridRouter; S3 ✅ API key + SettingsPanel; S6 ✅ TTFT metrics + `/metrics`; S7 ✅ Fallback E2E via MockTransport; S8 ✅ BillingLedger + BudgetHook + Asia/Shanghai rollover; **S4/S5 cut 2026-04-15** (PersonaRegistry deferred to Phase 3). All merged to local `master`; push + tag pending user call. |
+| 2 — Polish & distribute | **P2-2** | ✅ complete | M1 ✅ VAD barge-in + always-on mic (`ea75f6e`); M2 ✅ PCM 流式播放 + RMS lip-sync (`2eeacca`/`f770305`/`1d0b548`); M3 ✅ VoiceConfig + dynamic VAD threshold + per-frame barge-in re-evaluation (`c47ba9d`/`4abe1ee`/`431bcf0`/`6f7b82a`)；真机手测通过 (`f91e264`)，tag `p2-2-verified`；256/256 pytest 全绿。 |
+| 2 — Polish & distribute | **P2-2-F1** | ✅ merged, pending手测 | Whisper 短音频准确率 follow-up: [asr].hotwords 偏置 + 短音频（<3s）前后 pad 300ms 静音。267/267 pytest 全绿。需要用户真机复测"讲个笑话"等短句命中率。`scripts/perf/asr_accuracy.py` 做离线字符级 WER 对比（样本目录 .gitignore，每人录自己的）。handoff: `p2-2-f1-whisper-short-audio.md` |
+| 3 — Backend auto-launch | **P3-S1** | ✅ merged `ed2f371` | 模型目录收拢（`backend/paths.py` 三段解析：env → `_MEIPASS` → dev）+ `ASRConfig.model_dir` / `TTSConfig.model_dir` 字段统一；`./assets/...` 老值 load-time 自动剥离 + warn；`backend/assets/` → `backend/models/`（文件系统层 dev 手动 `mv`）；`scripts/check_no_hardcoded_assets.py` CI 守门。handoff: `p3-s1-model-dir-config.md` |
+| 3 — Backend auto-launch | **P3-S2** | ✅ merged `22dffae` | CUDA 前置检查：`tauri-app/src-tauri/src/gpu_check.rs` 用 `nvml-wrapper` 在 setup hook 探测 NVIDIA GPU，失败弹 `MessageDialog` + `exit(1)`；backend 侧 `observability/startup.py::StartupErrorRegistry` 结构化记录 `CUDA_UNAVAILABLE` / `MODEL_DIR_MISSING` / `UNKNOWN`；`/health` 加 `startup_errors[]` + `status: degraded`；WS `/ws/control` 握手后首帧推 `startup_status`。298/298 pytest (+18 new) + 8/8 cargo test 全绿。handoff: `p3-s2-cuda-precheck.md` |
+| 3 — Backend auto-launch | **P3-S3** | ✅ merged `d6b78c1` | Supervisor 自管 backend 路径：新 `tauri-app/src-tauri/src/backend_launch.rs` 按 `bundle → DESKPET_BACKEND_DIR env → DESKPET_DEV_ROOT (build.rs 注入)` 三级解析；`start_backend` 命令去参；`process_manager::BackendProcess` 的 `python_path`/`backend_dir` 字段合并成 `launch: Mutex<Option<BackendLaunch>>`；前端 `App.tsx` 移除 `/path/to/deskpet/...` 硬编码路径与 `TODO(bootstrap)` 注释。18/18 cargo test (+10 new) + 298/298 pytest 全绿。UI E2E 通过（ASR + 云 LLM + TTS）。handoff: `p3-s3-supervisor-self-resolve.md` |
+| 3 — Backend auto-launch | **P3-S4** | ✅ merged `8699ba7` | PyInstaller 冻结 backend：`backend/deskpet-backend.spec` + `scripts/build_backend.ps1` + `scripts/smoke_frozen_backend.py`；silero-vad 改走 PyPI 包自带 JIT 模型（弃用 torch.hub 的网络/缓存路径，冻结兼容）；torch 切 CPU-only wheel（venv 内）配合 spec 层 CUDA DLL 白名单剥离，把 bundle 从 3.9 GB 砍到 **610 MB**（P3-G2 预算 3.5 GB 含模型）；mypyc 伴生 `*__mypyc.*.pyd` 自动发现加入 hiddenimports（tomli 用的）。smoke：boot 5.2s，/health 200，startup_errors 空，ASR/VAD/TTS 全部 preload 成功。handoff: `p3-s4-pyinstaller-backend.md` |
+| 3 — Backend auto-launch | **P3-S5** | ✅ 静态接线 + cargo 18/18, ⏳ UI E2E + merge | Tauri bundle 吸纳冻结 backend：`tauri.conf.json::bundle.resources` 加 map `"../../backend/dist/deskpet-backend": "backend"`，Tauri bundler 会把 2973 个文件递归拷进 `resource_dir/backend/`，正好对齐 P3-S3 Bundled 分支的 `root.join("backend/deskpet-backend.exe")`；`process_manager::start_backend` 在 resolve 后加一行 stderr 日志（`[backend_launch] Bundled exe=…` / `Dev python=…`）作分支凭据；新增 `scripts/e2e_frozen_tauri.ps1` 做 Tauri→/health 端到端 smoke。UI 层 E2E（点麦、讲话、TTS 回放）涉及麦克风 + 人听感，交给用户本地跑完贴截图再 merge。handoff: `p3-s5-tauri-bundle-backend.md` |
+| 3 — Backend auto-launch | **P3-S6 + P3-S7** | ✅ smoke PASS, ⏳ merge + UI E2E | 合并交付：**模型外置 + 用户数据目录**。关键转向——实测 `backend/models/` 达 9 GB，无法塞进 P3-G2 的 3.5 GB installer 预算。方案：installer 只装 ~1.5 GB 运行时，模型放 `%LocalAppData%\deskpet\models\`（dev 用 `scripts/setup_user_data.ps1` junction repo 目录）；用户数据（config/DB/logs）进 `%AppData%\deskpet\`（roaming）。`backend/paths.py` 扩展 `user_data_dir()` / `user_cache_dir()` / `user_models_dir()` / `user_log_dir()` / `ensure_user_dirs()`；`backend/config.py` 新增 `resolve_config_path()` + `seed_user_config_if_missing()` + `_resolve_memory_db_path()`；`MemoryConfig.db_path` 默认改空串（auto → AppData）；`platformdirs` 加进依赖 + spec hiddenimports；`scripts/setup_user_data.ps1` 幂等脚本（mkdir + seed config + junction models）；`scripts/e2e_frozen_tauri.ps1` + `scripts/smoke_frozen_backend.py` 去掉 env 注入。新增 19 单测（test_paths 16 + test_config_resolution 15 新条）322/322 pytest 全绿；frozen smoke boot 2.9s / bundle 1524.7 MB / /health ok。handoff: `p3-s6-s7-user-data-dirs.md` |
+| 3 — Backend auto-launch | **P3-S8 ~ S11** | ✅ cargo/pytest/smoke 绿, ⏳ merge + UI E2E + VM 手测 | 合并交付四个 slice：**启动时序 + 错误 UI + 卸载清理 + 发布准备**。S8：`tauri-app/src-tauri/src/paths.rs`（Rust 侧镜像 `backend/paths.py`）+ `user_data.rs`（`open_log_dir` / `open_app_data_dir` / `purge_user_data` command，含 `looks_safe_to_delete` guard + Windows junction-aware 删除）；`process_manager` 加 **8100 端口 precheck**（TcpListener 试绑定） + **SHARED_SECRET 90s 墙钟超时**（mpsc channel + `recv_timeout`）+ `startup_error` mutex/命令；`components/StartupOverlay.tsx` 中文 splash + 错误卡片（重试 / 打开日志目录 / 退出）；`App.tsx` bootstrap 加 `bootState`/`bootError`/`bootAttempt` 三态机，`backend-dead` 也走统一错误卡片。S9：SettingsPanel "危险区" section 加 "完全卸载（清除用户数据）" 按钮 + 可选模型缓存清理 + `window.confirm` 两步确认；NSIS/WiX 默认就不碰 AppData，仅文档确认。S10：`docs/P3-S10-installer-smoke-runbook.md`（全新 VM T0-T8 checklist + cold_boot.py 基线）。S11：版本号全链路 `0.5.0-phase3-rc1`（tauri.conf.json / Cargo.toml / package.json / pyproject.toml） + `docs/releases/v0.5.0-phase3-rc1.md` release notes（"仅 NVIDIA" 硬门槛 + G1..G6 状态 + 升级说明）。35/35 cargo test（新增 paths 8 + user_data 6 + process_manager 3）+ 317/321 pytest + frozen smoke boot 4.3s + /health ok + clippy clean。git tag/push defer 给用户。handoff: `p3-s8-s11-release-prep.md` |
+| 4 — v1.0 GA | — | ⏳ future | Once P2/P3 land |
+
+## Completed P2-0 slices (quick index)
+
+| Slice | Handoff | Theme |
+|-------|---------|-------|
+| S1 | `handoffs/p2s1-icon-branding.md` | Icon set + favicon |
+| S2 | `handoffs/p2s2-updater.md` | Updater plugin + Ed25519 signing |
+| S3 | `handoffs/p2s3-memory-multi-session.md` | MemoryPanel `全部会话` tab |
+| S4 | `handoffs/p2s4-perf-scripts.md` | `cold_boot.py` + `rss_sampler.py` |
+| S5 | `handoffs/p2s5-vn-dialog-nit.md` | DialogBar empty placeholder + mic idle fix |
+| S6 | `handoffs/p2s6-chat-history-a11y.md` | Focus trap + Escape close |
+| S7 | `handoffs/p2s7-release-v0.2.0.md` | v0.2.0 tag + CI release |
+| S8 | `handoffs/p2s8-key-rotation.md` | Updater signing key rotated (passphrase + new pubkey) |
+
+## Completed P2-1 slices
+
+| Slice | Status | Theme |
+|-------|--------|-------|
+| S1 | ✅ merged | OpenAICompatibleProvider replaces OllamaLLM; unit + integration tests |
+| S2 | ✅ merged | HybridRouter (local_first + circuit breaker) wraps local + optional cloud provider; config split `[llm]` → `[llm]` + `[llm.local]` + optional `[llm.cloud]`; 19 router tests + 3 config tests |
+| S3 | ✅ merged | API key via OS Credential Manager (keyring crate) + Tauri commands + backend `DESKPET_CLOUD_API_KEY` env handoff; `SettingsPanel` with cloud profile / strategy / daily-budget sections; WS `provider_test_connection` handler |
+| S6 | ✅ merged | Prometheus `llm_ttft_seconds` Histogram; `/metrics` endpoint with secret-or-dev-mode auth; TTFT instrumentation in `HybridRouter.chat_stream`; `scripts/ttft_cloud.py` smoke; `BudgetHook` type skeleton (allow_all default) |
+| S7 | ✅ merged | Fallback E2E pytest harness using `MockTransport` (no real cloud hits) with `max_iters` guard against hanging tests |
+| S8 | ✅ merged | `BillingLedger` (aiosqlite, `Asia/Shanghai` daily rollover, configurable tz); `budget_status` WS handler; `budget_exceeded` toast UI; `BudgetHook` implementation denying cloud when over budget; local route always free; `budget_reason` propagated via `LLMUnavailableError` (race-free) |
+
+## Real Test (UI E2E, 2026-04-15 post-merge)
+
+6/6 manual scenarios via Claude Preview MCP + live backend in
+`DESKPET_DEV_MODE=1`:
+1. Live2D render + `connected` indicator.
+2. `SettingsPanel` structure + `percent_used` renders as `0.0%`
+   (validates Bug-1 fix: backend was returning 0..1 fraction, UI
+   contract says 0..100).
+3. Empty apiKey → "测试连接" shows guard hint.
+4. Garbage apiKey → "失败: health check failed (bad key, wrong URL,
+   or unreachable)" — validates Bug-2 fix (`provider_test_connection`
+   was returning `{ok:false}` without an `error` field, so UI rendered
+   "失败: unknown").
+5. Chat input → local LLM (Gemma) streaming reply confirmed in both
+   DOM and App fiber state.
+6. Fiber-level injection of `chat_response.budget_exceeded=true` →
+   red fixed toast banner renders at top-right (z-index 2000),
+   bg `rgb(185,28,28)`, text `"今日云端预算已用尽，已降级到本地模型。
+   （daily_budget_exceeded:X/Y）"`. Minor UX: toast briefly overlaps
+   FPS/connected badges — acceptable for an alert.
+
+Both bugs were invisible to pytest (type assertions are soft
+comments) and invisible to tsc (types said 0..100 but backend wrote
+0..1). Both were caught by Real Test only. See
+`feedback_real_test.md` + `feedback_cross_layer_contract.md`.
+
+## Pending follow-ups (not blocking P2-1)
+
+1. **v0.2.0 → v0.2.x self-update smoke test** — the next `v0.2.x`
+   release will be the first signed by the rotated key
+   (`5F623E5CDBAA4C5A`). Clients on v0.2.0 have the **old** pubkey
+   (`609610CD2AB388D1`) baked in, so their self-update will
+   deliberately fail; they need a one-time manual reinstall. Confirm
+   this expected failure on a v0.2.0 box, then confirm that a machine
+   with v0.2.1 installed manually can self-update to v0.2.2 cleanly.
+   See `p2s8-key-rotation.md` + `p2s7-release-v0.2.0.md` §
+   "Post-push verification plan".
+2. **Release-notes template** — workflow currently publishes with
+   GitHub-generated notes. Should cross-link the relevant CHANGELOG
+   section.
+3. **First `v0.2.x` after rotation** — add a CHANGELOG note explaining
+   why v0.2.0 users must manually reinstall this one release
+   (pubkey rotation by design; see `p2s8-key-rotation.md`).
+
+## Key files to read before any work
+
+Pick the 2–3 that match your task; don't read everything.
+
+- **Roadmap**: `docs/superpowers/plans/2026-04-14-phase2-v6-roadmap.md`
+  - §3.2 covers Sprint P2-1 decision points.
+- **Architecture overview**: `CLAUDE.md` (project-level instructions).
+- **Release pipeline**: `.github/workflows/release.yml` + `scripts/release.ps1`
+  + `tauri-app/src-tauri/tauri.conf.json` (bundle/updater config).
+- **Perf gates**: `docs/PERFORMANCE.md` (5 scripts: 3 manual + cold_boot +
+  rss_sampler).
+- **Handoff of interest**: `docs/superpowers/handoffs/p2s{N}-*.md` for the
+  specific slice you're touching.
+
+## Environment gotchas (bit us this sprint)
+
+- **PowerShell + native commands**: `$ErrorActionPreference = 'Stop'` does NOT
+  trip on non-zero exit codes from native binaries. Always add
+  `$PSNativeCommandUseErrorActionPreference = $true` (PS 7.3+) AND an explicit
+  `if ($LASTEXITCODE -ne 0) { throw }` guard.
+- **npm arg passthrough**: `npm run X -- --flag` passes one `--`; a second `--`
+  gets interpreted by the downstream CLI as POSIX end-of-options. Use exactly
+  one.
+- **Tauri updater artifacts**: `bundle.createUpdaterArtifacts: true` in
+  `tauri.conf.json` is REQUIRED for `.sig` emission. Without it, builds
+  silently skip signing even with `TAURI_SIGNING_PRIVATE_KEY` in env.
+- **Windows Python Popen**: `_winapi.CreateProcess` does NOT resolve relative
+  exe paths against CWD. Use `Path.resolve()` before passing to `subprocess`.
+- **Windows Python JSON**: `open(path)` on Windows uses GBK by default.
+  Always pass `encoding='utf-8'` for UTF-8 JSON files.
+- **Tauri dev orphan processes**: stopping the dev server on Windows can leave
+  orphan `deskpet.exe` + Vite processes. `taskkill /f /im deskpet.exe` before
+  restart. (See `MEMORY.md`.)
+
+## Suggested next-session opening prompts
+
+**For pushing P2-1 to origin** (short, user-gated):
+> "本地有 35 个 commit（P2-1 S3/S6/S7/S8）还没 push。请先让我 review
+> `git log origin/master..HEAD`，确认无误后再 `git push origin master`。
+> 不要带 `--force`，如果被 non-fast-forward 拒绝就停下让我来。"
+
+**For v0.2.1 打点验证新密钥** (short, ~15 min — good first move after
+P2-1 push lands, since P2-1 gives v0.2.1 real content):
+> "请帮我在 `master` 上 bump 到 v0.2.1、写一段 CHANGELOG 说明 pubkey
+> 已轮换 (v0.2.0 用户需手动重装一次) + 新增 P2-1 云端 LLM 切换 /
+> SettingsPanel / BillingLedger 等功能，打 tag 推上去观察 CI 能否用新
+> 密钥成功签名。参考 `docs/superpowers/handoffs/p2s8-key-rotation.md`
+> § Follow-ups。"
+
+**For P2-1 → P2-2 brainstorming** (full session):
+> "P2-1 收官了。请用 superpowers 的 brainstorming skill 引导我讨论
+> P2-2 Sprint 的范围。先读 `docs/superpowers/plans/2026-04-14-phase2-v6-roadmap.md`
+> 和这份 STATE.md 里的 P2-1 完成清单。"

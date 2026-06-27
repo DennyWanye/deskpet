@@ -1,0 +1,222 @@
+[project]
+name = "deskpet-backend"
+version = "0.5.0rc1+phase3"
+description = "Desktop Pet AI Backend"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "websockets>=13.0",
+    "tomli>=2.0",
+    # 2026-06-23: comment-preserving TOML writer for the additive factory
+    # feature-flag backfill in config.py (_merge_missing_feature_flags).
+    # tomli is read-only; tomlkit round-trips comments/order so backfilling
+    # new flags into an existing user config.toml doesn't shred their file.
+    # Pure-Python → PyInstaller bundles it from the static import.
+    "tomlkit>=0.13",
+    "structlog>=24.0",
+    "httpx>=0.27.0",
+    "ollama>=0.4.0",
+    # 2026-05-18 code-mode E2E capability ([code_e2e] flag-gated; chromium
+    # downloads lazily on first real run, not at install):
+    #  - browser-use: autonomous LLM browser task tool (run_browser_task)
+    #  - mss + pyautogui: OS-level computer-use (screen_capture/click/type)
+    "browser-use>=0.1.40",
+    "mss>=9.0",
+    "pyautogui>=0.9.54",
+    "aiosqlite>=0.22.1",
+    # P2-0-S4: scripts/perf/rss_sampler.py uses psutil to watch process RSS.
+    "psutil>=5.9.0",
+    # P2-1-S6: /metrics endpoint exposes TTFT Histogram.
+    "prometheus-client>=0.25.0",
+    # P2-1-S8: zoneinfo needs a tz database on Windows (no system
+    # /usr/share/zoneinfo). tzdata ships the IANA data as a wheel. Harmless
+    # no-op on Linux/macOS where the system DB is used by default.
+    "tzdata>=2024.1 ; sys_platform == 'win32'",
+    # P3-S4: silero-vad PyPI package ships the JIT model as package
+    # data. Previously we loaded via torch.hub which requires network +
+    # ~/.cache/torch/hub — both broken inside a frozen PyInstaller exe.
+    "silero-vad>=5.1.2,<6",
+    # P3-S6+S7: user data / cache dir resolution (%AppData%\deskpet\,
+    # %LocalAppData%\deskpet\). platformdirs is pure Python (~20KB),
+    # PyInstaller-friendly, and handles Windows/macOS/Linux uniformly.
+    "platformdirs>=4.0",
+    # P4-S2+S3: sqlite-vec extension for L3 vector search (virtual table
+    # messages_vec + cosine distance). Loaded into aiosqlite connection at
+    # startup; PyInstaller hook picks up the prebuilt .dll/.so.
+    "sqlite-vec>=0.1",
+    # P4-S2: BGE-M3 embedding (multilingual, 1024-dim) via FlagEmbedding.
+    # INT8 weights live in user_models_dir()/bge-m3-int8/ (~286MB).
+    #
+    # 2026-05-15 ABI pinning（踩坑记录）：FlagEmbedding 1.4 + transformers 5.x
+    # + peft 0.19 + pandas 3.0 在 Windows + Python 3.11 上 import 链直接
+    # ACCESS_VIOLATION（segfault）。1.3.5 + transformers 4.57 + peft 0.14
+    # 这组合在 cu124 torch / RTX 4090 上 verified 稳定（fp16 / 1396ms 加载）。
+    # 解除 pin 之前先在 dev venv 上 `python -c "from FlagEmbedding import BGEM3FlagModel"`
+    # 跑通再放行——否则 backend 会静默降级 mock 模式。
+    #
+    # 2026-06-02 Blackwell GPU 踩坑（RTX 5070 Ti = sm_120）★：cu124 torch 只编到
+    # sm_90，5070 Ti 跑 BGE-M3 GPU forward 抛 RuntimeError「no kernel image」→ 被
+    # FlagEmbedding m3.py 的 batch 自适应循环吞掉、batch_size *3//4 触底归零 →
+    # tokenizer.pad 收到空 batch → IndexError（伪装的次生错，CPU/CUDA 都现）。
+    # **修法：torch 升 cu128（含 sm_120 kernel），其它依赖一律不动**（FlagEmbedding/
+    # transformers/sentence-transformers/peft 对 torch 都是纯 Python 下限依赖，ABI
+    # 自洽，不段错误；切忌反向降 transformers——那才破 transformers↔tokenizers ABI）。
+    # 验证组合：torch 2.7.1+cu128 / torchvision 0.22.1 / torchaudio 2.7.1 /
+    # transformers 4.57.6 / RTX 5070 Ti，arch_list 含 sm_120，encode (N,1024) 通过。
+    "FlagEmbedding>=1.2,<1.4",
+    "transformers>=4.45,<5",
+    "peft<0.15",
+    # ── torch 三件套：必须严格同 minor 配对（钉死，勿单独改其一）★ ──
+    # 2026-06-08 踩坑修复：原先只 pin `torch>=2.6,<3`（宽松）、且
+    # torchvision/torchaudio **完全没在依赖里**（只在注释里让人手动从 cu128 源装）。
+    # 结果 torch 被升到 2.12.0 却把配 torch 2.7 的 `torchvision 0.22.1+cu128` 留着 →
+    # 导入 torchvision 时注册算子失败：
+    #   RuntimeError: operator torchvision::nms does not exist
+    # → 连累 transformers 惰性导入（PreTrainedModel/get_reporting_integration_callbacks
+    #   都报 "Could not import module") → BGE-M3 加载失败 **静默降级 mock embedder**。
+    # 修法：三件套钉死为已验证组合（torch 2.7.1 ↔ torchvision 0.22.1 ↔ torchaudio 2.7.1，
+    # 同上方 Blackwell sm_120 验证注释）。**版本号必须一起改、严格配对**——torch 2.7↔
+    # torchvision 0.22↔torchaudio 2.7；升 torch 必须同步升另外两个到配对版。
+    # · torchaudio：providers/cosyvoice_tts.py 真用到（同 minor 不配会同样崩）。
+    # · torchvision：项目代码零 import（BGE-M3 是纯文本嵌入），但仍 pin 住——
+    #   防 `pip install` 把它装成错配版再次触发上面的 nms 崩溃。
+    # GPU 部署仍走 cu128 channel 装**相同版本号**（local 标签 +cu128 满足 == 匹配）：
+    #   pip install --index-url https://download.pytorch.org/whl/cu128 \
+    #       torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1
+    # 老 GPU(sm≤90) cu124 亦可；Blackwell(sm_120) 必须 cu128/torch≥2.7。CPU dev 默认
+    # PyPI 即 +cpu 版（同版本号，配对一致，不崩）。CI/frozen 由 build-msi.ps1 控 channel。
+    "torch==2.7.1",
+    "torchvision==0.22.1",
+    "torchaudio==2.7.1",
+    # P4-S5: web tool suite — trafilatura extracts main article text and
+    # metadata from arbitrary HTML, much more robust than BeautifulSoup for
+    # news / blog / docs pages.
+    "trafilatura>=1.6",
+    # P4-S5: web tool suite — selectolax is a fast lxml-free HTML parser
+    # used by web_crawl for TF-based keyword scoring on titles + body.
+    "selectolax>=0.3",
+    # 2026-05-22 ppt-generate skill: local .pptx generation. python-pptx
+    # is pure-Python (no native deps), PyInstaller-friendly, ships as a
+    # ~600KB wheel. Used by deskpet.tools.ppt_tools — gracefully degrades
+    # to a Markdown fallback when missing.
+    "python-pptx>=1.0",
+    # 2026-05-22 beta-100 pre-installed office skills. All pure-Python,
+    # no native deps, PyInstaller-friendly — used by deskpet.tools.
+    #  * openpyxl     → excel_tools.py  (.xlsx generation)
+    #  * python-docx  → doc_tools.py    (.docx create / read / edit)
+    #  * rapidocr-onnxruntime → ocr_tools.py (image OCR; bundles its own
+    #    ONNX models, no system Tesseract needed). Each tool degrades
+    #    gracefully when its dep is absent.
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+    "rapidocr-onnxruntime>=1.3",
+    # P4-S9: MCP client (Model Context Protocol). Lets DeskPet spawn/talk
+    # to stdio MCP servers (filesystem, weather, ...) via the official SDK.
+    "mcp>=1.0",
+    # P4-S10: skill system hot-reload. watchdog watches
+    # %APPDATA%\deskpet\skills\user\ for SKILL.md changes and debounces
+    # reload events (design.md D3 decision).
+    "watchdog>=3.0",
+    # P4-S6: LLM provider adapters. anthropic / openai / google-genai
+    # unified behind llm/base.py::LLMClient. Fallback chain lives in
+    # config.toml's [llm.fallback_chain]. pydantic v2 is already pulled in
+    # via fastapi; explicit pin documents the floor. keyring is optional
+    # on CI but used on desktop build for secret isolation (§keys.py).
+    "pydantic>=2.0",
+    "anthropic>=0.40",
+    "openai>=1.40",
+    # P4-S6: Google's current official SDK is `google-genai` (new API,
+    # Gemini 2.x). The older `google-generativeai>=0.8` package referenced
+    # in tasks.md is legacy and Google has told users to migrate — new code
+    # in deskpet/llm/gemini_adapter.py will target google-genai's modern API.
+    # Pinned >=1.0 (first stable release, 2025-05).
+    "google-genai>=1.0",
+    "keyring>=24.0",
+    # P4-S7: ContextAssembler assembly policies ship as declarative YAML
+    # under deskpet/agent/assembler/policies/default.yaml. PyYAML covers
+    # loader + user overrides merge (overrides.yaml under %APPDATA%).
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+    # P3-S4: PyInstaller is a build-time dep, not runtime — kept in
+    # dev extras so the frozen wheel doesn't ship the bootloader source.
+    "pyinstaller>=6.11",
+    "pyinstaller-hooks-contrib>=2024.8",
+]
+
+[tool.setuptools]
+py-modules = ["config", "main"]
+# P4-S0: new `deskpet` package tree added alongside the P3 flat layout.
+# Rationale: P3 rc1 code (agent/, memory/, tools/) keeps running unchanged
+# while Phase 4 builds out `deskpet/*` in isolation. Cutover happens at
+# P4-S12 when main.py routes are switched from legacy to deskpet.
+# P4-S6 addendum: agent landed `backend/llm/` as a top-level sibling of
+# `backend/agent/` rather than `backend/deskpet/llm/` (its worktree baseline
+# predated the S0 `deskpet/` scaffold). Tech debt tracked for S7 refactor.
+packages = [
+    "providers",
+    "memory",
+    "memory.migrations",
+    "tests",
+    "agent",
+    "pipeline",
+    "tools",
+    "observability",
+    "router",
+    "billing",
+    # P4-S6 new top-level package (backend/llm/** — anthropic/openai/gemini
+    # adapter + registry + budget + keys). Tracked for migration into
+    # `deskpet.llm` namespace in a follow-up refactor.
+    "llm",
+    # P4-S0 new packages (backend/deskpet/**)
+    "deskpet",
+    "deskpet.agent",
+    "deskpet.agent.assembler",
+    "deskpet.agent.assembler.components",
+    "deskpet.agent.assembler.policies",
+    "deskpet.memory",
+    "deskpet.memory.migrations",
+    "deskpet.tools",
+    "deskpet.skills",
+    "deskpet.skills.builtin",
+    "deskpet.mcp",
+    "deskpet.llm",
+]
+
+[tool.setuptools.package-data]
+"memory.migrations" = ["*.sql"]
+# P4-S0: deskpet.memory 迁移 SQL 需要被 setuptools 打包进来（PyInstaller
+# 间接依赖 installed package 的数据文件）。
+"deskpet.memory.migrations" = ["*.sql"]
+# P4-S7: ContextAssembler policies ship as declarative YAML + JSONL.
+# default.yaml is the 8-task_type policy map, exemplars.jsonl is the
+# embed-tier exemplar pool (~100 hand-labelled lines).
+"deskpet.agent.assembler.policies" = ["*.yaml", "*.jsonl"]
+# P4-S10: built-in skills (SKILL.md + optional script.py) ship as
+# package data. SkillLoader resolves <user_data>/skills/built-in first,
+# but the installer seeds that dir from this package-data set.
+"deskpet.skills.builtin" = ["**/*"]
+
+[tool.pytest.ini_options]
+# P4-S1 task 3.5: `perf` mark 默认跳过；手动 `pytest -m perf` 触发。
+# 用 strict_markers 让未注册的 mark 直接报错，减少拼写错误。
+# P4-S2 task 4.5: `model_required` mark —— 只在 BGE-M3 权重可用时跑，
+# 默认跳过（CI / 新装用户没模型）。手动 `pytest -m model_required` 触发。
+# P4-S5: perf 覆盖 tool-framework web_fetch p95 / memory FTS5 10K 行 throughput；
+# 允许 CI runner 偶发波动，优先发布前本地跑。
+#
+# 2026-06-01: 限定 testpaths=tests，否则 pytest 从 rootdir 全仓扫，撞
+# dist-portable/（PyInstaller 打包产物）+ temp/ 的 PermissionError（15 errors
+# during collection）。只扫 tests/ 即干净。
+testpaths = ["tests"]
+markers = [
+    "perf: performance regression test (p95 / throughput, 10K+ rows / localhost probes). Skipped by default; allowed to be flaky on CI; run locally before release.",
+    "model_required: tests that need real BGE-M3 weights on disk (skipped by default)",
+]
+addopts = "-m 'not perf and not model_required'"

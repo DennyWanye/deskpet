@@ -1,0 +1,130 @@
+---
+name: ppt-generate
+description: 把一个主题或一段研究报告变成一份专业的 .pptx 演示文稿（本地生成，支持二次编辑）
+when_to_use: 用户要做 PPT、演示文稿、幻灯片，或把主题、报告内容变成 pptx 时
+triggers: [ppt, PPT, 演示文稿, 幻灯片, pptx]
+version: 0.1.0
+author: deskpet
+task_types: [task, plan, code]
+argument_hint: <主题/大纲文本/JSON outline> [--theme=minimal|dark|playful] [--out=PATH]
+requires_script: false
+---
+
+我希望你帮我做一份 PPT。
+
+输入可能是：
+1. 一段中文/英文主题（例如「量子计算 2026 现状」）
+2. 一份已有的 markdown 大纲
+3. 一份已经结构化的 JSON outline（直接用就行）
+
+执行步骤（**严格按顺序**）：
+
+## 先选工具：`ppt_pro`（推荐）还是 `ppt_create`
+
+- **`ppt_pro(topic=...)` —— 首选**：用户只给了一个**主题**要做（正式/调研型/惊艳）PPT 时。它会**自动**：用 deepresearch 深度调研主题 → 基于调研拟大纲 → **弹「大纲确认卡」给用户确认/修改/取消/复用历史** → 确认后优先用 AI 出图生成惊艳 PPT、连不上出图服务则自动回退精美模板。一次调用搞定，参数：`topic`(必填)/`pages`(默认8)/`theme`/`image_mode`(默认true=惊艳)。调研档位已后端锁死为 deep（≈5min 充分调研），**不需要也不能由你传 depth**。
+  - **它会暂停等用户在确认卡上点确认**——你**不要**自己再问一遍大纲、不要自己拟大纲。
+  - 返回 `status:"researching"` 或 `"already_running"` = **已在后台进行**：**不要再次调用** `ppt_pro`、不要因没看到成品而重试，安静等后台推进度/成品即可。
+- **`ppt_create(...)` —— 直出**：用户**已给好完整 outline / 明确要跳过调研和确认 / 只要朴素快出**，或要「分别用模板和AI各做一份」这种你已掌握全部内容的场景。走下面的步骤 0~4。
+
+下面 0~4 步是 `ppt_create` 的用法（`ppt_pro` 内部已自动处理，无需你手动走）。
+
+## 0. 先判定视觉模式（三选一，不混用）
+
+| 用户说法里出现 | 模式 | 怎么做 |
+|---|---|---|
+| 「AI 配图 / 惊艳 / 电影感 / 视觉冲击 / 海报感 / 配图要 AI 生成」 | **AI 整页生图** | 每页 `layout="image_full"` + 英文 `image_prompt`；**不传** `template`。封面只给 title+caption；内容页给 title+3~4 条精炼 bullets(每条≤24字)。生图每张 1~2 分钟,工具会秒回「在做了」,后台完成自动推回,**不要**等待或重复调用。 |
+| 「模板 / 专业 / 正式 / 商务 / 可编辑 / 高级感」 | **模板填充** | 传 `template=<大类名>` —— **只能**从 schema 里列出的大类按主题选最贴的(科技/商业/产品/营销→高级色;设计/品牌/方案/学术→高级简约;通用职场汇报→通用商务),引擎会按预览图视觉选具体模板,**别自己编模板名**。页面**不要**写 image_prompt。 |
+| 都没说 | **朴素主题** | 不传 template、不写 image_prompt,用 `theme` 三选一。 |
+
+用户两种都要(「分别用模板和 AI 配图各做一份」)→ 调 `ppt_create` **两次**,一次一种模式。
+
+## 1. 拿到大纲
+- 如果用户给的是「主题」或「markdown 大纲」：用你自己的能力把它转成结构化 JSON outline（见下方 schema），**不要**调任何 web 工具。
+- 如果用户给的是 JSON outline：跳过本步，直接进入第 2 步。
+- 如果用户先做了 deep-research 拿到 ResearchReport：用 report_md + citations 当输入。
+
+JSON outline schema（list of slide dicts，**每一页一个 dict**）：
+
+```json
+[
+  {"layout": "title",      "title": "...", "subtitle": "..."},
+  {"layout": "toc",        "title": "目录", "bullets": ["第一节", "第二节", "..."]},
+  {"layout": "section",    "title": "节标题", "subtitle": "可选副标题"},
+  {"layout": "bullet",     "title": "...",  "bullets": ["要点1", "要点2", "要点3"]},
+  {"layout": "two_column", "title": "对比",
+                            "left_title":  "A 方案", "left":  ["..."],
+                            "right_title": "B 方案", "right": ["..."]},
+  {"layout": "quote",      "quote": "原句", "cite": "出处"},
+  {"layout": "image",      "title": "...", "image_path": "/abs/path.png", "caption": "图说"},
+  {"layout": "image_full", "title": "...", "caption": "一句副标题",
+                            "image_prompt": "English scene description, cinematic..."},
+  {"layout": "image_full", "title": "...", "bullets": ["要点1", "要点2", "要点3"],
+                            "image_prompt": "English scene description..."},
+  {"layout": "chart",      "title": "季度营收",
+                            "chart": {"type": "bar",
+                                      "categories": ["Q1", "Q2", "Q3"],
+                                      "series": [{"name": "营收", "values": [10, 20, 15]}]}}
+]
+```
+
+**用好 `chart` 布局**：有数字对比/趋势/占比时，用 `chart` 而不是把数字堆进
+bullet —— `type` 选 `bar`(对比) / `line`(趋势) / `pie`(占比)。数据型 PPT
+至少应有一张图表页。
+
+**严格的内容质量要求**：
+
+- 一份合格的 PPT 包含 6-14 张（10 张是甜区）；少于 4 张就太空，多于 18 张观众会迷路。
+- 每张 bullet **不超过 5 条**，每条 **不超过 15 个汉字 / 25 个英文字**。
+- title slide 必有；toc 推荐放第 2 张（当内容 ≥ 6 张时）；section 用于章节切分（≥ 8 张时）。
+- 节奏建议：title → toc → section → 2-3 张 bullet → section → 2-3 张 bullet → quote/image 提神 → section "总结" → 1 张 bullet 结论。
+- **不要**把整段长文本塞进 bullet——bullet 是提示词，不是讲稿。详细内容用 `notes` 字段写进备注页（演讲者可见）。
+
+## 2. 调 `ppt_create` 工具
+
+参数：
+- `outline`: 上一步的 JSON 数组（**整段塞进字符串**或 list 都接受）
+- `theme`: 用户指定就用用户的；否则 `minimal`（最稳）。商务/学术=`minimal`，技术/Demo=`dark`，营销/儿童=`playful`。
+- `title`: 文档标题（落到 .pptx core properties）
+- `author`: 默认 `DeskPet`，除非用户给了名字
+- `output_path`: 用户没指定就不传，工具会生成到 `<用户数据>/OutPut/PPT/`
+- `template`: 仅「模板填充」模式传(bundled 模板名或 .pptx 绝对路径)
+
+**🚨 内容一致性硬约束（防漂移）**：
+
+当用户已经看过你产生的大纲、随后只说"生成"/"保存到桌面"/"确认"/"好的"
+之类**位置/格式变更或确认词**时，**必须严格复用之前那份 outline 的
+全部内容**——`title`、`subtitle`、每条 `bullet`、`notes`、所有页的
+主题与措辞都要原样照搬，只允许调整 `output_path`/`theme`/`title`（文档元数据）
+参数。**不允许**：
+
+1. 凭空想象一个新主题（例如"深海探险""量子计算"等示例性内容）
+2. 把大纲替换成"更通用"或"更示范性"的版本
+3. 因为找不到原 outline 上下文就重新生成 —— 这种情况要主动**向用户
+   确认要做什么主题**，而不是猜。
+
+只有当用户**明确要求**修改主题/章节/内容时，才更改 outline。
+如果你不确定，**问用户**，不要猜。
+
+**实战记录（2026-05-28）**：deepseek-v4-pro 出现过这样的漂移 —— 用户说
+"小学教育现状 PPT" 第一次正确生成，用户接着说"保存到桌面"，模型却把
+outline 替换成了"深海探险"凭空主题。本约束就是为了压制这种 LLM 漂移。
+
+返回结构：
+```json
+{"ok": true, "path": "/tmp/deskpet-ppt-XXX.pptx", "slide_count": 10, "theme": "minimal"}
+```
+
+## 3. 回复用户
+
+- ✅ 成功：**必须**告诉用户完整保存路径「PPT 已生成: `<path>`」+ 一句话总结几页、什么主题。
+- 🎨 AI 生图模式返回 `status:"generating"` 时：告诉用户在后台做了、约几分钟、做好自动打开并发路径——然后**结束本回合**，不要轮询不要重调。
+- ❌ 失败：返回 `markdown_fallback` 里的内容（一份可读的 markdown 大纲），并解释原因（一般是 python-pptx 没装）。**永远不要假装成功**。
+
+## 4. 与 deep-research 串联（可选）
+
+如果用户说「研究 X 然后做 PPT」：
+1. 先调 deep-research skill / `deepresearch` 工具得到 ResearchReport
+2. 把 `report_md` 里的章节 + `citations` 转换成 outline
+3. 引用源放进 `notes` 字段（备注页），bullet 保持简洁
+
+用中文回复。

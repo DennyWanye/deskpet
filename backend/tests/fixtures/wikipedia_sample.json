@@ -1,0 +1,18 @@
+{
+  "opensearch": [
+    "钠离子电池",
+    ["钠离子电池"],
+    ["一种使用钠离子作为电荷载流子的可充电电池。"],
+    ["https://zh.wikipedia.org/wiki/%E9%92%A0%E7%A6%BB%E5%AD%90%E7%94%B5%E6%B1%A0"]
+  ],
+  "summary": {
+    "type": "standard",
+    "title": "钠离子电池",
+    "extract": "钠离子电池是一种可充电电池，使用钠离子作为电荷载流子。由于钠资源丰富，它常被研究为锂离子电池之外的储能技术路线，适用于对成本和资源可得性敏感的应用场景。",
+    "content_urls": {
+      "desktop": {
+        "page": "https://zh.wikipedia.org/wiki/%E9%92%A0%E7%A6%BB%E5%AD%90%E7%94%B5%E6%B1%A0"
+      }
+    }
+  }
+}

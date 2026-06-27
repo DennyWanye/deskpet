@@ -1,0 +1,94 @@
+name: OSS Hygiene Checks
+
+# 2026-05-28 OSS prep Phase 6 — automated hygiene gates for public-repo
+# norms. All checks here are required to be green before merge.
+#
+# Currently checks:
+#   1. SPDX-License-Identifier header on every tracked .py/.ts/.tsx/.rs
+#   2. No accidental commit of LOCAL-DEV-CREDENTIALS.md / .env / *.pem
+#   3. Required third-party license attribution files exist
+#
+# All checks are cheap shell + git operations (<30s total).
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+
+jobs:
+  spdx-headers:
+    name: SPDX header coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check every tracked source file has SPDX header
+        run: python scripts/oss/add_spdx_headers.py --check
+
+  no-secrets:
+    name: No secrets committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check forbidden files are not tracked
+        run: |
+          FORBIDDEN=(
+            "LOCAL-DEV-CREDENTIALS.md"
+            ".env"
+            ".env.local"
+          )
+          FOUND=()
+          for f in "${FORBIDDEN[@]}"; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              FOUND+=("$f")
+            fi
+          done
+          # Also flag tracked .pem / .key files (private key shapes)
+          PRIVATE_KEYS=$(git ls-files '*.pem' '*.key' 2>/dev/null | grep -v 'package.json\|Cargo\|cargo' || true)
+          if [ -n "$PRIVATE_KEYS" ]; then
+            FOUND+=($PRIVATE_KEYS)
+          fi
+          if [ ${#FOUND[@]} -gt 0 ]; then
+            echo "FAIL: forbidden secret-shaped files are tracked:"
+            printf '  - %s\n' "${FOUND[@]}"
+            echo ""
+            echo "Untrack with: git rm --cached <file>"
+            echo "Then verify the file is in .gitignore."
+            exit 1
+          fi
+          echo "OK: no forbidden secret files tracked."
+
+  license-attribution:
+    name: Third-party license attribution exists
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify licenses/ index files exist
+        run: |
+          REQUIRED=(
+            "LICENSE"
+            "LICENSE.FAQ.md"
+            "licenses/README.md"
+            "licenses/LIVE2D-CUBISM.md"
+            "licenses/LIVE2D-HIYORI.md"
+          )
+          MISSING=()
+          for f in "${REQUIRED[@]}"; do
+            if [ ! -f "$f" ]; then
+              MISSING+=("$f")
+            fi
+          done
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "FAIL: required license attribution files are missing:"
+            printf '  - %s\n' "${MISSING[@]}"
+            exit 1
+          fi
+          echo "OK: all required license files present."

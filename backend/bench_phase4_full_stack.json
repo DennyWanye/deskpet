@@ -1,0 +1,26 @@
+{
+  "generated_at": 1777131250.6911116,
+  "cold_start_breakdown_ms": {
+    "session_db_init_ms": 91.76849999494152,
+    "embedder_warmup_ms": 0.15740000526420772,
+    "vector_worker_start_ms": 0.028200003725942224,
+    "memory_manager_init_ms": 1.135699996666517,
+    "skill_loader_start_ms": 1.7863999964902177,
+    "assembler_construct_ms": 3.172899996570777,
+    "mcp_bootstrap_ms": 0.07219999679364264,
+    "total_cold_start_ms": 98.12409999722149
+  },
+  "per_turn_assemble": {
+    "n": 50,
+    "p50_ms": 20.57,
+    "p95_ms": 47.99,
+    "p99_ms": 49.57,
+    "max_ms": 49.57,
+    "mean_ms": 22.46
+  },
+  "slo": {
+    "cold_start_mock_ms": 5000.0,
+    "assemble_p95_ms": 370.0
+  },
+  "passing": true
+}

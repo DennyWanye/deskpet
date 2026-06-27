@@ -1,0 +1,17 @@
+{
+  "total": 1,
+  "offset": 0,
+  "data": [
+    {
+      "paperId": "abc123",
+      "title": "Sodium-Ion Batteries: Materials, Mechanisms, and Applications",
+      "abstract": "Sodium-ion batteries are promising for cost-sensitive energy storage. This paper reviews layered oxide cathodes, hard-carbon anodes, electrolyte stability, and remaining barriers to large-scale deployment.",
+      "url": "https://www.semanticscholar.org/paper/abc123",
+      "year": 2024,
+      "authors": [
+        {"name": "A. Researcher"},
+        {"name": "B. Scientist"}
+      ]
+    }
+  ]
+}

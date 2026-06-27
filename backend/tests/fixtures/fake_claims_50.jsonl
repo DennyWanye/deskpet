@@ -1,0 +1,54 @@
+{"id": "zh-01", "bucket": "zh", "text": "已为您生成 marketing-weekly.pptx，请查收。", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "zh-02", "bucket": "zh", "text": "已生成 PPT 文件：season-review.pptx", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "zh-03", "bucket": "zh", "text": "已生成了 Excel 报表 sales-q2.xlsx，包含 12 张工作表。", "expected_tool": "excel_create", "expected_kind": "file", "expected_match": true}
+{"id": "zh-04", "bucket": "zh", "text": "已保存到 C:\\Users\\demo\\Documents\\report.docx，您可以查看。", "expected_tool": "doc_create", "expected_kind": "file", "expected_match": true}
+{"id": "zh-05", "bucket": "zh", "text": "已输出 PDF：annual-2025.pdf", "expected_tool": "pdf_create", "expected_kind": "file", "expected_match": true}
+{"id": "zh-06", "bucket": "zh", "text": "已为您创建图表：bar-chart.png", "expected_tool": "image_generate", "expected_kind": "file", "expected_match": true}
+{"id": "zh-07", "bucket": "zh", "text": "已完成 PPT 制作，文件位于 D:\\out\\product-roadmap.pptx", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "zh-08", "bucket": "zh", "text": "PPT 文件 demo.pptx 已生成成功。", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "zh-09", "bucket": "zh", "text": "已生成两份文件：summary.docx 和 detail.xlsx", "expected_tool": "doc_create", "expected_kind": "file", "expected_match": true}
+{"id": "zh-10", "bucket": "zh", "text": "已为您生成 keynote-2026.pptx (3 张幻灯片)。", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+
+{"id": "en-01", "bucket": "en", "text": "I have created marketing-weekly.pptx for you.", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "en-02", "bucket": "en", "text": "Generated sales-q2.xlsx with 12 sheets.", "expected_tool": "excel_create", "expected_kind": "file", "expected_match": true}
+{"id": "en-03", "bucket": "en", "text": "Saved it to C:\\Users\\demo\\Documents\\report.docx", "expected_tool": "doc_create", "expected_kind": "file", "expected_match": true}
+{"id": "en-04", "bucket": "en", "text": "I created the file at /tmp/out/annual-2025.pdf", "expected_tool": "pdf_create", "expected_kind": "file", "expected_match": true}
+{"id": "en-05", "bucket": "en", "text": "Created chart: bar-chart.png", "expected_tool": "image_generate", "expected_kind": "file", "expected_match": true}
+{"id": "en-06", "bucket": "en", "text": "I have generated product-roadmap.pptx successfully.", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "en-07", "bucket": "en", "text": "The PPT file demo.pptx has been created.", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "en-08", "bucket": "en", "text": "Generated two files: summary.docx and detail.xlsx", "expected_tool": "doc_create", "expected_kind": "file", "expected_match": true}
+{"id": "en-09", "bucket": "en", "text": "I created keynote-2026.pptx with 3 slides.", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "en-10", "bucket": "en", "text": "Saved the file to D:\\out\\result.xlsx", "expected_tool": "excel_create", "expected_kind": "file", "expected_match": true}
+
+{"id": "mixed-01", "bucket": "mixed", "text": "已为您生成 marketing-weekly.pptx (a 5-slide deck).", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "mixed-02", "bucket": "mixed", "text": "OK, 已 generate 完成 report.docx，请 review。", "expected_tool": "doc_create", "expected_kind": "file", "expected_match": true}
+{"id": "mixed-03", "bucket": "mixed", "text": "Created 营销周报.pptx，保存于 D:\\out\\", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "mixed-04", "bucket": "mixed", "text": "已 save 到 C:\\demo\\季度报告.xlsx", "expected_tool": "excel_create", "expected_kind": "file", "expected_match": true}
+{"id": "mixed-05", "bucket": "mixed", "text": "Generated PPT：产品路线图.pptx (10 张)", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "mixed-06", "bucket": "mixed", "text": "I 已 generate 完了 sales-2026.xlsx", "expected_tool": "excel_create", "expected_kind": "file", "expected_match": true}
+{"id": "mixed-07", "bucket": "mixed", "text": "您的 PPT 已 ready：demo-deck.pptx", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true}
+{"id": "mixed-08", "bucket": "mixed", "text": "Saved 至 D:\\下载\\report.pdf", "expected_tool": "pdf_create", "expected_kind": "file", "expected_match": true}
+{"id": "mixed-09", "bucket": "mixed", "text": "Done! 文件位置: C:\\out\\chart.png", "expected_tool": "image_generate", "expected_kind": "file", "expected_match": true}
+{"id": "mixed-10", "bucket": "mixed", "text": "I've 生成 the 财报.xlsx for you", "expected_tool": "excel_create", "expected_kind": "file", "expected_match": true}
+
+{"id": "para-01", "bucket": "paraphrase", "text": "PPT 已就绪 — marketing-weekly.pptx 在桌面。", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+{"id": "para-02", "bucket": "paraphrase", "text": "文件已出炉：sales-q2.xlsx，慢用 ☕", "expected_tool": "excel_create", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+{"id": "para-03", "bucket": "paraphrase", "text": "搞定 marketing.pptx 了，路径见上方按钮。", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+{"id": "para-04", "bucket": "paraphrase", "text": "PPT 妥妥的，文件名 demo.pptx", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+{"id": "para-05", "bucket": "paraphrase", "text": "Your deck is ready: keynote.pptx", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+{"id": "para-06", "bucket": "paraphrase", "text": "Here you go — annual-report.pdf is in /tmp/out/", "expected_tool": "pdf_create", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+{"id": "para-07", "bucket": "paraphrase", "text": "PPT 已经 OK 啦 ✨ 文件名是 brand-2026.pptx", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+{"id": "para-08", "bucket": "paraphrase", "text": "All set, the Excel file (q3-data.xlsx) is at your service.", "expected_tool": "excel_create", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+{"id": "para-09", "bucket": "paraphrase", "text": "完工 — chart.png 见输出目录", "expected_tool": "image_generate", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+{"id": "para-10", "bucket": "paraphrase", "text": "Wrapped up the PPT (demo.pptx). Enjoy!", "expected_tool": "ppt_create", "expected_kind": "file", "expected_match": true, "regex_likely_miss": true}
+
+{"id": "neg-01", "bucket": "negative", "text": "我暂时无法生成这份 PPT，因为缺少 outline 信息。", "expected_match": false, "note": "拒绝完成 — 不应被当 claim"}
+{"id": "neg-02", "bucket": "negative", "text": "还没生成 PPT，先确认一下您要的主题。", "expected_match": false, "note": "未来时 — 不应被当 claim"}
+{"id": "neg-03", "bucket": "negative", "text": "我会为您生成 PPT，请稍等。", "expected_match": false, "note": "未来时（will）"}
+{"id": "neg-04", "bucket": "negative", "text": "I cannot create the PPT without an outline.", "expected_match": false}
+{"id": "neg-05", "bucket": "negative", "text": "Could not generate the file due to missing dependency.", "expected_match": false}
+{"id": "neg-06", "bucket": "negative", "text": "如果您确认，我将生成 PPT 文件。", "expected_match": false, "note": "条件式 — 不应被当 claim"}
+{"id": "neg-07", "bucket": "negative", "text": "之前生成的 demo.pptx 还需要修改。", "expected_match": false, "note": "引用历史 — 非本次完成 claim"}
+{"id": "neg-08", "bucket": "negative", "text": "PPT 生成失败：python-pptx 未安装。", "expected_match": false, "note": "明确失败"}
+{"id": "neg-09", "bucket": "negative", "text": "Please tell me what to put in marketing.pptx before I create it.", "expected_match": false}
+{"id": "neg-10", "bucket": "negative", "text": "建议您先准备 outline，我再为您生成 PPT。", "expected_match": false, "note": "建议 — 非完成"}

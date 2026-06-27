@@ -1,0 +1,40 @@
+{"text": "今天天气怎么样", "label": "chat"}
+{"text": "早上好呀", "label": "chat"}
+{"text": "我好累", "label": "emotion"}
+{"text": "我今天心情不好", "label": "emotion"}
+{"text": "最近感觉有点丧", "label": "emotion"}
+{"text": "我觉得很孤单", "label": "emotion"}
+{"text": "我好难过", "label": "emotion"}
+{"text": "我生气了", "label": "emotion"}
+{"text": "还记得我之前说过的红色袜子吗", "label": "recall"}
+{"text": "上次我告诉你的那个事情是什么", "label": "recall"}
+{"text": "我之前有提过这个话题吗", "label": "recall"}
+{"text": "还记得我喜欢什么吗", "label": "recall"}
+{"text": "帮我写个 Python 脚本下载网页", "label": "code"}
+{"text": "这个函数为什么会报错", "label": "code"}
+{"text": "这段 JavaScript 代码怎么改", "label": "code"}
+{"text": "帮我 debug 一下", "label": "code"}
+{"text": "修一下这个 bug", "label": "code"}
+{"text": "这个 stack trace 说了什么", "label": "code"}
+{"text": "帮我查一下最新的 iPhone 价格", "label": "web_search"}
+{"text": "搜索一下今天的新闻", "label": "web_search"}
+{"text": "百度一下这个是什么", "label": "web_search"}
+{"text": "帮我 google 一下", "label": "web_search"}
+{"text": "帮我规划一下周末的任务", "label": "plan"}
+{"text": "安排一下明天的行程", "label": "plan"}
+{"text": "把这个加到 todo", "label": "plan"}
+{"text": "帮我做一个待办清单", "label": "plan"}
+{"text": "帮我写一封邮件给老板", "label": "task"}
+{"text": "帮我生成一个项目 README", "label": "task"}
+{"text": "帮我整理这份笔记", "label": "task"}
+{"text": "帮我把这段话翻译成英文", "label": "task"}
+{"text": "帮我画一张流程图", "label": "task"}
+{"text": "/help", "label": "command"}
+{"text": "/clear", "label": "command"}
+{"text": "/recall 红色", "label": "command"}
+{"text": "你叫什么名字", "label": "chat"}
+{"text": "今天是星期几", "label": "chat"}
+{"text": "我叫张三", "label": "chat"}
+{"text": "你好", "label": "chat"}
+{"text": "晚安", "label": "chat"}
+{"text": "喵", "label": "chat"}

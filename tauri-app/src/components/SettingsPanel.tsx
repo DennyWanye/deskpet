@@ -1,0 +1,1334 @@
+// SPDX-FileCopyrightText: 2026 DennyWanye
+// SPDX-License-Identifier: BUSL-1.1
+
+/**
+ * P2-1-S3: SettingsPanel —— 云端账号 / 路由策略 / 今日使用（占位）。
+ *
+ * Three sections, all controlled-input. Save flow:
+ *   1. If user typed a new apiKey, invoke Rust `set_cloud_api_key` (keyring).
+ *   2. Persist strategy / budget to backend config: deferred — S6 owns the
+ *      backend-side strategy switching, S8 owns the daily-budget ledger.
+ *      For S3 we just keep them in component state so the UI is honest
+ *      about what works right now.
+ *
+ * 测试连接 path uses the control WS (already authenticated via shared
+ * secret) so the apiKey never touches an HTTP endpoint and never lands
+ * in a network log.
+ *
+ * The 今日使用 section reads from `fetchDailyBudget`, which round-trips
+ * through the control WS to the BillingLedger (S8). The DailyBudgetStatus
+ * contract (snake_case fields) is frozen in types/messages.ts.
+ */
+import { useCallback, useEffect, useState } from "react";
+
+import { Icon } from "./Icon";
+import { EmbedderStatusCard } from "./EmbedderStatusCard";
+import { ModelContextCard } from "./ModelContextCard";
+import { SettingsProviders } from "./SettingsProviders";
+import { formatUpdaterError } from "./updaterError";
+// S5 (live2d-rewrite): HiyoriMotionTuner deleted with the Hiyori assets / Live2D SDK.
+import type {
+  DailyBudgetStatus,
+  IncomingMessage,
+} from "../types/messages";
+import type { ControlChannel } from "../ws/ControlChannel";
+
+interface SettingsPanelProps {
+  open: boolean;
+  onClose: () => void;
+  /** Accessor so the component can both `send` and subscribe without
+   * recreating subscriptions every parent render. */
+  getChannel: () => ControlChannel | null;
+  /** The most recent incoming control message — we narrow to our reply
+   * type inside an effect. Piggybacking the existing App-level state
+   * avoids an extra onMessage listener that'd need manual teardown. */
+  lastMessage: IncomingMessage | null;
+  secret: string;
+  onConfigChanged?: () => void;
+  /** 2026-05-26: relay adapter（如果是 relay edition）— 让
+   * SettingsProviders 把中转站 provider 作为只读虚拟项显示。 */
+  relayAdapter?: import("../auth/RelayAuthAdapter").RelayAuthAdapter | null;
+  /** 桌宠形象切换（设置面板「桌宠形象」下拉）。 */
+  petModels: readonly import("../petModels").PetModel[];
+  currentPetModelId: string;
+  onPetModelChange: (id: string) => void;
+}
+
+// ---------------------------------------------------------------------------
+// P5-S2 Phase 5.3 — auto-resume toggle helper.
+//
+// Spec contract (frontend-ipc-surface/auto-resume-events.md):
+//   { type: "settings_update",
+//     payload: { supervisor: { auto_resume_enabled: bool } } }
+//
+// Exported as a pure function so SettingsToggle.test.tsx can verify the wire
+// format without instantiating React. The component below uses it.
+// ---------------------------------------------------------------------------
+export interface AutoResumeSettingsMessage {
+  type: "settings_update";
+  payload: { supervisor: { auto_resume_enabled: boolean } };
+}
+
+export function buildAutoResumeSettingsMessage(
+  enabled: boolean,
+): AutoResumeSettingsMessage {
+  return {
+    type: "settings_update",
+    payload: { supervisor: { auto_resume_enabled: enabled } },
+  };
+}
+
+export const CHAT_TURN_TIMEOUT_DEFAULT_MINUTES = 15;
+export const CHAT_TURN_TIMEOUT_MIN_MINUTES = 1;
+export const CHAT_TURN_TIMEOUT_MAX_MINUTES = 60;
+
+export function clampChatTurnTimeoutMinutes(minutes: number): number {
+  if (!Number.isFinite(minutes)) return CHAT_TURN_TIMEOUT_DEFAULT_MINUTES;
+  return Math.min(
+    CHAT_TURN_TIMEOUT_MAX_MINUTES,
+    Math.max(CHAT_TURN_TIMEOUT_MIN_MINUTES, Math.round(minutes)),
+  );
+}
+
+export function buildChatTurnTimeoutSetMessage(minutes: number) {
+  return {
+    type: "chat_turn_timeout_set",
+    payload: { minutes: clampChatTurnTimeoutMinutes(minutes) },
+  };
+}
+
+/**
+ * Send a `budget_status` request on the control channel and resolve with the
+ * next `budget_status` reply (or reject after `timeoutMs`).
+ *
+ * P2-1-S8: replaced S3's hardcoded stub with the real control-WS roundtrip.
+ * The DailyBudgetStatus contract (snake_case fields) is the cross-slice
+ * import point locked in spec §1.3.
+ */
+export async function fetchDailyBudget(
+  channel: ControlChannel,
+  timeoutMs = 3000,
+): Promise<DailyBudgetStatus> {
+  return new Promise<DailyBudgetStatus>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      unsub();
+      reject(new Error("budget_status timeout"));
+    }, timeoutMs);
+    const unsub = channel.onMessage((msg: IncomingMessage) => {
+      if (msg.type === "budget_status") {
+        clearTimeout(timer);
+        unsub();
+        resolve(msg.payload);
+      }
+    });
+    channel.send({ type: "budget_status" });
+  });
+}
+
+export function SettingsPanel({
+  open,
+  onClose,
+  getChannel,
+  lastMessage,
+  relayAdapter,
+  petModels,
+  currentPetModelId,
+  onPetModelChange,
+}: SettingsPanelProps) {
+  // 2026-05-26: 删除"今日使用"section — 用户要求，billing 状态不再在
+  // Settings 里展示（如需查看请用后端 /budget_status 命令或 metrics）。
+  if (!open) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="设置"
+      style={overlayStyle}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
+        <header style={headerStyle}>
+          <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 32,
+                height: 32,
+                borderRadius: 10,
+                background: "linear-gradient(180deg,#eff6ff,#dbeafe)",
+                color: "#2563eb",
+              }}
+            >
+              <Icon name="settings" size={18} />
+            </span>
+            <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, letterSpacing: 0.2 }}>
+              设置
+            </h2>
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="关闭设置"
+            style={closeBtnStyle}
+          >
+            <Icon name="close" size={16} />
+          </button>
+        </header>
+
+        {/* P5-S2 multi-provider-management: legacy single-provider LLM
+            configuration section was removed. All provider config now lives
+            under the "LLM Providers" section below (drag-drop reorder,
+            multiple endpoints, per-card pinning). */}
+
+        {/* ================ 桌宠形象 ================ */}
+        <section style={sectionStyle}>
+          <h3 style={h3Style}>桌宠形象</h3>
+          <select
+            value={currentPetModelId}
+            onChange={(e) => onPetModelChange(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "8px 10px",
+              borderRadius: 8,
+              background: "rgba(255,255,255,0.92)",
+              color: "#111",
+              border: "1px solid rgba(255,255,255,0.18)",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {petModels.map((m) => (
+              <option key={m.id} value={m.id} style={{ color: "#111" }}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+          <p style={{ fontSize: 11, opacity: 0.6, margin: "6px 0 0" }}>
+            选择后立即更换桌宠形象。
+          </p>
+        </section>
+
+        {/* ================ LLM Providers (P5-S2 Phase 4) ================ */}
+        <section style={sectionStyle}>
+          <h3 style={h3Style}>LLM Providers</h3>
+          <SettingsProviders
+            getChannel={getChannel}
+            lastMessage={lastMessage}
+            relayAdapter={relayAdapter}
+          />
+        </section>
+
+        {/* ================ 模型状态 (P4-S16) ================ */}
+        <section style={sectionStyle}>
+          <h3 style={h3Style}>模型状态</h3>
+          <EmbedderStatusCard getChannel={getChannel} />
+          {/* Phase 1.1.6（context-1m-rearch）：per-model 上下文窗口卡片 */}
+          <ModelContextCard getChannel={getChannel} />
+        </section>
+
+        {/* ================ 自动模式 (P4-S21 #13) ================ */}
+        <section style={sectionStyle}>
+          <h3 style={h3Style}>权限</h3>
+          <AutoModeToggle getChannel={getChannel} />
+          <ChatTurnTimeoutSetting getChannel={getChannel} />
+        </section>
+
+        {/* ================ 桌宠 supervisor (P5-S1) ================ */}
+        <section style={sectionStyle}>
+          <h3 style={h3Style}>桌宠 supervisor（P5-S1）</h3>
+          <SupervisorToggleSection getChannel={getChannel} />
+          <AutoResumeToggleSection getChannel={getChannel} />
+        </section>
+
+        {/* ================ 数据目录 (2026-05-21) ================ */}
+        <DataDirSection />
+
+        {/* ================ 关于与更新 (2026-06-05) ================ */}
+        <UpdateSection />
+
+        {/* ================ 危险区 (P3-S9) ================ */}
+        <DangerZoneSection />
+
+        {/* P5-S2: footer 保存按钮删除 —— SettingsProviders 直接发 ws
+            消息保存每条改动，AutoMode/Supervisor/Hiyori 各自有自己的 toggle，
+            不再需要全局"保存"。关闭走顶部 X 按钮。 */}
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// 关于与更新 (2026-06-05) — 手动"检查更新"入口。
+//
+// 底层走 tauri-plugin-updater：check() 拉 latest.json 比版本号；有新版本
+// 就 downloadAndInstall() 下载验签安装。Windows 下安装步骤执行时 app 会被
+// 安装器自动关闭（官方限制），装完拉起新版本，所以这里不需要手动 relaunch。
+//
+// 启动时的静默检查在 hooks/useUpdateChecker.ts；本组件是用户主动点的入口。
+// 两者用的是同一套 updater 配置（tauri.conf.json > plugins.updater）。
+// 错误文案翻译在 ./updaterError（抽出来便于纯函数单测）。
+// ----------------------------------------------------------------------
+
+type UpdatePhase =
+  | "idle"
+  | "checking"
+  | "latest"
+  | "available"
+  | "downloading"
+  | "done"
+  | "error";
+
+function UpdateSection() {
+  const [version, setVersion] = useState<string>("");
+  const [phase, setPhase] = useState<UpdatePhase>("idle");
+  const [errMsg, setErrMsg] = useState<string>("");
+  const [newVersion, setNewVersion] = useState<string>("");
+  const [notes, setNotes] = useState<string>("");
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
+  // check() 返回的 Update 对象，留到用户点"下载并安装"时用。
+  // 用 any 是因为只在 Tauri 运行时存在，避免给非 Tauri 预览构建引类型依赖。
+  const [pending, setPending] = useState<{ downloadAndInstall: (cb?: (e: unknown) => void) => Promise<void> } | null>(
+    null,
+  );
+
+  // 读当前版本号展示（来自 tauri.conf.json 的 version）。
+  useEffect(() => {
+    let alive = true;
+    import("@tauri-apps/api/app")
+      .then((m) => m.getVersion())
+      .then((v) => {
+        if (alive) setVersion(v);
+      })
+      .catch(() => {
+        /* 非 Tauri 预览构建 / 读不到版本 —— 不显示即可 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const onCheck = useCallback(async () => {
+    setPhase("checking");
+    setErrMsg("");
+    try {
+      const mod = await import("@tauri-apps/plugin-updater").catch(() => null);
+      if (!mod) {
+        // 预览构建无 Tauri —— 直接当作"已是最新"，避免误报错误。
+        setPhase("latest");
+        return;
+      }
+      const update = await mod.check();
+      if (!update) {
+        setPhase("latest");
+        return;
+      }
+      setNewVersion(update.version);
+      setNotes(update.body ?? "");
+      setPending(update as unknown as typeof pending);
+      setPhase("available");
+    } catch (err) {
+      console.info("[updater] manual check failed:", err);
+      setErrMsg(formatUpdaterError(err));
+      setPhase("error");
+    }
+  }, []);
+
+  const onInstall = useCallback(async () => {
+    if (!pending) return;
+    setPhase("downloading");
+    setProgress({ done: 0, total: 0 });
+    try {
+      let total = 0;
+      let done = 0;
+      await pending.downloadAndInstall((e: unknown) => {
+        const ev = e as { event?: string; data?: { contentLength?: number; chunkLength?: number } };
+        if (ev.event === "Started") {
+          total = ev.data?.contentLength ?? 0;
+          setProgress({ done: 0, total });
+        } else if (ev.event === "Progress") {
+          done += ev.data?.chunkLength ?? 0;
+          setProgress({ done, total });
+        } else if (ev.event === "Finished") {
+          setProgress({ done: total, total });
+        }
+      });
+      // Windows 上一般走不到这里：安装步骤会自动退出 app。
+      setPhase("done");
+    } catch (err) {
+      console.info("[updater] download/install failed:", err);
+      setErrMsg(formatUpdaterError(err));
+      setPhase("error");
+    }
+  }, [pending]);
+
+  const pct =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.done / progress.total) * 100))
+      : null;
+
+  return (
+    <section style={sectionStyle}>
+      <h3 style={h3Style}>关于与更新</h3>
+      <div style={statusStyle}>
+        当前版本：<strong>{version ? `v${version}` : "—"}</strong>
+      </div>
+
+      {phase === "latest" && (
+        <div style={statusStyle}>✅ 已是最新版本。</div>
+      )}
+
+      {phase === "available" && (
+        <div style={statusStyle}>
+          🎉 发现新版本 <strong>v{newVersion}</strong>
+          {notes ? (
+            <div style={{ marginTop: 6, color: "#475569", whiteSpace: "pre-wrap" }}>
+              {notes}
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {phase === "downloading" && (
+        <div style={statusStyle}>
+          正在下载并安装{pct !== null ? ` … ${pct}%` : "…"}
+          <div style={{ marginTop: 6, color: "#64748b", fontSize: 11.5 }}>
+            安装时 DeskPet 会自动关闭，请稍候它重新启动。
+          </div>
+        </div>
+      )}
+
+      {phase === "done" && (
+        <div style={statusStyle}>✅ 更新已安装，重启后生效。</div>
+      )}
+
+      {phase === "error" && (
+        <div style={{ ...statusStyle, borderColor: "#fecaca", background: "#fef2f2", color: "#b91c1c" }}>
+          {errMsg}
+        </div>
+      )}
+
+      <div style={btnRowStyle}>
+        {phase === "available" ? (
+          <button type="button" style={primaryBtnStyle} onClick={onInstall}>
+            下载并安装 v{newVersion}
+          </button>
+        ) : (
+          <button
+            type="button"
+            style={btnStyle}
+            onClick={onCheck}
+            disabled={phase === "checking" || phase === "downloading"}
+          >
+            {phase === "checking"
+              ? "检查中…"
+              : phase === "downloading"
+                ? "安装中…"
+                : "检查更新"}
+          </button>
+        )}
+      </div>
+
+      <p style={hintStyle}>
+        点击后会联网检查是否有新版本。发现新版本时下载安装包并自动校验签名，
+        确保来自官方发布。
+      </p>
+    </section>
+  );
+}
+
+// ----------------------------------------------------------------------
+// P4-S21 #13 — Auto mode toggle.
+//
+// When ON, the backend's PermissionGate auto-allows every tool category
+// (read/write/shell/network/...). Useful for voice-driven sessions or
+// power users who don't want to click through each PermissionPopup.
+// State is per-process: turning OFF the deskpet (or restarting backend)
+// resets to disabled. Default OFF — has to be explicitly opted in.
+// ----------------------------------------------------------------------
+function AutoModeToggle({
+  getChannel,
+}: { getChannel: () => ControlChannel | null }) {
+  const [enabled, setEnabled] = useState<boolean>(() => {
+    try { return localStorage.getItem("deskpet.auto_mode") === "true"; }
+    catch { return false; }
+  });
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Push current state to backend whenever the channel becomes available.
+  // Channel may be null on first render (still connecting); the effect
+  // re-runs when getChannel returns a live channel.
+  useEffect(() => {
+    const ch = getChannel();
+    if (!ch) return;
+    try { ch.send({ type: "permission_auto_mode_set", payload: { enabled } }); }
+    catch { /* will retry on next toggle */ }
+  }, [getChannel, enabled]);
+
+  const onToggle = useCallback(() => {
+    setErr(null);
+    setPending(true);
+    const next = !enabled;
+    try {
+      const ch = getChannel();
+      if (!ch) throw new Error("控制通道未连接");
+      ch.send({ type: "permission_auto_mode_set", payload: { enabled: next } });
+      try { localStorage.setItem("deskpet.auto_mode", String(next)); }
+      catch { /* localStorage full / disabled — non-fatal */ }
+      setEnabled(next);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPending(false);
+    }
+  }, [enabled, getChannel]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 13,
+          cursor: pending ? "default" : "pointer",
+          opacity: pending ? 0.6 : 1,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={onToggle}
+          disabled={pending}
+        />
+        <span>
+          自动模式（高级）：所有工具自动允许，不弹确认窗口
+        </span>
+      </label>
+      <p style={{ fontSize: 11, color: "#64748b", margin: 0, lineHeight: 1.5 }}>
+        关闭时（默认），DeskPet 在执行写文件、运行 shell 等操作前会弹出确认。
+        语音模式下还会同时朗读"请点击允许"，提醒你回到屏幕。开启此项 = 跳过
+        所有确认（仅在你完全信任 LLM 配置时使用）。
+      </p>
+      {err && <span style={{ color: "#b91c1c", fontSize: 11 }}>{err}</span>}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// Chat turn hard-timeout setting.
+//
+// Backend default is 15 minutes. This asks the backend for the persisted
+// value when the control channel is available, then sends clamped updates
+// immediately when the number input changes.
+// ----------------------------------------------------------------------
+function ChatTurnTimeoutSetting({
+  getChannel,
+}: { getChannel: () => ControlChannel | null }) {
+  const [turnTimeoutMin, setTurnTimeoutMin] = useState<number>(
+    CHAT_TURN_TIMEOUT_DEFAULT_MINUTES,
+  );
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let unsubMessage: (() => void) | null = null;
+    let unsubState: (() => void) | null = null;
+
+    const requestCurrentValue = (ch: ControlChannel) => {
+      try {
+        ch.send({ type: "chat_turn_timeout_get", payload: {} });
+      } catch {
+        /* retry on reconnect or next mount */
+      }
+    };
+
+    const attach = () => {
+      if (cancelled) return;
+      const ch = getChannel();
+      if (!ch) {
+        retryTimer = setTimeout(attach, 500);
+        return;
+      }
+
+      unsubMessage = ch.onMessage((msg: IncomingMessage) => {
+        if (msg.type !== "chat_turn_timeout_response") return;
+        setTurnTimeoutMin(clampChatTurnTimeoutMinutes(msg.payload.minutes));
+        setErr(null);
+      });
+      unsubState = ch.onStateChange((state) => {
+        if (state === "connected") requestCurrentValue(ch);
+      });
+      requestCurrentValue(ch);
+    };
+
+    attach();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      unsubMessage?.();
+      unsubState?.();
+    };
+  }, [getChannel]);
+
+  const onChange = useCallback(
+    (raw: string) => {
+      setErr(null);
+      const next = clampChatTurnTimeoutMinutes(Number(raw));
+      setTurnTimeoutMin(next);
+      try {
+        const ch = getChannel();
+        if (!ch) throw new Error("控制通道未连接");
+        ch.send(buildChatTurnTimeoutSetMessage(next));
+      } catch (e) {
+        setErr(String(e));
+      }
+    },
+    [getChannel],
+  );
+
+  return (
+    <div style={{ display: "grid", gap: 6, marginTop: 10 }}>
+      <label
+        htmlFor="chat-turn-timeout-minutes"
+        style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}
+      >
+        对话超时(分钟)
+      </label>
+      <input
+        id="chat-turn-timeout-minutes"
+        type="number"
+        min={CHAT_TURN_TIMEOUT_MIN_MINUTES}
+        max={CHAT_TURN_TIMEOUT_MAX_MINUTES}
+        step={1}
+        value={turnTimeoutMin}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          width: 120,
+          padding: "5px 8px",
+          borderRadius: 4,
+          border: "1px solid #d1d5db",
+          fontSize: 12,
+          outline: "none",
+        }}
+        data-testid="chat-turn-timeout-minutes"
+      />
+      <p style={hintStyle}>
+        网络/中转站持续不响应时,超过此时长自动停止并提示。默认 15 分钟,范围 1-60。
+      </p>
+      {err && <span style={{ color: "#b91c1c", fontSize: 11 }}>{err}</span>}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// P5-S1 — supervisor toggle.
+//
+// Backend default is on. Toggling here sends `supervisor_toggle` ws msg
+// (handled in main.py). The toggle persists locally (localStorage) so
+// the user's preference survives a refresh; the backend's runtime flag
+// resyncs from this on connect.
+// ----------------------------------------------------------------------
+function SupervisorToggleSection({
+  getChannel,
+}: { getChannel: () => ControlChannel | null }) {
+  const [enabled, setEnabled] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem("deskpet.supervisor.enabled");
+      return v === null ? true : v !== "false"; // default ON
+    } catch {
+      return true;
+    }
+  });
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Sync state to backend whenever channel becomes available.
+  useEffect(() => {
+    const ch = getChannel();
+    if (!ch) return;
+    try {
+      ch.send({ type: "supervisor_toggle", payload: { enabled } });
+    } catch {
+      /* retry on next toggle */
+    }
+  }, [getChannel, enabled]);
+
+  const onToggle = useCallback(() => {
+    setErr(null);
+    setPending(true);
+    const next = !enabled;
+    try {
+      const ch = getChannel();
+      if (!ch) throw new Error("控制通道未连接");
+      ch.send({ type: "supervisor_toggle", payload: { enabled: next } });
+      try {
+        localStorage.setItem("deskpet.supervisor.enabled", String(next));
+      } catch {
+        /* non-fatal */
+      }
+      setEnabled(next);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPending(false);
+    }
+  }, [enabled, getChannel]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 13,
+          cursor: pending ? "default" : "pointer",
+          opacity: pending ? 0.6 : 1,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={onToggle}
+          disabled={pending}
+        />
+        <span>启用桌宠 supervisor（自动监督卡住的 Code 模式任务）</span>
+      </label>
+      <p style={{ fontSize: 11, color: "#64748b", margin: 0, lineHeight: 1.5 }}>
+        每 60 秒扫描一次活动 session，对 15 分钟无进展或报错的任务用 LLM
+        自检判断是否需要干预。桌宠用气泡 + 表情提示你最危险的 session。
+        关闭后所有 supervisor 行为停止；运行时切换需要重启 backend 完全生效。
+      </p>
+      {err && <span style={{ color: "#b91c1c", fontSize: 11 }}>{err}</span>}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// P5-S2 Phase 5.3 — auto-resume toggle.
+//
+// 控制 backend 的 AutoResumeOrchestrator 是否在 chat 失败时自动重试。
+// 默认 ON（spec'd default in config.toml [supervisor]）。toggle 改变时发
+// `settings_update` 给 backend；backend 持久化到 config.toml。本地
+// localStorage 也存一份以便面板刷新时记得用户偏好。
+// ----------------------------------------------------------------------
+function AutoResumeToggleSection({
+  getChannel,
+}: { getChannel: () => ControlChannel | null }) {
+  const [enabled, setEnabled] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem("deskpet.supervisor.auto_resume_enabled");
+      return v === null ? true : v !== "false"; // default ON
+    } catch {
+      return true;
+    }
+  });
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Sync to backend whenever channel becomes available.
+  useEffect(() => {
+    const ch = getChannel();
+    if (!ch) return;
+    try {
+      ch.send(buildAutoResumeSettingsMessage(enabled));
+    } catch {
+      /* retry on next toggle */
+    }
+  }, [getChannel, enabled]);
+
+  const onToggle = useCallback(() => {
+    setErr(null);
+    setPending(true);
+    const next = !enabled;
+    try {
+      const ch = getChannel();
+      if (!ch) throw new Error("控制通道未连接");
+      ch.send(buildAutoResumeSettingsMessage(next));
+      try {
+        localStorage.setItem(
+          "deskpet.supervisor.auto_resume_enabled",
+          String(next),
+        );
+      } catch {
+        /* non-fatal */
+      }
+      setEnabled(next);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPending(false);
+    }
+  }, [enabled, getChannel]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 13,
+          cursor: pending ? "default" : "pointer",
+          opacity: pending ? 0.6 : 1,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={onToggle}
+          disabled={pending}
+          data-testid="auto-resume-toggle"
+        />
+        <span>自动自愈失败任务（agent 撞 max_iterations / 工具用法错时自动重试 ≤2 次）</span>
+      </label>
+      <p style={{ fontSize: 11, color: "#64748b", margin: 0, lineHeight: 1.5 }}>
+        关闭后 agent 失败时直接弹 supervisor 提示窗口让你决定。开启时
+        AutoResumeOrchestrator 会带着 hint 重跑 1-2 次，跑通就静默；都跑不通才弹窗。
+      </p>
+      {err && <span style={{ color: "#b91c1c", fontSize: 11 }}>{err}</span>}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// P3-S9 — Danger Zone: 完全卸载（清除用户数据）.
+//
+// `完全卸载` wipes %AppData%\deskpet\ (config / SQLite / logs). A
+// second opt-in checkbox additionally wipes %LocalAppData%\deskpet\
+// models — that's ~9 GB so we require explicit consent.
+//
+// Two-step confirm via window.confirm keeps the UI trivial while still
+// preventing single-click destruction.
+// ----------------------------------------------------------------------
+function DangerZoneSection() {
+  const [includeModels, setIncludeModels] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const handlePurge = useCallback(async () => {
+    setErr(null);
+    const scope = includeModels
+      ? "用户数据 + 本地模型缓存（%LocalAppData%\\deskpet\\models）"
+      : "用户数据（配置 / 数据库 / 日志）";
+    const confirmed = window.confirm(
+      `即将删除：${scope}\n\n` +
+        "这将清除所有聊天历史、云端账号设置、预算记录和日志，无法撤销。\n" +
+        "删除完成后 DeskPet 将自动退出。\n\n确认继续？",
+    );
+    if (!confirmed) return;
+
+    setBusy(true);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      await core.invoke("purge_user_data", { includeModels });
+      // Rust will exit the app shortly; nothing else to do here.
+    } catch (e) {
+      setErr(typeof e === "string" ? e : (e as Error)?.message ?? String(e));
+      setBusy(false);
+    }
+  }, [includeModels]);
+
+  return (
+    <section style={{ ...sectionStyle, borderTop: "1px solid #fecaca" }}>
+      <h3 style={{ ...h3Style, color: "#b91c1c" }}>危险区</h3>
+      <p style={hintStyle}>
+        "完全卸载" 会清除 deskpet 解析到的用户数据目录（配置、SQLite、日志）。
+        ⚠️ 若为 portable 安装（数据实际在安装目录的 <code>userdata/</code>）或你
+        自定义过数据目录，此按钮可能删不到真正的数据——最可靠的做法是直接删除
+        整个安装目录。卸载安装包本身仍需在「应用和功能」里进行。
+      </p>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          fontSize: 12,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={includeModels}
+          onChange={(e) => setIncludeModels(e.target.checked)}
+          data-testid="purge-include-models"
+        />
+        <span>
+          同时删除本地模型缓存（若已用 <code>DESKPET_MODEL_ROOT</code> 迁移到
+          自定义目录，则删该目录）
+        </span>
+      </label>
+      {err && (
+        <div role="alert" style={{ ...statusStyle, color: "#b91c1c" }}>
+          {err}
+        </div>
+      )}
+      <div style={btnRowStyle}>
+        <button
+          type="button"
+          data-testid="purge-user-data"
+          onClick={handlePurge}
+          disabled={busy}
+          style={{
+            ...btnStyle,
+            background: "#b91c1c",
+            color: "white",
+            borderColor: "#b91c1c",
+          }}
+        >
+          {busy ? "删除中…" : "完全卸载（清除用户数据）"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// ----------------------------------------------------------------------
+// 2026-05-21 — 数据目录设置.
+//
+// Lets the user relocate %AppData%\deskpet to a roomier drive
+// without leaving the app. Persistence is via the user-level
+// `DESKPET_USER_DATA` env var, which `paths::user_data_dir()` reads
+// on every startup (see src-tauri/src/paths.rs §57).
+//
+// Why a separate section vs. nesting under DangerZone: the relocate
+// flow is reversible (you can always set the var back) so it doesn't
+// belong with the truly destructive purge action. We do keep a
+// soft confirmation before kicking off the file copy though, because
+// "I clicked the wrong button and now my chat history moved" is a
+// crap user experience even if it's not technically dangerous.
+// ----------------------------------------------------------------------
+interface DataDirSetting {
+  effective: string;
+  default: string | null;
+  env_override: string | null;
+  effective_exists: boolean;
+  effective_size_bytes: number;
+}
+
+function formatMb(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+  return `${mb.toFixed(1)} MB`;
+}
+
+function DataDirSection() {
+  const [setting, setSetting] = useState<DataDirSetting | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [newPath, setNewPath] = useState("");
+  const [moveData, setMoveData] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [opMsg, setOpMsg] = useState<string | null>(null);
+  const [opErr, setOpErr] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setLoadErr(null);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      const s = await core.invoke<DataDirSetting>("get_data_dir_setting");
+      setSetting(s);
+      // Pre-fill the input with the current effective path so the
+      // user can edit-in-place rather than retype from scratch.
+      if (!newPath) setNewPath(s.effective);
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : String(e));
+    }
+    // Intentionally not depending on newPath — we only want this to
+    // pre-fill on the very first load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const handlePickDir = useCallback(async () => {
+    setOpErr(null);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      const picked = await core.invoke<string | null>("open_directory_dialog");
+      if (picked) setNewPath(picked);
+    } catch (e) {
+      setOpErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const handleApply = useCallback(async () => {
+    setOpErr(null);
+    setOpMsg(null);
+    if (!setting) return;
+    const target = newPath.trim();
+    if (!target) {
+      setOpErr("请先选择或输入新路径");
+      return;
+    }
+    if (target === setting.effective) {
+      setOpErr("新路径与当前路径相同，无需修改");
+      return;
+    }
+    const sizeStr = formatMb(setting.effective_size_bytes);
+    const confirmed = window.confirm(
+      `即将把数据目录切换为：\n${target}\n\n` +
+        (moveData
+          ? `并将现有数据（约 ${sizeStr}）从\n${setting.effective}\n复制并删除原位置文件。\n\n`
+          : "（不移动现有数据 — 旧目录保留，新目录从空开始）\n\n") +
+        "DeskPet 需要重启才能完全生效。继续？",
+    );
+    if (!confirmed) return;
+
+    setBusy(true);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      // Set the env var first so even if the move fails halfway,
+      // the next launch sees the new target and at worst boots empty.
+      const updated = await core.invoke<DataDirSetting>(
+        "set_data_dir_preference",
+        { newPath: target },
+      );
+      setSetting(updated);
+
+      if (moveData && setting.effective_exists && setting.effective !== target) {
+        const moved = await core.invoke<number>("move_data_dir_contents", {
+          src: setting.effective,
+          dst: target,
+        });
+        setOpMsg(
+          `已保存并移动 ${formatMb(moved)} 数据。请重启 DeskPet 让所有进程读到新路径。`,
+        );
+      } else {
+        setOpMsg(
+          "已保存。下次启动时 DeskPet 会从新路径读写。",
+        );
+      }
+    } catch (e) {
+      setOpErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [setting, newPath, moveData]);
+
+  const handleReset = useCallback(async () => {
+    if (!setting) return;
+    const confirmed = window.confirm(
+      "将清除 DESKPET_USER_DATA 环境变量，下次启动 DeskPet 会回到默认目录 " +
+        "（%AppData%\\deskpet）。\n\n" +
+        "注意：现有数据不会被自动搬回去 —— 你需要手动移动，或先在上方填入默认路径并勾选「移动」。\n\n继续？",
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setOpErr(null);
+    setOpMsg(null);
+    try {
+      const core = await import("@tauri-apps/api/core");
+      // Setting to the default path effectively "resets" — we just
+      // write the same value `%AppData%\deskpet` would expand to,
+      // so the env var stays consistent. Simpler than adding a
+      // dedicated "clear env var" command.
+      if (setting.default) {
+        const updated = await core.invoke<DataDirSetting>(
+          "set_data_dir_preference",
+          { newPath: setting.default },
+        );
+        setSetting(updated);
+        setNewPath(updated.effective);
+        setOpMsg("已切回默认目录设置。请重启 DeskPet 生效。");
+      } else {
+        setOpErr("无法识别默认目录（%AppData% 未设置？）");
+      }
+    } catch (e) {
+      setOpErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [setting]);
+
+  if (loadErr) {
+    return (
+      <section style={sectionStyle}>
+        <h3 style={h3Style}>数据目录</h3>
+        <div style={{ ...statusStyle, color: "#b91c1c" }}>
+          加载失败：{loadErr}
+        </div>
+      </section>
+    );
+  }
+  if (!setting) {
+    return (
+      <section style={sectionStyle}>
+        <h3 style={h3Style}>数据目录</h3>
+        <div style={statusStyle}>加载中…</div>
+      </section>
+    );
+  }
+
+  return (
+    <section style={sectionStyle}>
+      <h3 style={h3Style}>数据目录</h3>
+      <p style={hintStyle}>
+        DeskPet 的聊天历史、配置、SQLite 数据库和设备 ID 都保存在这里。
+        如果 C 盘空间紧张，可以搬到其他磁盘。
+      </p>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "auto 1fr",
+          columnGap: 10,
+          rowGap: 4,
+          fontSize: 12,
+        }}
+      >
+        <div style={{ color: "#6b7280" }}>当前生效</div>
+        <div style={{ fontFamily: "monospace" }}>
+          {setting.effective}{" "}
+          <span style={{ color: "#6b7280" }}>
+            ({formatMb(setting.effective_size_bytes)})
+          </span>
+        </div>
+
+        <div style={{ color: "#6b7280" }}>环境变量</div>
+        <div style={{ fontFamily: "monospace" }}>
+          {setting.env_override ?? (
+            <span style={{ color: "#9ca3af" }}>(未设置 — 使用默认路径)</span>
+          )}
+        </div>
+
+        <div style={{ color: "#6b7280" }}>默认路径</div>
+        <div style={{ fontFamily: "monospace", color: "#6b7280" }}>
+          {setting.default ?? "—"}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+        <label style={{ fontSize: 12, color: "#374151" }}>新路径</label>
+        <div style={{ display: "flex", gap: 6 }}>
+          <input
+            type="text"
+            value={newPath}
+            onChange={(e) => setNewPath(e.target.value)}
+            disabled={busy}
+            placeholder="F:\deskpet\data"
+            style={{
+              flex: 1,
+              padding: "5px 8px",
+              borderRadius: 4,
+              border: "1px solid #d1d5db",
+              fontSize: 12,
+              fontFamily: "monospace",
+              outline: "none",
+            }}
+            data-testid="data-dir-input"
+          />
+          <button
+            type="button"
+            onClick={handlePickDir}
+            disabled={busy}
+            style={btnStyle}
+          >
+            浏览…
+          </button>
+        </div>
+        <label
+          style={{
+            display: "flex",
+            gap: 6,
+            alignItems: "center",
+            fontSize: 12,
+            color: "#374151",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={moveData}
+            onChange={(e) => setMoveData(e.target.checked)}
+            disabled={busy}
+          />
+          <span>同时移动现有数据到新位置（推荐）</span>
+        </label>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+        <button
+          type="button"
+          onClick={handleApply}
+          disabled={busy}
+          style={{
+            ...btnStyle,
+            background: "#2563eb",
+            color: "white",
+            borderColor: "#2563eb",
+          }}
+          data-testid="data-dir-apply"
+        >
+          {busy ? "处理中…" : "应用"}
+        </button>
+        <button
+          type="button"
+          onClick={handleReset}
+          disabled={busy}
+          style={btnStyle}
+          data-testid="data-dir-reset"
+        >
+          恢复默认
+        </button>
+        <button
+          type="button"
+          onClick={reload}
+          disabled={busy}
+          style={btnStyle}
+        >
+          刷新
+        </button>
+      </div>
+
+      {opMsg && (
+        <div
+          role="status"
+          style={{
+            ...statusStyle,
+            background: "#ecfdf5",
+            border: "1px solid #a7f3d0",
+            color: "#065f46",
+          }}
+        >
+          {opMsg}
+        </div>
+      )}
+      {opErr && (
+        <div role="alert" style={{ ...statusStyle, color: "#b91c1c" }}>
+          {opErr}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ---- inline styles (kept local so the panel has no CSS imports to wire) ----
+
+const overlayStyle: React.CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(8,11,20,0.55)",
+  backdropFilter: "blur(6px)",
+  WebkitBackdropFilter: "blur(6px)",
+  display: "grid",
+  placeItems: "center",
+  padding: 12,
+  zIndex: 1000,
+  animation: "bp-fade-in 200ms cubic-bezier(0.16,1,0.3,1)",
+};
+
+const panelStyle: React.CSSProperties = {
+  background: "#ffffff",
+  padding: "0 22px 22px",
+  borderRadius: 18,
+  width: "min(94vw, 540px)",
+  boxSizing: "border-box",
+  maxHeight: "92vh",
+  overflowY: "auto",
+  overflowX: "hidden",
+  color: "#0f172a",
+  border: "1px solid rgba(255,255,255,0.6)",
+  boxShadow:
+    "0 32px 70px rgba(8,11,20,0.45), 0 4px 14px rgba(8,11,20,0.18)",
+  fontFamily:
+    '"Inter","PingFang SC","Microsoft YaHei UI",sans-serif',
+  animation: "bp-pop-in 260ms cubic-bezier(0.16,1,0.3,1)",
+};
+
+const headerStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  position: "sticky",
+  top: 0,
+  zIndex: 2,
+  margin: "0 -22px 8px",
+  padding: "16px 22px",
+  background: "rgba(255,255,255,0.92)",
+  backdropFilter: "blur(8px)",
+  WebkitBackdropFilter: "blur(8px)",
+  borderBottom: "1px solid #eef1f6",
+};
+
+const closeBtnStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 30,
+  height: 30,
+  background: "#f1f5f9",
+  border: "1px solid #e2e8f0",
+  borderRadius: 9,
+  cursor: "pointer",
+  color: "#64748b",
+};
+
+const sectionStyle: React.CSSProperties = {
+  borderTop: "1px solid #eef1f6",
+  paddingTop: 16,
+  marginTop: 16,
+  display: "grid",
+  gap: 9,
+};
+
+const h3Style: React.CSSProperties = {
+  margin: 0,
+  fontSize: 13,
+  color: "#0f172a",
+  fontWeight: 700,
+  letterSpacing: 0.2,
+};
+
+
+const btnRowStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
+const btnStyle: React.CSSProperties = {
+  padding: "7px 14px",
+  borderRadius: 9,
+  border: "1px solid #e2e8f0",
+  background: "#ffffff",
+  color: "#334155",
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+  transition: "background 120ms ease, border-color 120ms ease",
+};
+
+const primaryBtnStyle: React.CSSProperties = {
+  ...btnStyle,
+  border: "1px solid #2563eb",
+  background: "#2563eb",
+  color: "#ffffff",
+};
+
+const statusStyle: React.CSSProperties = {
+  fontSize: 12,
+  padding: "7px 10px",
+  background: "#f8fafc",
+  border: "1px solid #eef1f6",
+  borderRadius: 9,
+  lineHeight: 1.5,
+};
+
+const hintStyle: React.CSSProperties = {
+  fontSize: 11.5,
+  color: "#64748b",
+  margin: 0,
+  lineHeight: 1.6,
+};
+

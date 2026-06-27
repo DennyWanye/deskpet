@@ -1,0 +1,69 @@
+[package]
+name = "deskpet"
+version = "0.6.0-beta.6"
+description = "A desktop pet application"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "deskpet_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# P4-S21 #7: tray-icon feature is gated; without it tauri::tray module
+# doesn't exist and the system tray (Show/Hide/Quit menu) won't compile.
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+# W5 (R17): self-update. pubkey configured in tauri.conf.json.
+tauri-plugin-updater = "2"
+# W5 (R17): run on login — let the user opt-in via system tray later.
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+window-vibrancy = "0.6"
+# P2-1-S3: cloud LLM API key 持久化在 OS keychain。
+# 需要显式启用平台原生 backend (v3 不再默认启用任何 backend)。
+# 三平台 feature 互不干扰 —— 每个 cfg 只编译相关代码。
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# P3-S2: NVIDIA precheck. Uses the NVIDIA Management Library (loaded via
+# nvml.dll on Windows — bundled with every NVIDIA driver, no CUDA
+# Toolkit needed). Happy path returns GPU info; any init/query failure
+# means we pop a dialog and exit instead of spawning the backend.
+nvml-wrapper = "0.10"
+# P3-S2: blocking MessageDialog for the "no NVIDIA GPU" fatal-error
+# path. Default feature set is enough — we only need MessageDialog.
+tauri-plugin-dialog = "2"
+# WI-T1.3 last-mile: artifact_copy_path command 写剪贴板（用户点产物卡片
+# "复制路径" 按钮）。其他三个 artifact_* command 复用 opener + dialog。
+tauri-plugin-clipboard-manager = "2"
+# WI-T1.3 artifact_save_as: tauri-plugin-dialog 的 save_file 是 callback API；
+# 我们用 tokio oneshot 把 callback 转 async/await。Tauri 已经依赖 tokio
+# 作为 async runtime，这里只是显式声明 sync feature。
+tokio = { version = "1", features = ["sync"] }
+# P4-S21 #1: HTTP client for the `update_cloud_config` IPC command that
+# proxies frontend Settings saves to the backend (webview can't fetch
+# http://127.0.0.1 directly under release-build mixed-content rules).
+# Pin to native TLS so we don't drag in OpenSSL on Windows.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# W2 (relay integration): stable device id generation. Used by
+# `device::get_or_create_device_id` for the X-Device-Id header sent
+# to /v1/providers. UUIDv4 is enough; we don't need v7's time-sort.
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+# 孤儿进程修复：用 Job Object(KILL_ON_JOB_CLOSE) 把 python backend 绑定到
+# deskpet.exe 生命周期，进程退出即连带终止 backend，杜绝 8100 端口残留。
+# 版本对齐 webview2-com 传递引入的 windows 0.61，cargo 统一编译不增负担。
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

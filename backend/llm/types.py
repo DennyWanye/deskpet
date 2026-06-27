@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
+"""Normalized LLM response data model.
+
+Each provider adapter MUST map its native response into these pydantic
+models so the agent loop never has to branch on provider-specific shapes.
+
+Usage fields deliberately include cache_read_tokens / cache_write_tokens
+as first-class: Anthropic prompt caching (the reason we pay the sticker
+price for Claude) reports them, OpenAI exposes `cached_tokens` on gpt-4o,
+and Gemini reports 0 on both (context caching only in paid tier). The
+caller MUST NOT assume non-Anthropic adapters zero-out these fields by
+accident — registry tests enforce all 4 fields present.
+"""
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field
+
+
+class ChatUsage(BaseModel):
+    """Token accounting returned alongside each ChatResponse.
+
+    Four fields kept even for providers that don't support caching so
+    downstream budget math stays uniform: sum(input_tokens, output_tokens,
+    cache_read_tokens, cache_write_tokens) should equal total billed tokens
+    on the provider's invoice (cache_read usually discounted).
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+class ToolCall(BaseModel):
+    """Normalized function-calling request from the model.
+
+    `arguments` MUST be a parsed dict. Anthropic returns dicts natively;
+    OpenAI returns JSON strings that adapters MUST json.loads (and raise
+    LLMProviderError on parse failure — silently returning empty arguments
+    leads to tool dispatch hangs that are painful to debug).
+
+    P5-S2 (2026-05-11): when the model emits malformed JSON for arguments
+    (e.g. deepseek-v4-pro mis-escaping in long markdown content), the
+    adapter sets `arguments={}` AND populates `args_parse_error` +
+    `args_raw`. AgentLoop detects these and short-circuits dispatch with
+    a structured `tool_call_args_malformed_json` tool_result that tells
+    the LLM what went wrong, so it regenerates with valid JSON instead
+    of hammering the same broken call until the circuit breaker fires.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    # P5-S2: populated only when args JSON parse failed; otherwise None.
+    args_parse_error: str | None = None
+    args_raw: str | None = None
+
+
+class ChatResponse(BaseModel):
+    """Single-turn completion result.
+
+    stop_reason values: "end_turn" | "tool_use" | "max_tokens" | "error" |
+    "content_filter" (OpenAI). agent loop branches on "tool_use" to dispatch
+    tools; everything else terminates the turn.
+
+    `reasoning_content` is the chain-of-thought emitted by thinking-mode
+    models (DeepSeek V4 Pro, Qwen3 thinking, GLM-4.5, OpenAI o-series,
+    etc.). When non-empty, the agent loop MUST echo it back inside
+    subsequent turns' assistant message — those APIs reject with HTTP 400
+    "reasoning_content must be passed back" if it's stripped. Empty for
+    non-thinking models (Ollama gemma, plain GPT-4o, etc.) — round-trip
+    safely.
+    """
+
+    content: str = ""
+    reasoning_content: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    stop_reason: str = ""
+    usage: ChatUsage = Field(default_factory=ChatUsage)
+    model: str = ""
+
+
+class ChatChunk(BaseModel):
+    """Streaming delta. Emitted by adapter.chat(stream=True).
+
+    Contract:
+        - `delta_content` is the *incremental* text since last chunk
+          (not the cumulative buffer). Consumer concatenates.
+        - `delta_tool_calls` populated only when the stream yields a
+          *complete* tool_call (arguments fully parsed); partial tool
+          call JSON buffering is the adapter's job.
+        - `is_final=True` marks the last chunk; `usage` is attached then.
+    """
+
+    delta_content: str = ""
+    delta_tool_calls: list[ToolCall] = Field(default_factory=list)
+    is_final: bool = False
+    usage: Optional[ChatUsage] = None
+    stop_reason: str = ""
+    model: str = ""

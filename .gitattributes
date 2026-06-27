@@ -1,0 +1,2 @@
+# Shell scripts must keep LF endings on Windows (else `#!/bin/bash` breaks on CI).
+*.sh text eol=lf

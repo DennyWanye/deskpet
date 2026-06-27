@@ -1,0 +1,201 @@
+node_modules/
+target/
+dist/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+.DS_Store
+Thumbs.db
+*.log
+crash_reports/
+logs/
+
+# Voice pipeline model weights & runtime artifacts (GB-scale, not for git)
+# P3-S1: renamed assets/ -> models/; keep old path for local devs mid-migration.
+backend/models/
+backend/assets/
+backend/temp/
+temp/
+
+# Portable ffmpeg.exe (~80MB) for MP3->PCM pipe in voice pipeline.
+# Provisioned via scripts/setup_ffmpeg.ps1 — not source.
+backend/bin/
+
+# E2E driver screenshots — regenerated on every run, not source-of-truth
+scripts/e2e/shots/
+scripts/e2e/shots_cdp/
+scripts/e2e/deskpet_window.png
+
+# P2-2-F1: ASR accuracy bench samples — each tester records their own
+# voice so committing them adds no universal signal + bloats the repo.
+scripts/perf/asr_samples/
+
+# Tauri signing keys (NEVER commit private keys)
+# Private key lives in ~/.tauri/ on maintainer's machine + CI secret.
+*.key
+*.key.pub
+.tauri/
+
+# `gh` CLI dump artifacts that occasionally land at repo root during
+# manual debugging (gh run list --json > runs.json etc). Not source.
+/jobs.json
+/runs.json
+/run.json
+/release.json
+/logs.zip
+
+# Claude Code scheduled-task runtime files / per-agent worktrees.
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.claude/codex-tasks/
+.claude/tauri_dev.log.err
+backend/.claude/
+/logs/
+
+# P4-S15: dev-only L2 conversation DB. Real path is %AppData%/deskpet/data/.
+# Local CWD-relative leftover from old runs.
+/data/
+
+# P4-S2: BGE-M3 INT8 weights (~286MB after quantise, 2.2GB fp16 source)
+# — downloaded on first run by backend/scripts/download_bge_m3.py, not in git.
+backend/models/bge-m3-int8/
+
+# P4-S1: DB migration backups. v8_to_v9 creates state.db.bak and *.db.bak.<ts>
+# before any schema ALTER so the restore path in task 2.3 can roll back.
+*.db.bak
+state.db.bak.*
+
+# P4-S2: async embedding worker cache (intermediate BGE-M3 tensors written
+# when the flush queue is draining — regenerable from the source messages).
+backend/deskpet/memory/embedding_cache/
+
+# P4-S7: ContextAssembler trace dumps written by decisions debug mode.
+# Local-only, generated on demand via the Context Trace UI — not source.
+debug/assembler_trace_*.json
+
+# P4-S20: pytest tmp roots (Windows). Should never be in git.
+backend/.tmp-pytest-root/
+backend/.pytest-basetemp/
+backend/temp/
+# goal-completion 手测/运行产物（含 userdata: state.db/device_id/llm_runtime/密钥）— 永不入库
+.tmp/
+
+# P4-S20+: PyInstaller MSI-target dist (7.7 GB, regeneratable).
+backend/dist-msi/
+
+# P4-S20: screenshot evidence files generated locally by computer-use.
+docs/EVIDENCE/screenshot_*.png
+
+# Runtime LLM config — user-specific, may contain api_key.
+*/llm_runtime.json
+
+# Per-distribution installer payloads built ad-hoc for friends/testers.
+# Regeneratable from the bundle scripts; not source.
+codex-installer-for-friend.zip
+# dev 运行时用户数据目录（state.db / billing.db / metrics / receipts 等运行时
+# 产物，含本地数据，永不入库）。通配覆盖 .dev-userdata/ 及 .dev-userdata-f3f4verify/
+# 这类带后缀的临时验证副本（2026-06-02）。
+.dev-userdata*/
+
+# WI-T1.7 last-mile dev 端到端 metrics validation 临时目录 (2026-05-23)
+.dev-metrics-validation/
+
+# Acceptance script 自动产生的 ts 目录（每次跑都新建）+ MR-1 windows-mcp
+# 子代理预创建的空目录。真正要保留的 evidence 由 commit message 显式提交，
+# 如 manual-results-mr22-metrics-prod-validation 已 commit。
+plans/*/manual-results-2026-*Z/
+plans/*/manual-results-mr1-20260523/
+
+# Backend portable sentinel (PyInstaller build script 重生成)
+backend/dist-portable/
+
+# 中转站 device key —— 临时人工测试用，绝不入库
+.relay_api_key
+.relay_base_url
+.relay_model
+
+# ─── 2026-05-24 v3 工具层 commit 后追加 ───
+# Backend 运行时用户数据（含 config.toml + LLM runtime + 工作区生成的图/文档 +
+# permissions 状态），开发期被 PyInstaller 重定向到 backend/userdata/，敏感
+# 数据永不入库。
+backend/userdata/
+
+# Codex GPT-5.4 工具临时打包目录（构建产物，跨 session 重生成）
+codex-installer-package/
+
+# Tauri app 测试覆盖率输出 + 本地 IDE 配置
+tauri-app/coverage/
+tauri-app/.claude/
+
+# 临时手测截图目录（pet-anim FR-1~7 / 桌宠 UI 各种 hit-zone 验证用，
+# 截图体积大且每次 round 新生成；evidence 价值见 PRD 文档对应小节）
+plans/test-screenshots/
+
+# pet-anim / 其他 PRD evidence 目录里的截图二进制（PNG 体积大；
+# .mjs / .py / 文本日志仍入库 — 那些是真实工具/报告，体积可控）
+# 2026-05-28 OSS prep Phase 4：扩展为所有层级，覆盖 manual-results / evidence / round-N 等
+plans/**/screenshots/*.png
+plans/**/screenshots/*.jpg
+plans/**/evidence/**/*.png
+plans/**/evidence/**/*.jpg
+
+# ─── 2026-05-26 开源准备（OSS hygiene）───
+# 个人开发凭据 — 永远不要入库。模板见 LOCAL-DEV-CREDENTIALS.md.example
+LOCAL-DEV-CREDENTIALS.md
+.env
+.env.local
+.env.*.local
+
+# 顶层 tauri dev session log（npm run tauri:dev 自动产生在 cwd）
+/tauri-dev*.log
+/backend-manual.log
+/ci.log
+
+# 临时 continuation note（dev 手稿，不属于源码）
+/CONTINUE-*.md
+
+# ─── 2026-05-27 OSS prep Phase 3：本地保留、远端不入库的内部文档 ───
+# 第三方 relay 供应商业务往来材料 / 内部集成对接文档。本地可以继续维护，
+# 但不发布到公开仓 —— 含具体供应商品牌、URL、商务条款。
+docs/中转站建议.md
+plans/Token Relay × DeskPet 集成对接文档.md
+
+# ─── 2026-05-28 OSS prep Phase 4：plans/ 内部业务往来 + legacy 文档 ───
+# DeskPet ↔ Token Relay 集成对接业务文档（公开仓不放）
+plans/DESKPET-INTEGRATION-GUIDE.md
+plans/DESKPET-INTEGRATION-REPLY.md
+plans/RELAY-INTEGRATION-REQUEST.md
+# 项目前期 .docx 草稿（2026-04 时代历史遗物，本地可保留）
+plans/*.docx
+
+# history-rewrite tooling (Phase ② of RELEASE_CHECKLIST, throwaway)
+.filter-rules.tmp
+.filter-rules-email-only.tmp
+.filter-extract.tmp.py
+.filter-diag.tmp
+
+# Phase 7.5: local-only review of leaked credential history (delete after verify)
+.leaked-creds-review.tmp
+
+# v2 worktree — userdata 临时配置（windows-mcp 实机验证用，不入库）
+backend/userdata_v2/
+
+# ─── 2026-06-04 一次性调试脚本 / 测试产物（用户指定忽略）───
+# pet-anim round-2 CDP 调试手稿（diag/diag2-6/reload/verify-visual/highlight 等
+# 迭代一次性脚本；区别于 evidence 里要入库的真实工具/报告 .mjs）
+plans/2026-05-24-pet-animation-ux/evidence/round-2/*.mjs
+# fun-interactions 一次性诊断目录
+plans/fun-diag/
+# 合并时产生的 .premerge 备份文件（throwaway）
+*.premerge-bak
+# 工具层手测 CDP 截图产物（二进制、每次跑新生成）；testcase/ 的 helper .py
+# 入库（_cdp/_send/_approve），截图不入。
+testcase/screenshots/
+
+# ─── 2026-06-13 PPT 模板资产（~2.8GB 二进制，用户本地素材，绝不入库）───
+resources/PPT_Template/
+
+# codex challenge 临时产物
+plans/2026-06-22-context-and-agent-optimization/.challenge-*.out

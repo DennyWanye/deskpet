@@ -1,0 +1,234 @@
+/* Desktop Pet — fully transparent app shell + P4-S20-UI design system. */
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  background: transparent !important;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  /* Block accidental text selection on the (mostly transparent) shell.
+     Without this, double-clicking the empty area selects every absolute-
+     positioned child within the click radius — and the ::selection rule
+     below paints them all in semi-transparent blue, which looks like
+     "the entire window flashed blue". Inputs/textareas/code panels
+     re-enable selection via the rule below. */
+  user-select: none;
+  -webkit-user-select: none;
+  /* Font stack: 中文优先 */
+  font-family:
+    "Inter",
+    "PingFang SC",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "Helvetica Neue",
+    Arial,
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji";
+  /* Better text rendering */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Disable text auto-zoom */
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Re-allow text selection inside content surfaces. The blanket
+   `user-select: none` on #root is what kills the "double-click → blue
+   flash" UX bug; we still want the user to be able to select chat
+   transcripts, settings input values, code blocks, etc.
+
+   Element selectors cover bare HTML; class selectors cover React
+   components that explicitly opt in via `className="bp-selectable"`.
+   The `[role="dialog"] *` rule lets the user freely select any text
+   inside any modal panel (Settings, Memory, ContextTrace, etc.) —
+   modals are the obvious "I want to copy this" surface. */
+input, textarea, [contenteditable="true"], pre, code,
+.bp-selectable, .bp-selectable *,
+[role="dialog"], [role="dialog"] *,
+[data-bp-selectable], [data-bp-selectable] * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text;
+}
+
+/* Chat-bubble surfaces: DialogBar (the latest assistant line over the
+   pet), UserBubble (the 2-second echo of what the user typed/said),
+   and ChatHistoryPanel (the full transcript modal) — all need to be
+   user-selectable so the user can copy quotes / commands / file paths
+   the LLM emits.  Override the blanket #root rule for these. */
+.bp-chat-bubble, .bp-chat-bubble *,
+.bp-dialog-bar, .bp-dialog-bar *,
+.bp-user-bubble, .bp-user-bubble * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+/* Selection color — accent blue */
+::selection {
+  background: rgba(59, 130, 246, 0.3);
+  color: inherit;
+}
+
+/* Custom scrollbar — slim + neutral */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 4px;
+  transition: background 120ms;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.6);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* P4-S20-UI: shared keyframes used by token-based components */
+
+@keyframes bp-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes bp-pop-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes bp-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Spinner (used by buttons + loading states) */
+@keyframes bp-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Soft pulse — status dots (recording / thinking) */
+@keyframes bp-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.82); }
+}
+
+/* Button hover/active utility classes — applied via className */
+
+.bp-btn-primary:hover:not(:disabled) {
+  background: #2563eb !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
+  transform: translateY(-1px);
+}
+.bp-btn-primary:active:not(:disabled) {
+  background: #1d4ed8 !important;
+  transform: translateY(0);
+}
+
+.bp-btn-secondary:hover:not(:disabled) {
+  background: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+}
+.bp-btn-secondary:active:not(:disabled) {
+  background: #f1f5f9 !important;
+}
+
+.bp-btn-danger:hover:not(:disabled) {
+  background: #dc2626 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
+}
+
+.bp-btn-ghost:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+
+.bp-btn-icon:hover:not(:disabled) {
+  background: rgba(28, 32, 45, 0.96) !important;
+  border-color: rgba(148, 163, 184, 0.32) !important;
+  transform: translateY(-1px);
+}
+.bp-btn-icon:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* Input focus ring */
+.bp-input:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+/* Chat input (dark, on the pet shell glass input row) */
+.bp-chat-input::placeholder {
+  color: rgba(148, 163, 184, 0.62);
+}
+.bp-chat-input:focus {
+  border-color: rgba(96, 165, 250, 0.62) !important;
+  background: rgba(255, 255, 255, 0.09) !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+.bp-chat-input:disabled {
+  opacity: 0.7;
+}
+
+/* Dark-panel input (memory / settings / feedback …) */
+.bp-dark-input::placeholder {
+  color: rgba(148, 163, 184, 0.55);
+}
+.bp-dark-input:focus {
+  border-color: rgba(96, 165, 250, 0.62) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.16);
+}
+
+/* Card hover */
+.bp-card:hover {
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+/* Spinner element */
+.bp-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(148, 163, 184, 0.3);
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: bp-spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+
+/* Tab hover */
+.bp-tab:hover {
+  background: #f1f5f9 !important;
+}
+.bp-tab-active:hover {
+  background: #2563eb !important;
+}
+
+/* ── 子代理并发进度卡片动画（SubagentProgressPanel） ───────────────────
+   出现淡入 + running 图标/状态点脉冲。仅运行态用动画，终态静止省 GPU。 */
+@keyframes deskpet-subagent-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes deskpet-subagent-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+.deskpet-subagent-card {
+  animation: deskpet-subagent-in 0.22s ease-out;
+}
+.deskpet-subagent-pulse {
+  display: inline-block;
+  animation: deskpet-subagent-pulse 1.1s ease-in-out infinite;
+}
+.deskpet-subagent-dot {
+  animation: deskpet-subagent-pulse 1.1s ease-in-out infinite;
+}

@@ -1,0 +1,454 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: BUSL-1.1
+
+"""HybridRouter — local_first LLM 路由 + circuit breaker + 预算钩子.
+
+Implements LLMProvider Protocol, drop-in replacement for a single
+OpenAICompatibleProvider in service_context.llm_engine.
+
+Design references:
+  docs/superpowers/specs/2026-04-15-p2-1-design.md §4.4 / §3.3
+  docs/superpowers/plans/2026-04-15-p2-1-s2-hybrid-router.md
+"""
+from __future__ import annotations
+
+import asyncio
+import enum
+import time
+from typing import AsyncIterator
+
+import structlog
+
+from observability.metrics import llm_ttft_seconds
+from providers.base import LLMProvider
+from router.types import BudgetContext, BudgetHook, allow_all_budget
+
+logger = structlog.get_logger()
+
+_HEALTH_TTL_SECONDS = 30.0
+_CIRCUIT_OPEN_AFTER_FAILURES = 3
+_CIRCUIT_OPEN_DURATION_SECONDS = 30.0
+_CLOUD_FIRST_RETRY_DELAY_SECONDS = 3.0
+
+
+def _now() -> float:
+    """Monkeypatchable time source for deterministic tests."""
+    return time.monotonic()
+
+
+class _CircuitState(str, enum.Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+class _ProviderState:
+    """Per-provider rolling state: circuit breaker + health cache.
+
+    Held by HybridRouter as a private attribute; not part of public API.
+    """
+
+    def __init__(self) -> None:
+        self.consecutive_failures: int = 0
+        self.circuit: _CircuitState = _CircuitState.CLOSED
+        self._opened_at: float | None = None
+        self._health_value: bool | None = None
+        self._health_at: float | None = None
+
+    # --- circuit breaker ---
+
+    def record_chat_failure(self) -> None:
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= _CIRCUIT_OPEN_AFTER_FAILURES:
+            self.circuit = _CircuitState.OPEN
+            self._opened_at = _now()
+
+    def record_chat_success(self) -> None:
+        self.consecutive_failures = 0
+        self.circuit = _CircuitState.CLOSED
+        self._opened_at = None
+
+    def circuit_state_now(self) -> _CircuitState:
+        """Returns logical state, transitioning OPEN→HALF_OPEN if cooldown elapsed."""
+        if self.circuit == _CircuitState.OPEN and self._opened_at is not None:
+            if _now() - self._opened_at >= _CIRCUIT_OPEN_DURATION_SECONDS:
+                return _CircuitState.HALF_OPEN
+        return self.circuit
+
+    # --- health cache ---
+
+    def cache_health(self, value: bool) -> None:
+        self._health_value = value
+        self._health_at = _now()
+
+    def invalidate_health_cache(self) -> None:
+        """Force the next _check_health to re-probe the provider."""
+        self._health_at = None
+
+    def cached_health(self) -> bool | None:
+        if self._health_at is None:
+            return None
+        if _now() - self._health_at > _HEALTH_TTL_SECONDS:
+            return None
+        return self._health_value
+
+
+class LLMUnavailableError(RuntimeError):
+    """All routes exhausted (local + cloud both failed or unconfigured).
+
+    ``budget_reason`` is set when the failure is due to a BudgetHook denial
+    (non-None → caller should surface as a UI-visible budget exceeded toast,
+    not a generic transport failure). P2-1-S8 review: we previously tracked
+    this on a HybridRouter instance attribute, but that side-channel raced
+    between concurrent text-chat and voice-pipeline requests. Carrying it on
+    the exception itself scopes it to the raising call path.
+    """
+
+    def __init__(self, msg: str, *, budget_reason: str | None = None) -> None:
+        super().__init__(msg)
+        self.budget_reason = budget_reason
+
+
+class RoutingStrategy(str, enum.Enum):
+    LOCAL_FIRST = "local_first"
+    CLOUD_FIRST = "cloud_first"      # P2-1-S2 unimplemented
+    COST_AWARE = "cost_aware"        # P2-1-S2 unimplemented
+    LATENCY_AWARE = "latency_aware"  # P2-1-S2 unimplemented
+
+
+class HybridRouter:
+    """Routes chat_stream calls between a local and a cloud provider.
+
+    S2 implements only `local_first`. Other strategies parse from config
+    but raise NotImplementedError on use, so a future slice can fill them
+    in without changing the public surface.
+    """
+
+    def __init__(
+        self,
+        *,
+        local: LLMProvider | None,
+        cloud: LLMProvider | None,
+        strategy: RoutingStrategy = RoutingStrategy.LOCAL_FIRST,
+        budget_hook: BudgetHook = allow_all_budget,
+    ) -> None:
+        self._local = local
+        self._cloud = cloud
+        self._strategy = strategy
+        # Default `allow_all_budget` preserves pre-S6 behavior (no gating).
+        # S8's BillingLedger.create_hook() swaps in real budget enforcement
+        # without changing the signature.
+        self._budget_hook: BudgetHook = budget_hook
+        self._local_state = _ProviderState()
+        self._cloud_state = _ProviderState()
+
+    async def _stream_with_ttft(
+        self,
+        provider: LLMProvider,
+        provider_label: str,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        """Wrap a provider's chat_stream, observing TTFT on first yield.
+
+        We deliberately capture ``t0`` inside this generator (not before
+        the caller iterates) so the timestamp reflects the moment the
+        iterator is actually advanced.
+        """
+        t0 = _now()
+        first = True
+        async for tok in provider.chat_stream(
+            messages, temperature=temperature, max_tokens=max_tokens
+        ):
+            # Only a truthy (non-empty) chunk counts as the first token.
+            # Some providers yield an empty string as a keep-alive before
+            # the real content arrives; observing TTFT on that would
+            # record a near-zero sample and skew the histogram.
+            if first and tok:
+                llm_ttft_seconds.labels(
+                    provider=provider_label,
+                    model=getattr(provider, "model", "unknown"),
+                ).observe(_now() - t0)
+                first = False
+            yield tok
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        force_cloud: bool = False,
+    ) -> AsyncIterator[str]:
+        if self._strategy not in (
+            RoutingStrategy.LOCAL_FIRST,
+            RoutingStrategy.CLOUD_FIRST,
+        ):
+            raise NotImplementedError(
+                f"strategy {self._strategy} not implemented"
+            )
+
+        if force_cloud:
+            async for tok in self._stream_cloud(messages, temperature, max_tokens):
+                yield tok
+            return
+
+        if self._strategy == RoutingStrategy.LOCAL_FIRST:
+            async for tok in self._chat_stream_local_first(
+                messages, temperature, max_tokens
+            ):
+                yield tok
+            return
+
+        # CLOUD_FIRST
+        async for tok in self._chat_stream_cloud_first(
+            messages, temperature, max_tokens
+        ):
+            yield tok
+
+    async def _chat_stream_local_first(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        if self._local is not None:
+            local_state = self._local_state
+            if local_state.circuit_state_now() != _CircuitState.OPEN:
+                if await self._check_health(self._local, local_state):
+                    try:
+                        async for tok in self._stream_with_ttft(
+                            self._local,
+                            "local",
+                            messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        ):
+                            yield tok
+                        local_state.record_chat_success()
+                        return
+                    except Exception as exc:
+                        local_state.record_chat_failure()
+                        logger.warning(
+                            "router_local_chat_failed_falling_back_cloud",
+                            error=str(exc),
+                            consecutive_failures=local_state.consecutive_failures,
+                        )
+
+        # local skipped or local failed — try cloud
+        async for tok in self._stream_cloud(messages, temperature, max_tokens):
+            yield tok
+
+    async def _chat_stream_cloud_first(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        """Mirror of local_first. Cloud is tried first; on budget-denied,
+        health failure, circuit OPEN, or stream exception we fall through
+        to local without raising. Only if local is unavailable too do we
+        raise ``LLMUnavailableError`` — carrying the cloud-side reason
+        (e.g. ``budget_reason``) so the UI can still surface it.
+        """
+        cloud_budget_reason: str | None = None
+
+        if self._cloud is not None:
+            cloud_state = self._cloud_state
+            if cloud_state.circuit_state_now() != _CircuitState.OPEN:
+                model = getattr(self._cloud, "model", "unknown")
+                decision = await self._budget_hook(
+                    BudgetContext(route="cloud", model=model)
+                )
+                if not decision.allow:
+                    cloud_budget_reason = decision.reason
+                    logger.info(
+                        "router_cloud_budget_denied_falling_back_local",
+                        reason=decision.reason,
+                    )
+                else:
+                    # Try cloud up to 2 times. The first attempt absorbs
+                    # Sealos-style scale-to-zero cold starts (503); the
+                    # retry after a short delay usually succeeds once the
+                    # pod is warm.  Health-check failure on the first
+                    # attempt also triggers the retry (the cold pod may
+                    # not respond to /models within the timeout).
+                    for attempt in range(2):
+                        if attempt > 0:
+                            # Invalidate stale health cache from the
+                            # failed first attempt so the retry re-probes.
+                            cloud_state.invalidate_health_cache()
+                            await asyncio.sleep(
+                                _CLOUD_FIRST_RETRY_DELAY_SECONDS
+                            )
+                            logger.info(
+                                "router_cloud_first_retrying",
+                                attempt=attempt + 1,
+                            )
+                        if not await self._check_health(
+                            self._cloud, cloud_state
+                        ):
+                            continue
+                        try:
+                            async for tok in self._stream_with_ttft(
+                                self._cloud,
+                                "cloud",
+                                messages,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                            ):
+                                yield tok
+                            cloud_state.record_chat_success()
+                            return
+                        except Exception as exc:
+                            cloud_state.record_chat_failure()
+                            logger.warning(
+                                "router_cloud_chat_failed",
+                                error=str(exc),
+                                attempt=attempt + 1,
+                                consecutive_failures=cloud_state.consecutive_failures,
+                            )
+
+        # cloud skipped / budget-denied / failed — try local
+        if self._local is not None:
+            local_state = self._local_state
+            if local_state.circuit_state_now() != _CircuitState.OPEN:
+                if await self._check_health(self._local, local_state):
+                    try:
+                        async for tok in self._stream_with_ttft(
+                            self._local,
+                            "local",
+                            messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        ):
+                            yield tok
+                        local_state.record_chat_success()
+                        return
+                    except Exception as exc:
+                        local_state.record_chat_failure()
+                        logger.warning(
+                            "router_local_chat_failed_in_cloud_first",
+                            error=str(exc),
+                            consecutive_failures=local_state.consecutive_failures,
+                        )
+
+        # Both routes exhausted. Propagate cloud budget reason if we had
+        # one so the UI toast path (budget_exceeded) still works even
+        # when local was configured but also unhealthy.
+        raise LLMUnavailableError(
+            "cloud_first: both cloud and local unavailable",
+            budget_reason=cloud_budget_reason,
+        )
+
+    async def _stream_cloud(
+        self, messages: list[dict[str, str]], temperature: float, max_tokens: int
+    ) -> AsyncIterator[str]:
+        if self._cloud is None:
+            raise LLMUnavailableError(
+                "cloud provider not configured and local unavailable"
+            )
+        # P2-1-S8: gate cloud calls behind BudgetHook. Runs before circuit
+        # breaker / health check so the ledger gets the final say even when
+        # the cloud endpoint is otherwise ready to accept.
+        model = getattr(self._cloud, "model", "unknown")
+        decision = await self._budget_hook(
+            BudgetContext(route="cloud", model=model)
+        )
+        if not decision.allow:
+            logger.info(
+                "router_cloud_budget_denied", reason=decision.reason,
+            )
+            raise LLMUnavailableError(
+                f"budget denied: {decision.reason}",
+                budget_reason=decision.reason,
+            )
+        cloud_state = self._cloud_state
+        if cloud_state.circuit_state_now() == _CircuitState.OPEN:
+            raise LLMUnavailableError(
+                "cloud circuit breaker OPEN, retry in <30s"
+            )
+        if not await self._check_health(self._cloud, cloud_state):
+            raise LLMUnavailableError(
+                "cloud provider health_check failed and local unavailable"
+            )
+        try:
+            async for tok in self._stream_with_ttft(
+                self._cloud,
+                "cloud",
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ):
+                yield tok
+            cloud_state.record_chat_success()
+        except Exception as exc:
+            # Symmetry with local-failure path: don't poison the health cache
+            # here. The circuit breaker is the source of truth for "this
+            # provider is broken"; once it OPENs after 3 failures, the gate
+            # at line 169 short-circuits before _check_health runs. Caching
+            # False here would also keep the public health_check() returning
+            # False for 30s after the cloud comes back, which masks recovery.
+            cloud_state.record_chat_failure()
+            logger.error("router_cloud_chat_failed", error=str(exc), provider="cloud")
+            raise LLMUnavailableError(f"cloud chat failed: {exc}") from exc
+
+    async def _check_health(self, provider: LLMProvider, state: _ProviderState) -> bool:
+        cached = state.cached_health()
+        if cached is not None:
+            return cached
+        try:
+            ok = await provider.health_check()
+        except Exception as exc:
+            logger.warning("router_health_check_raised", error=str(exc))
+            ok = False
+        state.cache_health(ok)
+        return ok
+
+    async def health_check(self) -> bool:
+        if self._local is not None and await self._check_health(self._local, self._local_state):
+            return True
+        if self._cloud is not None and await self._check_health(self._cloud, self._cloud_state):
+            return True
+        return False
+
+    # --- runtime hot-swap ---
+
+    def set_cloud_provider(self, provider: LLMProvider | None) -> None:
+        """Atomically replace the cloud provider and reset its circuit-breaker state.
+
+        The stale health cache and circuit state from the old provider are
+        meaningless for the new one, so ``_cloud_state`` is always reset.
+        API keys are never logged.
+        """
+        old_type = type(self._cloud).__name__ if self._cloud is not None else "None"
+        new_type = type(provider).__name__ if provider is not None else "None"
+        self._cloud = provider
+        self._cloud_state = _ProviderState()
+        logger.info(
+            "router_cloud_provider_replaced",
+            old_provider_type=old_type,
+            new_provider_type=new_type,
+        )
+
+    def set_strategy(self, strategy: RoutingStrategy) -> None:
+        """Switch the routing strategy at runtime.
+
+        Only ``LOCAL_FIRST`` and ``CLOUD_FIRST`` are implemented; passing any
+        other value raises ``NotImplementedError`` immediately so callers learn
+        early rather than at the next ``chat_stream`` call.
+        """
+        if strategy not in (RoutingStrategy.LOCAL_FIRST, RoutingStrategy.CLOUD_FIRST):
+            raise NotImplementedError(
+                f"strategy {strategy.value} is not implemented; "
+                "supported: LOCAL_FIRST, CLOUD_FIRST"
+            )
+        old_strategy = self._strategy
+        self._strategy = strategy
+        logger.info(
+            "router_strategy_changed",
+            old_strategy=old_strategy.value,
+            new_strategy=strategy.value,
+        )

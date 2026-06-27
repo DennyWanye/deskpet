@@ -1,0 +1,102 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "DeskPet",
+  "version": "0.6.0-beta.6",
+  "identifier": "com.deskpet.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev:relay",
+    "beforeBuildCommand": "npm run build:relay"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Desktop Pet",
+        "width": 500,
+        "height": 640,
+        "minWidth": 360,
+        "minHeight": 360,
+        "maxWidth": 1200,
+        "maxHeight": 1600,
+        "x": 2140,
+        "y": 640,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": false,
+        "resizable": true,
+        "maximizable": false,
+        "skipTaskbar": true
+      },
+      {
+        "label": "message-panel",
+        "title": "DeskPet · 消息",
+        "width": 440,
+        "height": 600,
+        "minWidth": 380,
+        "minHeight": 360,
+        "x": 1700,
+        "y": 640,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": false,
+        "resizable": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "url": "index.html#/message-panel"
+      },
+      {
+        "label": "code-panel",
+        "title": "DeskPet · Code Mode",
+        "width": 1024,
+        "height": 720,
+        "minWidth": 720,
+        "minHeight": 540,
+        "decorations": true,
+        "transparent": false,
+        "resizable": true,
+        "visible": false,
+        "url": "index.html#/code-panel"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "wix": {
+        "version": "0.6.0.3"
+      }
+    },
+    "resources": {
+      "../../backend/dist-portable/deskpet-backend": "backend"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://your-cdn.example.com/deskpet/latest.json",
+        "https://github.com/DennyWanye/deskpet/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVFM0I2QTIxREZENEFDM0YKUldRL3JOVGZJV283WGg1YlFWZG9Lbkxldk8yc3VNUXhzMG10QlgzRmpEODk1S2JFdWd6RjVMdW8K"
+    }
+  }
+}

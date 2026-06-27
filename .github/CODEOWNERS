@@ -1,0 +1,36 @@
+# CODEOWNERS — DeskPet
+# Reviewers auto-assigned per path glob. Order matters: last match wins.
+# See https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+
+# ─── Default owner ────────────────────────────────────────────────────
+# Everything not explicitly owned below falls back to the maintainer.
+*                                @DennyWanye
+
+# ─── Frontend (Tauri + React) ─────────────────────────────────────────
+/tauri-app/                      @DennyWanye
+/tauri-app/src-tauri/            @DennyWanye
+
+# ─── Backend (Python FastAPI) ─────────────────────────────────────────
+/backend/                        @DennyWanye
+/backend/llm/                    @DennyWanye
+/backend/deskpet/agent/          @DennyWanye
+/backend/deskpet/memory/         @DennyWanye
+/backend/deskpet/tools/          @DennyWanye
+/backend/deskpet/skills/         @DennyWanye
+
+# ─── Build / release tooling ──────────────────────────────────────────
+/.github/workflows/              @DennyWanye
+/scripts/                        @DennyWanye
+RELEASE.md                       @DennyWanye
+
+# ─── Legal / OSS surface ──────────────────────────────────────────────
+# Changes to these need extra care — they govern the project's license
+# posture and what counts as compliant downstream use.
+LICENSE                          @DennyWanye
+LICENSE.FAQ.md                   @DennyWanye
+/licenses/                       @DennyWanye
+SECURITY.md                      @DennyWanye
+CODE_OF_CONDUCT.md               @DennyWanye
+
+# ─── OSS prep tooling ─────────────────────────────────────────────────
+/scripts/oss/                    @DennyWanye

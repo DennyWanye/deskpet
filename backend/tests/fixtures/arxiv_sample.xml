@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>ArXiv Query: search_query=all:sodium ion battery</title>
+  <id>http://arxiv.org/api/query</id>
+  <updated>2026-06-20T00:00:00-04:00</updated>
+  <entry>
+    <id>http://arxiv.org/abs/2401.01234v1</id>
+    <updated>2024-01-03T12:00:00Z</updated>
+    <published>2024-01-03T12:00:00Z</published>
+    <title>Recent Progress in Sodium-Ion Batteries for Grid Storage</title>
+    <summary>
+      Sodium-ion batteries are attracting attention for stationary grid storage because sodium is abundant and inexpensive. This review summarizes cathode materials, electrolyte design, cycle-life constraints, and commercialization challenges.
+    </summary>
+  </entry>
+</feed>

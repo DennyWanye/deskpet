@@ -1,0 +1,21 @@
+{
+  "head": {
+    "vars": ["item", "itemLabel", "propertyLabel", "valueLabel"]
+  },
+  "results": {
+    "bindings": [
+      {
+        "item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q937"},
+        "itemLabel": {"xml:lang": "zh", "type": "literal", "value": "阿尔伯特·爱因斯坦"},
+        "propertyLabel": {"xml:lang": "zh", "type": "literal", "value": "职业"},
+        "valueLabel": {"xml:lang": "zh", "type": "literal", "value": "物理学家"}
+      },
+      {
+        "item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q937"},
+        "itemLabel": {"xml:lang": "zh", "type": "literal", "value": "阿尔伯特·爱因斯坦"},
+        "propertyLabel": {"xml:lang": "zh", "type": "literal", "value": "出生日期"},
+        "valueLabel": {"type": "literal", "value": "1879-03-14T00:00:00Z"}
+      }
+    ]
+  }
+}
