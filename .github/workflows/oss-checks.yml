@@ -22,7 +22,7 @@ jobs:
     name: SPDX header coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -35,7 +35,7 @@ jobs:
     name: No secrets committed
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check forbidden files are not tracked
         run: |
@@ -69,7 +69,7 @@ jobs:
     name: Third-party license attribution exists
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify licenses/ index files exist
         run: |
